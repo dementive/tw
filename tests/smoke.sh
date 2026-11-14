@@ -1,6 +1,7 @@
 #!/bin/sh
 # End-to-end check of everything a client can observe: column sizing, focus,
-# key bindings, workspaces, layer surfaces, and a clean shutdown. In a
+# key bindings, workspaces, layer surfaces, fullscreen, the screen lock, and a
+# clean shutdown. In a
 # sanitizer build a use-after-free, undefined behaviour or a leak fails it.
 #
 # $3 = tw-test-keys. Windows are named a..f; the comments track the strip.
@@ -105,5 +106,58 @@ fi
 kill "$launcher_pid"
 expect_keyboard d enter "the keyboard to return to the window"
 
+# --- Fullscreen: workspace 2 is f [d] ------------------------------------------
+press super+shift+f
+expect_state d "$on fullscreen=1" "Mod+Shift+F to make the window fullscreen"
+full=$(current_size d)
+[ "${full%x*}" -gt "${maximized%x*}" ] ||
+	fail "fullscreen ($full) is not wider than a maximized column ($maximized)"
+expect_state f "suspended=1" "the neighbour of a fullscreen window to be hidden"
+press super+shift+f
+expect_state d "$on fullscreen=0" "Mod+Shift+F again to leave fullscreen"
+[ "$(current_size d)" = "$size" ] || fail "leaving fullscreen did not restore the column size"
+
+# A window that asks to start fullscreen is never given a column size first.
+start_client g --fullscreen
+expect_state g "$on fullscreen=1" "a window that asks for fullscreen to get it"
+sizes=$(sed -n 's/^configure \([0-9x]*\) .*/\1/p' "$run_dir/g.log" | sort -u)
+[ "$sizes" = "$full" ] || fail "fullscreen-from-start window was sized '$sizes', not $full"
+# workspace 2 is f d [g]
+
+# --- Screen lock ---------------------------------------------------------------
+start_client locker --lock
+locker_pid=$last_client_pid
+expect_line locker locked "the session to lock"
+expect_keyboard locker enter "the lock screen to take the keyboard"
+expect_keyboard g leave "the window to lose the keyboard"
+expect_state g "suspended=1" "windows to be suspended behind the lock screen"
+
+# No bindings while locked: Mod+Q arrives at the lock screen as a plain key.
+press super+q
+wait_until "keys to go to the lock screen" key_lines locker 2
+if grep -q '^closed' "$run_dir/g.log"; then
+	fail "a key binding ran while the session was locked"
+fi
+
+spawn_client intruder --lock
+expect_line intruder "lock denied" "a second lock client to be refused"
+
+# If the locker dies the session stays locked: a new window stays hidden and
+# gets no keyboard.
+kill "$locker_pid"
+start_client h
+expect_state h "suspended=1" "a window opened while locked to stay hidden"
+if grep -q '^keyboard enter' "$run_dir/h.log"; then
+	fail "a window got the keyboard while the session was locked"
+fi
+
+# A new locker can take over the abandoned lock, and unlock.
+start_client locker2 --lock
+expect_line locker2 locked "a new lock client to take over"
+press Return
+expect_line locker2 unlocked "the lock client to unlock"
+expect_keyboard h enter "the keyboard to return to the focused window"
+expect_state h "$on" "windows to come back after unlocking"
+
 stop_tw
-echo "ok: columns $size, bindings, workspaces, layer shell, clean exit"
+echo "ok: columns $size, bindings, workspaces, layer shell, fullscreen $full, lock, clean exit"

@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
@@ -12,7 +14,8 @@
 #include "config.h"
 
 /*
- * Scene layout of one window, under server->window_tree:
+ * Scene layout of one window, under server->window_tree (or, while it is
+ * fullscreen, server->fullscreen_tree, which sits above bars):
  *
  *   scene_tree          positioned at the column; node.data = window
  *   ├── border[0..3]    solid rectangles
@@ -37,11 +40,13 @@ struct tw_window {
 	bool mapped;
 	size_t width_idx; /* index into column_widths */
 	bool maximized;   /* full width, overriding width_idx */
+	bool fullscreen;  /* covers the whole output, no borders */
 
 	/* The last state sent to the client or the scene, so that re-arranging
 	 * an unchanged strip sends no configure and causes no damage. */
 	int width, height; /* content size, borders excluded */
 	bool suspended;
+	bool fullscreen_applied;
 	struct wlr_box clip;
 
 	struct wl_listener map;
@@ -67,10 +72,22 @@ static struct tw_window *window_from_toplevel(struct wlr_xdg_toplevel *toplevel)
 	return tree != NULL ? tree->node.data : NULL;
 }
 
+bool surface_visible(struct wlr_surface *surface) {
+	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+	struct wlr_xdg_toplevel *toplevel = wlr_xdg_toplevel_try_from_wlr_surface(root);
+	if (toplevel != NULL) {
+		struct tw_window *window = window_from_toplevel(toplevel);
+		return window != NULL && window->mapped && window->scene_tree->node.enabled;
+	}
+	return wlr_layer_surface_v1_try_from_wlr_surface(root) != NULL && root->mapped;
+}
+
 struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 		struct wlr_surface **surface, double *sx, double *sy) {
-	struct wlr_scene_node *node =
-		wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
+	/* While locked, only the lock screen can be pointed at. */
+	struct wlr_scene_node *root = server->locked ?
+		&server->lock_tree->node : &server->scene->tree.node;
+	struct wlr_scene_node *node = wlr_scene_node_at(root, lx, ly, sx, sy);
 	if (node == NULL) {
 		return NULL;
 	}
@@ -140,16 +157,35 @@ static void window_set_size(struct tw_window *window, int width, int height) {
 	window_update_borders(window);
 }
 
+/*
+ * The scene half of fullscreen: no borders, and a place above the bars. With
+ * nothing else left to draw, wlroots hands the client's buffer straight to
+ * the display instead of compositing it (direct scanout).
+ */
+static void window_apply_fullscreen_scene(struct tw_window *window, bool fullscreen) {
+	struct tw_server *server = window->server;
+	int inset = fullscreen ? 0 : border_width;
+	for (size_t i = 0; i < LENGTH(window->border); i++) {
+		wlr_scene_node_set_enabled(&window->border[i]->node, !fullscreen);
+	}
+	wlr_scene_node_set_position(&window->surface_tree->node, inset, inset);
+	wlr_scene_node_set_position(&window->popup_tree->node, inset, inset);
+	wlr_scene_node_reparent(&window->scene_tree->node,
+		fullscreen ? server->fullscreen_tree : server->window_tree);
+}
+
 static void workspace_arrange(struct tw_workspace *workspace, const struct wlr_box *area,
-		bool active) {
+		const struct wlr_box *full, bool shown) {
 	struct tw_window *window;
 
-	/* Scroll just far enough to show the focused column completely. */
+	/* Scroll just far enough to show the focused column completely. A
+	 * fullscreen column has no margin: it must cover the output exactly. */
 	int x = gap;
 	wl_list_for_each(window, &workspace->windows, link) {
-		int width = column_width(window, area);
+		int width = window->fullscreen ? area->width : column_width(window, area);
 		if (window == workspace->focused) {
-			workspace->view_x = tw_view_fit(workspace->view_x, area->width, x, width, gap);
+			workspace->view_x = tw_view_fit(workspace->view_x, area->width, x, width,
+				window->fullscreen ? 0 : gap);
 		}
 		x += width + gap;
 	}
@@ -159,13 +195,25 @@ static void workspace_arrange(struct tw_workspace *workspace, const struct wlr_b
 
 	x = gap;
 	wl_list_for_each(window, &workspace->windows, link) {
-		int width = column_width(window, area);
-		bool visible = active &&
+		int width = window->fullscreen ? area->width : column_width(window, area);
+		bool visible = shown &&
 			tw_column_visible(workspace->view_x, area->width, x, width);
 
-		wlr_scene_node_set_position(&window->scene_tree->node,
-			area->x + x - workspace->view_x, area->y + gap);
-		window_set_size(window, content_size(width), content_size(area->height - 2 * gap));
+		if (window->fullscreen_applied != window->fullscreen) {
+			window->fullscreen_applied = window->fullscreen;
+			window_apply_fullscreen_scene(window, window->fullscreen);
+			wlr_xdg_toplevel_set_fullscreen(window->xdg_toplevel, window->fullscreen);
+		}
+		if (window->fullscreen) {
+			wlr_scene_node_set_position(&window->scene_tree->node,
+				full->x + x - workspace->view_x, full->y);
+			window_set_size(window, full->width, full->height);
+		} else {
+			wlr_scene_node_set_position(&window->scene_tree->node,
+				area->x + x - workspace->view_x, area->y + gap);
+			window_set_size(window, content_size(width),
+				content_size(area->height - 2 * gap));
+		}
 		window_update_clip(window);
 
 		/*
@@ -183,14 +231,31 @@ static void workspace_arrange(struct tw_workspace *workspace, const struct wlr_b
 	}
 }
 
+/* `area` is what windows may use, `full` the whole output (for fullscreen). */
+static bool screen_boxes(struct tw_server *server, struct wlr_box *area, struct wlr_box *full) {
+	struct tw_output *output = output_primary(server);
+	if (output == NULL || !output_primary_box(server, area)) {
+		return false;
+	}
+	wlr_output_layout_get_box(server->output_layout, output->wlr_output, full);
+	return true;
+}
+
 void strip_arrange(struct tw_server *server) {
-	struct wlr_box area;
-	if (!output_primary_box(server, &area)) {
+	struct wlr_box area, full;
+	if (!screen_boxes(server, &area, &full)) {
 		return;
 	}
+
+	/* Nothing is on screen while the outputs are off or the session is
+	 * locked, so every window is suspended then. */
+	bool screen_on = !server->blanked && !server->locked;
 	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		workspace_arrange(&server->workspaces[i], &area, i == server->active);
+		workspace_arrange(&server->workspaces[i], &area, &full,
+			screen_on && i == server->active);
 	}
+	/* Visibility decides whether a video player may keep the screen on. */
+	idle_update_inhibited(server);
 }
 
 /* --- Focus ------------------------------------------------------------------ */
@@ -217,9 +282,16 @@ void focus_update(struct tw_server *server) {
 		}
 	}
 
-	struct wlr_surface *surface = layer_keyboard_surface(server);
-	if (surface == NULL && window != NULL) {
-		surface = window->xdg_toplevel->base->surface;
+	/* Keyboard: the lock screen if locked, else a layer surface that asked
+	 * for it (a launcher), else the active window. */
+	struct wlr_surface *surface;
+	if (server->locked) {
+		surface = lock_keyboard_surface(server);
+	} else {
+		surface = layer_keyboard_surface(server);
+		if (surface == NULL && window != NULL) {
+			surface = window->xdg_toplevel->base->surface;
+		}
 	}
 	if (surface == server->seat->keyboard_state.focused_surface) {
 		return;
@@ -308,6 +380,11 @@ static void window_unmap(struct tw_window *window) {
 	window->width = window->height = 0;
 	window->suspended = false;
 	window->maximized = false;
+	window->fullscreen = false;
+	if (window->fullscreen_applied) {
+		window->fullscreen_applied = false;
+		window_apply_fullscreen_scene(window, false);
+	}
 	window->clip = (struct wlr_box){0};
 
 	focus_update(server);
@@ -320,13 +397,15 @@ static void handle_map(struct wl_listener *listener, void *data) {
 
 	window_attach(window, &server->workspaces[server->active]);
 	window->mapped = true;
+	window->fullscreen = window->xdg_toplevel->requested.fullscreen;
 	focus_update(server);
 	strip_arrange(server);
 
 	const char *app_id = window->xdg_toplevel->app_id;
-	wlr_log(WLR_DEBUG, "map %s %dx%d workspace=%zu decorations=%s",
+	wlr_log(WLR_DEBUG, "map %s %dx%d workspace=%zu decorations=%s%s",
 		app_id != NULL ? app_id : "(no app_id)", window->width, window->height,
-		server->active + 1, window->decoration != NULL ? "server" : "client");
+		server->active + 1, window->decoration != NULL ? "server" : "client",
+		window->fullscreen ? " fullscreen" : "");
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
@@ -341,15 +420,21 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	if (toplevel->base->initial_commit) {
 		/* Tell the client its column size before it draws anything, so the
 		 * first frame already fits and nothing visibly resizes on map. */
-		struct wlr_box area;
+		struct wlr_box area, full;
 		wlr_xdg_toplevel_set_tiled(toplevel,
 			WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
 		decoration_apply(window);
-		if (output_primary_box(window->server, &area)) {
+		if (!screen_boxes(window->server, &area, &full)) {
+			wlr_xdg_toplevel_set_size(toplevel, 0, 0);
+		} else if (toplevel->requested.fullscreen) {
+			/* It asked to start fullscreen (`mpv --fs`): size it for that. */
+			window->fullscreen = window->fullscreen_applied = true;
+			window_apply_fullscreen_scene(window, true);
+			wlr_xdg_toplevel_set_fullscreen(toplevel, true);
+			window_set_size(window, full.width, full.height);
+		} else {
 			window_set_size(window, content_size(column_width(window, &area)),
 				content_size(area.height - 2 * gap));
-		} else {
-			wlr_xdg_toplevel_set_size(toplevel, 0, 0);
 		}
 		return;
 	}
@@ -390,9 +475,17 @@ static void handle_request_maximize(struct wl_listener *listener, void *data) {
 }
 
 static void handle_request_fullscreen(struct wl_listener *listener, void *data) {
+	/* The client's own fullscreen button or key (F in a video player). */
 	struct tw_window *window = wl_container_of(listener, window, request_fullscreen);
-	if (window->xdg_toplevel->base->initialized) {
-		wlr_xdg_surface_schedule_configure(window->xdg_toplevel->base);
+	struct wlr_xdg_toplevel *toplevel = window->xdg_toplevel;
+	if (window->mapped) {
+		window->fullscreen = toplevel->requested.fullscreen;
+		strip_arrange(window->server);
+	}
+	/* xdg-shell wants a configure in reply even if nothing changed. A request
+	 * made before mapping is picked up from `requested` when the window maps. */
+	if (toplevel->base->initialized) {
+		wlr_xdg_surface_schedule_configure(toplevel->base);
 	}
 }
 
@@ -620,6 +713,15 @@ void action_maximize(struct tw_server *server, const union tw_arg *arg) {
 		return;
 	}
 	window->maximized = !window->maximized;
+	strip_arrange(server);
+}
+
+void action_fullscreen(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = active_window(server);
+	if (window == NULL) {
+		return;
+	}
+	window->fullscreen = !window->fullscreen;
 	strip_arrange(server);
 }
 

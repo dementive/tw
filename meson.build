@@ -72,10 +72,14 @@ wayland_scanner = find_program(
 	native: true,
 )
 
+wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
+
 # The wlr and virtual-keyboard protocols are not part of wayland-protocols, so
 # their XML is kept in protocols/ (copied from the pinned wlroots).
 protocols = {
-	'xdg-shell': wayland_protos.get_variable('pkgdatadir') / 'stable/xdg-shell/xdg-shell.xml',
+	'xdg-shell': wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
+	'ext-session-lock-v1': wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
+	'idle-inhibit-unstable-v1': wl_protocol_dir / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
 }
@@ -112,6 +116,8 @@ tw = executable(
 	'src/input.c',
 	'src/window.c',
 	'src/layer.c',
+	'src/idle.c',
+	'src/lock.c',
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
@@ -153,6 +159,10 @@ test_client = executable(
 	protocol_code['xdg-shell'],
 	client_header['wlr-layer-shell-unstable-v1'],
 	protocol_code['wlr-layer-shell-unstable-v1'],
+	client_header['ext-session-lock-v1'],
+	protocol_code['ext-session-lock-v1'],
+	client_header['idle-inhibit-unstable-v1'],
+	protocol_code['idle-inhibit-unstable-v1'],
 	dependencies: wayland_client,
 )
 test_keys = executable(
@@ -168,6 +178,15 @@ test_keys = executable(
 test(
 	'smoke',
 	find_program('tests/smoke.sh'),
+	args: [tw, test_client, test_keys],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# Screen blanking, with a one-second timeout so the test does not take minutes.
+test(
+	'idle',
+	find_program('tests/idle.sh'),
 	args: [tw, test_client, test_keys],
 	is_parallel: false,
 	timeout: 120,

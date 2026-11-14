@@ -7,16 +7,27 @@
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
+#include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/util/log.h>
 
 #include "tw.h"
+#include "config.h"
 
 void spawn(const char *cmd) {
 	pid_t pid = fork();
@@ -57,18 +68,25 @@ static int handle_signal(int signo, void *data) {
 }
 
 static void usage(const char *name) {
-	printf("Usage: %s [-d] [-s startup-command]\n"
+	printf("Usage: %s [-d] [-b seconds] [-s startup-command]\n"
+		"  -b  turn the screen off after this long without input (0: never;\n"
+		"      default %d)\n"
 		"  -d  log debug output\n"
-		"  -s  run a shell command once the compositor is up\n", name);
+		"  -s  run a shell command once the compositor is up\n",
+		name, blank_after_seconds);
 }
 
 int main(int argc, char *argv[]) {
 	const char *startup_cmd = NULL;
 	enum wlr_log_importance verbosity = WLR_ERROR;
+	int blank_after = blank_after_seconds;
 
 	int c;
-	while ((c = getopt(argc, argv, "ds:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:ds:h")) != -1) {
 		switch (c) {
+		case 'b':
+			blank_after = atoi(optarg);
+			break;
 		case 'd':
 			verbosity = WLR_DEBUG;
 			break;
@@ -87,6 +105,9 @@ int main(int argc, char *argv[]) {
 	wlr_log_init(verbosity, NULL);
 
 	struct tw_server server = {0};
+	/* Capped so the value fits a millisecond timer. */
+	server.blank_after_ms = blank_after <= 0 ? 0 :
+		(blank_after > 86400 ? 86400 : blank_after) * 1000;
 
 	/* Inside another session the host compositor owns Super, so use Alt.
 	 * Checked before we overwrite WAYLAND_DISPLAY with our own socket. */
@@ -110,24 +131,48 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create the renderer");
 		return 1;
 	}
-	wlr_renderer_init_wl_display(server.renderer, server.display);
+	/* Shared-memory buffers always; GPU buffers when the renderer has a GPU.
+	 * This is wlr_renderer_init_wl_display() spelled out, to keep the
+	 * dmabuf global for the scene (see output_init()). */
+	wlr_renderer_init_wl_shm(server.renderer, server.display);
+	if (wlr_renderer_get_texture_formats(server.renderer, WLR_BUFFER_CAP_DMABUF) != NULL &&
+			wlr_renderer_get_drm_fd(server.renderer) >= 0) {
+		server.linux_dmabuf =
+			wlr_linux_dmabuf_v1_create_with_renderer(server.display, 4, server.renderer);
+	}
 	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
 	if (server.allocator == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the allocator");
 		return 1;
 	}
 
-	/* Globals wlroots implements entirely on its own. */
+	/*
+	 * Globals wlroots implements entirely on its own. Each one is a few
+	 * hundred bytes and does nothing until a client uses it.
+	 */
 	wlr_compositor_create(server.display, 6, server.renderer);
 	wlr_subcompositor_create(server.display);
 	wlr_data_device_manager_create(server.display);
 	wlr_viewporter_create(server.display);
 	wlr_fractional_scale_manager_v1_create(server.display, 1);
+	wlr_single_pixel_buffer_manager_v1_create(server.display);
+	wlr_presentation_create(server.display, server.backend, 2);
+	/* Screenshots and screen recording (grim, wf-recorder, portals). */
+	wlr_screencopy_manager_v1_create(server.display);
+	wlr_ext_image_copy_capture_manager_v1_create(server.display, 1);
+	wlr_ext_output_image_capture_source_manager_v1_create(server.display, 1);
+	/* Clipboard tools and managers (wl-copy, cliphist). */
+	wlr_data_control_manager_v1_create(server.display);
+	wlr_ext_data_control_manager_v1_create(server.display, 1);
 
 	output_init(&server);
+	/* Logical output geometry, which screenshot tools and some toolkits use. */
+	wlr_xdg_output_manager_v1_create(server.display, server.output_layout);
 	layer_init(&server);
 	window_init(&server);
 	input_init(&server);
+	idle_init(&server);
+	lock_init(&server);
 
 	/* From here on listeners are attached, so every exit goes through the
 	 * full teardown below. */
@@ -155,6 +200,8 @@ teardown:
 	/* wlroots asserts that every listener was removed before the object it
 	 * listens on is destroyed, so the order here matters. */
 	wl_display_destroy_clients(server.display);
+	lock_finish(&server);
+	idle_finish(&server);
 	input_finish(&server);
 	window_finish(&server);
 	layer_finish(&server);

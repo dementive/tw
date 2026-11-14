@@ -113,6 +113,7 @@ static void handle_layout_change(struct wl_listener *listener, void *data) {
 	/* Layer surfaces first: they decide how much of the output is left. */
 	struct tw_server *server = wl_container_of(listener, server, layout_change);
 	layers_arrange(server);
+	lock_arrange(server);
 	strip_arrange(server);
 }
 
@@ -121,6 +122,11 @@ void output_init(struct tw_server *server) {
 	server->output_layout = wlr_output_layout_create(server->display);
 	server->scene = wlr_scene_create();
 	server->scene_layout = wlr_scene_attach_output_layout(server->scene, server->output_layout);
+	if (server->linux_dmabuf != NULL) {
+		/* Lets the scene tell each client which buffer formats the display
+		 * can show directly, so a fullscreen window skips compositing. */
+		wlr_scene_set_linux_dmabuf_v1(server->scene, server->linux_dmabuf);
+	}
 
 	/* Children stack in creation order. The layer indices are the values of
 	 * zwlr_layer_shell_v1_layer: background, bottom, top, overlay. */
@@ -129,7 +135,9 @@ void output_init(struct tw_server *server) {
 	server->layer_trees[1] = wlr_scene_tree_create(root);
 	server->window_tree = wlr_scene_tree_create(root);
 	server->layer_trees[2] = wlr_scene_tree_create(root);
+	server->fullscreen_tree = wlr_scene_tree_create(root);
 	server->layer_trees[3] = wlr_scene_tree_create(root);
+	server->lock_tree = wlr_scene_tree_create(root);
 
 	server->new_output.notify = handle_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);

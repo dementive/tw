@@ -34,9 +34,19 @@ static const bool touchpad_tap = true;
 static const bool touchpad_natural_scroll = true;
 static const bool touchpad_disable_while_typing = true;
 
+/*
+ * Turn the screen off after this many seconds without input; 0 never does.
+ * Windows are told to stop drawing while it is off. A visible window that
+ * inhibits idling (a playing video) holds it off. `tw -b` overrides this.
+ */
+static const int blank_after_seconds = 300;
+
 /* Programs. The launcher is any layer-shell client; fuzzel is small and fast. */
 static const char terminal[] = "alacritty";
 static const char launcher[] = "fuzzel";
+static const char locker[] = "swaylock";
+static const char screenshot[] = "grim";
+static const char screenshot_region[] = "grim -g \"$(slurp)\"";
 
 static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
 static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
@@ -53,6 +63,7 @@ static const char brightness_down[] = "brightnessctl --class=backlight set 5%-";
 #define MOD TW_MOD
 #define SHIFT WLR_MODIFIER_SHIFT
 #define CTRL WLR_MODIFIER_CTRL
+#define ALT WLR_MODIFIER_ALT
 
 /* Mod+N shows workspace N, Mod+Ctrl+N takes the focused column there. */
 #define WORKSPACE(key, index) \
@@ -65,6 +76,12 @@ static const struct tw_binding bindings[] = {
 	{MOD,           XKB_KEY_d,          action_spawn,                       {.s = launcher}},
 	{MOD,           XKB_KEY_q,          action_close,                       {0}},
 	{MOD | SHIFT,   XKB_KEY_e,          action_quit,                        {0}},
+
+	/* Screen: lock, power off until the next input, screenshots. */
+	{MOD | ALT,     XKB_KEY_l,          action_spawn,                       {.s = locker}},
+	{MOD | SHIFT,   XKB_KEY_p,          action_blank,                       {0}},
+	{0,             XKB_KEY_Print,      action_spawn,                       {.s = screenshot}},
+	{SHIFT,         XKB_KEY_Print,      action_spawn,                       {.s = screenshot_region}},
 
 	/* Focus along the strip. */
 	{MOD,           XKB_KEY_h,          action_focus,                       {.i = -1}},
@@ -85,6 +102,7 @@ static const struct tw_binding bindings[] = {
 	/* Column width. */
 	{MOD,           XKB_KEY_r,          action_cycle_width,                 {0}},
 	{MOD,           XKB_KEY_f,          action_maximize,                    {0}},
+	{MOD | SHIFT,   XKB_KEY_f,          action_fullscreen,                  {0}},
 
 	/* Workspaces are stacked vertically: up is the previous one. */
 	{MOD,           XKB_KEY_u,          action_workspace_relative,          {.i = +1}},

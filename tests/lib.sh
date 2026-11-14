@@ -43,26 +43,38 @@ wait_until() {
 	done
 }
 
+# start_tw [tw arguments]
 start_tw() {
 	env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY \
 		XDG_RUNTIME_DIR="$run_dir" \
 		WLR_BACKENDS=headless \
 		WLR_RENDERER=pixman \
-		"$tw_bin" >"$run_dir/tw.log" 2>&1 &
+		"$tw_bin" "$@" >"$run_dir/tw.log" 2>&1 &
 	tw_pid=$!
 	wait_until "the Wayland socket" test -S "$run_dir/wayland-0"
 }
 
-# start_client <name> [client arguments]: output goes to $run_dir/<name>.log.
-# Sets last_client_pid.
-start_client() {
+# spawn_client <name> [client mode]: output goes to $run_dir/<name>.log.
+# Sets last_client_pid. See tests/client.c for the modes.
+spawn_client() {
 	name=$1
 	shift
 	XDG_RUNTIME_DIR="$run_dir" WAYLAND_DISPLAY=wayland-0 \
 		"$client_bin" "$@" >"$run_dir/$name.log" 2>&1 &
 	last_client_pid=$!
 	client_pids="$client_pids $last_client_pid"
-	wait_until "client $name to be configured" grep -q 'configure' "$run_dir/$name.log"
+}
+
+# start_client <name> [client mode]: spawn_client, then wait for its surface
+# to be configured.
+start_client() {
+	spawn_client "$@"
+	wait_until "client $1 to be configured" grep -q 'configure' "$run_dir/$1.log"
+}
+
+# expect_line <name> <exact line> <description>: the client printed this line.
+expect_line() {
+	wait_until "$3" grep -qx "$2" "$run_dir/$1.log"
 }
 
 # press <combo...>: e.g. `press super+ctrl+l super+2`. See tests/keys.c.

@@ -19,6 +19,7 @@
 #define TW_WORKSPACES 9
 
 struct tw_layer_surface;
+struct tw_lock;
 struct tw_server;
 struct tw_window;
 struct wlr_output;
@@ -50,15 +51,19 @@ struct tw_server {
 	struct wlr_session *session; /* NULL when nested or headless */
 	struct wlr_renderer *renderer;
 	struct wlr_allocator *allocator;
+	struct wlr_linux_dmabuf_v1 *linux_dmabuf; /* NULL with the software renderer */
 
 	/* output.c */
 	struct wlr_output_layout *output_layout;
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
 	/* Stacking order, bottom to top: layer_trees[background], [bottom],
-	 * window_tree, layer_trees[top], [overlay]. */
+	 * window_tree, layer_trees[top], fullscreen_tree, layer_trees[overlay],
+	 * lock_tree. */
 	struct wlr_scene_tree *layer_trees[4]; /* by zwlr_layer_shell_v1_layer */
 	struct wlr_scene_tree *window_tree;
+	struct wlr_scene_tree *fullscreen_tree;
+	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
 	struct wl_list outputs; /* tw_output.link; the first usable one shows the strip */
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
@@ -79,15 +84,35 @@ struct tw_server {
 	struct tw_layer_surface *keyboard_layer; /* holds the keyboard, or NULL */
 	struct wl_listener new_layer_surface;
 
+	/* idle.c */
+	struct wlr_idle_notifier_v1 *idle_notifier;
+	struct wlr_idle_inhibit_manager_v1 *idle_inhibit_manager;
+	struct wl_listener new_idle_inhibitor;
+	struct wl_event_source *blank_timer;
+	int blank_after_ms; /* 0 never blanks */
+	int64_t last_activity_ms;
+	bool blanked; /* outputs are powered off */
+	bool idle_inhibited; /* a visible surface asked to keep the screen on */
+
+	/* lock.c */
+	struct wlr_session_lock_manager_v1 *lock_manager;
+	struct wlr_scene_rect *lock_background;
+	struct wl_listener new_lock;
+	bool locked;
+	struct tw_lock *lock; /* the client holding the lock; NULL if it died */
+
 	/* input.c */
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_manager;
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
+	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
 	uint32_t mod; /* what TW_MOD resolves to */
 	struct wl_list keyboards; /* tw_keyboard.link */
 	struct wl_listener new_input;
 	struct wl_listener new_virtual_keyboard;
+	struct wl_listener request_set_shape;
+	struct wl_listener request_set_primary_selection;
 	struct wl_listener cursor_motion;
 	struct wl_listener cursor_motion_absolute;
 	struct wl_listener cursor_button;
@@ -144,6 +169,8 @@ void window_focus(struct tw_server *server, struct tw_window *window);
 void focus_update(struct tw_server *server);
 /* Scrolls the focused column into view and places every window. */
 void strip_arrange(struct tw_server *server);
+/* Whether the window or layer surface this surface belongs to is on screen. */
+bool surface_visible(struct wlr_surface *surface);
 
 /* Actions on the focused column. arg.i is a direction (-1 left, +1 right). */
 void action_close(struct tw_server *server, const union tw_arg *arg);
@@ -153,6 +180,7 @@ void action_move(struct tw_server *server, const union tw_arg *arg);
 void action_move_edge(struct tw_server *server, const union tw_arg *arg);
 void action_cycle_width(struct tw_server *server, const union tw_arg *arg);
 void action_maximize(struct tw_server *server, const union tw_arg *arg);
+void action_fullscreen(struct tw_server *server, const union tw_arg *arg);
 /* Workspace actions. arg.i is a zero-based index, or -1 up / +1 down for the
  * _relative variants. Moving a column takes the focus along, like niri. */
 void action_workspace(struct tw_server *server, const union tw_arg *arg);
@@ -169,6 +197,24 @@ void layers_arrange(struct tw_server *server);
 void layers_output_destroyed(struct tw_server *server, struct wlr_output *output);
 /* Surface of the layer that holds the keyboard, or NULL. */
 struct wlr_surface *layer_keyboard_surface(struct tw_server *server);
+
+/* idle.c */
+void idle_init(struct tw_server *server);
+void idle_finish(struct tw_server *server);
+/* The user did something: restarts the idle clock and wakes the outputs. */
+void idle_activity(struct tw_server *server);
+/* Re-checks whether a visible surface is keeping the screen on. */
+void idle_update_inhibited(struct tw_server *server);
+/* Powers the outputs off until the next input. */
+void action_blank(struct tw_server *server, const union tw_arg *arg);
+
+/* lock.c */
+void lock_init(struct tw_server *server);
+void lock_finish(struct tw_server *server);
+/* Resizes the lock surfaces and the curtain behind them to the outputs. */
+void lock_arrange(struct tw_server *server);
+/* Surface that gets the keyboard while locked, or NULL. */
+struct wlr_surface *lock_keyboard_surface(struct tw_server *server);
 
 /* input.c */
 void input_init(struct tw_server *server);

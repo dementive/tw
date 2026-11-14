@@ -3,10 +3,13 @@
 #include <wlr/backend/session.h>
 #include <wlr/config.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_primary_selection.h>
+#include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -57,6 +60,11 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 		}
 	}
 
+	/* A locked session runs no bindings: every key goes to the lock screen. */
+	if (server->locked) {
+		return false;
+	}
+
 	/* Match bindings on the unshifted keysym, so that Shift combinations do
 	 * not depend on what Shift produces in the active layout. */
 	uint32_t mods = wlr_keyboard_get_modifiers(wlr_keyboard) & BINDING_MODS;
@@ -104,6 +112,9 @@ static void handle_key(struct wl_listener *listener, void *data) {
 
 	bool handled;
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		/* Only presses count as activity. Otherwise letting go of the keys
+		 * that blanked the screen would wake it again at once. */
+		idle_activity(keyboard->server);
 		/* libinput keycode -> xkbcommon keycode */
 		handled = run_bindings(keyboard, event->keycode + 8);
 		if (handled) {
@@ -240,6 +251,7 @@ static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
+	idle_activity(server);
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
 	pointer_update(server, event->time_msec);
 }
@@ -248,6 +260,7 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
 	/* What the nested backend sends: a position in 0..1 inside its window. */
 	struct tw_server *server = wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
+	idle_activity(server);
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
 	pointer_update(server, event->time_msec);
 }
@@ -256,6 +269,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
 
+	idle_activity(server);
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
 
 	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
@@ -273,6 +287,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 static void handle_cursor_axis(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
+	idle_activity(server);
 	wlr_seat_pointer_notify_axis(server->seat, event->time_msec, event->orientation,
 		event->delta, event->delta_discrete, event->source, event->relative_direction);
 }
@@ -307,6 +322,26 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 	wlr_seat_set_selection(server->seat, event->source, event->serial);
 }
 
+static void handle_request_set_primary_selection(struct wl_listener *listener, void *data) {
+	/* Select-to-copy, middle-click-to-paste. */
+	struct tw_server *server =
+		wl_container_of(listener, server, request_set_primary_selection);
+	struct wlr_seat_request_set_primary_selection_event *event = data;
+	wlr_seat_set_primary_selection(server->seat, event->source, event->serial);
+}
+
+static void handle_request_set_shape(struct wl_listener *listener, void *data) {
+	/* A client names a cursor ("text", "pointer") instead of sending an
+	 * image, so it does not have to load a cursor theme of its own. */
+	struct tw_server *server = wl_container_of(listener, server, request_set_shape);
+	struct wlr_cursor_shape_manager_v1_request_set_shape_event *event = data;
+	if (event->device_type == WLR_CURSOR_SHAPE_MANAGER_V1_DEVICE_TYPE_POINTER &&
+			server->seat->pointer_state.focused_client == event->seat_client) {
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_manager,
+			wlr_cursor_shape_v1_name(event->shape));
+	}
+}
+
 void input_init(struct tw_server *server) {
 	wl_list_init(&server->keyboards);
 
@@ -337,6 +372,16 @@ void input_init(struct tw_server *server) {
 	server->request_set_selection.notify = handle_request_set_selection;
 	wl_signal_add(&server->seat->events.request_set_selection, &server->request_set_selection);
 
+	wlr_primary_selection_v1_device_manager_create(server->display);
+	server->request_set_primary_selection.notify = handle_request_set_primary_selection;
+	wl_signal_add(&server->seat->events.request_set_primary_selection,
+		&server->request_set_primary_selection);
+
+	server->cursor_shape_manager = wlr_cursor_shape_manager_v1_create(server->display, 1);
+	server->request_set_shape.notify = handle_request_set_shape;
+	wl_signal_add(&server->cursor_shape_manager->events.request_set_shape,
+		&server->request_set_shape);
+
 	server->new_input.notify = handle_new_input;
 	wl_signal_add(&server->backend->events.new_input, &server->new_input);
 
@@ -357,6 +402,8 @@ void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->request_set_cursor.link);
 	wl_list_remove(&server->pointer_focus_change.link);
 	wl_list_remove(&server->request_set_selection.link);
+	wl_list_remove(&server->request_set_primary_selection.link);
+	wl_list_remove(&server->request_set_shape.link);
 	wlr_xcursor_manager_destroy(server->cursor_manager);
 	wlr_cursor_destroy(server->cursor);
 }
