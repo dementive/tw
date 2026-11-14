@@ -137,26 +137,40 @@ sockets; when it exits (a pidfd tells us) tw watches them again.
 
 The NVIDIA GPU of a laptop that also has an Intel one is handled like X11:
 off until something needs it, and none of it is in tw's C code. Off means its
-kernel driver is unloaded, which is the only state in which the GPU cannot be
-woken by a program that merely lists the GPUs, and in which the driver's
-380 MB are free. `tw-session` does three things for that. It names the GPUs
-tw may use in `WLR_DRM_DEVICES` whenever the machine has a second GPU, loaded
-or not, because wlroots opens a GPU that appears later only when that
-variable is unset; so the driver can come and go under a running tw. It keeps
-programs on the Intel GPU (`__EGL_VENDOR_LIBRARY_FILENAMES`,
-`VK_DRIVER_FILES`). And once tw is up it runs `tw-gpu login`, unless a
-monitor is on the NVIDIA GPU: that switches the GPU off, trying for half a
-minute, because the login screen keeps the GPU open for some seconds after
-tw has the screen. `tw-gpu run <program>` loads the driver, starts the
-program with NVIDIA's offload variables, and unloads the driver afterwards;
-the launcher starts everything through `tw-gpu launch`, which does the same
-for desktop entries with `PrefersNonDefaultGPU=true`. Who still needs the GPU
-is tracked with one lock file: every program started by `run` inherits a
-shared lock on it, and switching off waits for the exclusive lock, so there
-is no counter to get out of step and nothing polls. Loading and unloading
-need root: `tw-gpu` starts `tw-gpu@on.service` or `tw-gpu@off.service`, which
-a polkit rule allows, and those run `tw-gpu-root`. The kernel has the last
-word: a driver in use does not unload, and then the GPU simply stays on.
+kernel driver is unloaded and the GPU is off the PCI bus (`remove` on the
+device; the root helper leaves the port's path in `/run/tw-gpu-off`, and
+scans that port to bring the GPU back). Unloading alone is not enough:
+NVIDIA's libraries load the driver through their setuid `nvidia-modprobe` as
+soon as a program asks about the GPU, which `btop` and `fastfetch` do, and
+modprobe's configuration cannot refuse it (kmod ignores `install` commands
+for a module with soft dependencies, which `nvidia` has). With no NVIDIA GPU
+on the bus the driver itself refuses to load.
+
+`tw-session` does three things for this. It names the GPUs tw may use in
+`WLR_DRM_DEVICES` whenever the machine has a second GPU, be it loaded,
+without its driver, or switched off, because wlroots opens a GPU that
+appears later only when that variable is unset; so the GPU can come and go
+under a running tw. It keeps programs on the Intel GPU
+(`__EGL_VENDOR_LIBRARY_FILENAMES`, `VK_DRIVER_FILES`), so that none of them
+grabs the NVIDIA GPU while it is on for another. And once tw is up it runs
+`tw-gpu login`, unless a monitor is on the NVIDIA GPU.
+
+`tw-gpu run <program>` switches the GPU on, starts the program with NVIDIA's
+offload variables, and switches it off afterwards; the launcher starts
+everything through `tw-gpu launch`, which does the same for desktop entries
+with `PrefersNonDefaultGPU=true`. Who still needs the GPU is tracked with one
+lock file: every program started by `run` inherits a shared lock on it, and
+the switch-off, arranged before the program starts and in a session of its
+own, waits for the exclusive lock. So there is no counter to get out of
+step. The root helper leaves a GPU alone that any program has open (it reads
+`/proc/*/fd`), and then one `tw-gpu retry` waits for that to end: it looks
+at the driver's use counts every five seconds and tries again when they have
+changed. That is the only polling in all of this, it runs only while the GPU
+is on although nothing asked for it, and it is also what waits for the login
+screen, which keeps the GPU open for some seconds after tw has the screen.
+Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
+`tw-gpu@off.service`, which a polkit rule allows, and those run
+`tw-gpu-root`.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -269,27 +283,13 @@ after tw started. Not seen yet: a window on the real screen (the probe had
 the same renderer but no monitor), a monitor on the NVIDIA GPU, and suspend
 with the driver unloaded.
 
-**Off does not stay off, and this is open.** Any program that asks NVIDIA's
-own libraries about the GPU loads the driver again, through the setuid
-`nvidia-modprobe` those libraries run, and nothing unloads it afterwards.
-The session's two variables only cover Vulkan and EGL; NVML is not covered,
-and `btop` and `fastfetch` both use it. At the second real login the owner
-ran both ten seconds in, and the driver was back two seconds after it had
-been unloaded (the sign: `nvidia` and `nvidia_uvm` loaded, `nvidia_drm`
-not). Refusing the load in modprobe's configuration does not work: an
-`install nvidia ...` line is read but ignored, because kmod ignores install
-commands for a module that has soft dependencies, and `nvidia` has them
-(`modprobe -C <dir> -n -v nvidia` shows `insmod`, not `install`). What is
-left is taking the GPU off the PCI bus while it is off (`remove` on the
-device, `rescan` on the port above it): the module contains the refusal for
-that case ("NVRM: No NVIDIA GPU found"), but neither that nor the rescan has
-been tried on the machine, and `tw-gpu` and `tw-session` find the GPU by
-scanning the bus, so both would need to know about a removed one. To repeat such a
-probe, start a headless tw with `WLR_RENDERER=gles2` and
-`WLR_RENDER_DRM_DEVICE` set to the Intel render node, and run
-`tw-gpu run vkcube --wsi wayland --c 240` with `WAYLAND_DISPLAY` set to the
-probe's socket by its full path, so that `tw-gpu` keeps the real
-`XDG_RUNTIME_DIR` and its lock.
+Taking the GPU off the bus came out of the second real login: the owner ran
+`fastfetch` and `btop` ten seconds in, and the driver was back two seconds
+after it had been unloaded (the sign: `nvidia` and `nvidia_uvm` loaded,
+`nvidia_drm` not). **Not yet seen on the machine:** that the GPU leaves the
+bus and its slot powers down, that the driver then refuses to load, and that
+scanning the port brings the GPU back. The module does contain the refusal
+("NVRM: No NVIDIA GPU found").
 
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that

@@ -110,10 +110,14 @@ startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
 ### 6. The NVIDIA GPU: off until a program needs it
 
 On a laptop with an Intel and an NVIDIA GPU, tw draws with the Intel one. The
-NVIDIA driver is unloaded when you log in, unless a monitor is plugged into
-one of the NVIDIA GPU's ports at that moment. With the driver gone the GPU is
-powered down, no program can wake it by accident, and the memory the driver
-keeps (about 380 MB) is free. Nothing has to be set up for that part.
+NVIDIA GPU is switched off when you log in, unless a monitor is plugged into
+one of its ports at that moment. Off means its driver is unloaded and the GPU
+is taken off the PCI bus: it is powered down, the memory the driver keeps
+(about 380 MB) is free, and nothing can switch it back on by accident.
+Programs that only look at the GPU, such as `btop`, `fastfetch` and
+`nvidia-smi`, see no NVIDIA GPU while it is off. Without that last part they
+would load the driver again every time they run. Nothing has to be set up
+for any of this.
 
 A program gets the GPU in one of two ways:
 
@@ -125,15 +129,17 @@ A program gets the GPU in one of two ways:
   launch options can be `tw-gpu run %command%`, which keeps Steam itself on
   the Intel GPU.
 
-The driver is loaded before the program starts, which takes about two
-seconds, and unloaded when the program and everything it started have
-exited, also if you close its terminal or press Ctrl-C.
+The GPU is switched on before the program starts, which takes about two
+seconds, and off when the program and everything it started have exited,
+also if you close its terminal or press Ctrl-C. If something else still has
+the GPU open at that point (`btop` watching it, for example), it goes off as
+soon as that program has closed.
 
 | Command | What it does |
 | --- | --- |
 | `tw-gpu run <program>` | runs a program on the NVIDIA GPU |
 | `tw-gpu on` | switches it on and leaves it on until `tw-gpu off` |
-| `tw-gpu off` | switches it off; refused while something uses it |
+| `tw-gpu off` | switches it off, or as soon as nothing uses it any more |
 | `tw-gpu status` | says whether it is on, and whether it is powered |
 
 After the first install, make the system read the new files:
@@ -152,13 +158,14 @@ tw-gpu status         # a few seconds later: "off, powered down"
 ```
 
 On the ROG Strix this is what happens. If on another machine the status says
-"off, but still powered", the GPU did not power down by itself with its
-driver gone, and it uses more battery that way than before. Run `tw-gpu on`
-to go back to how it was, and look into it.
+"off, but its slot is still powered", the GPU did not power down once it was
+off the bus, and it uses more battery that way than before. Run `tw-gpu on`
+to go back to how it was, and look into it. If `tw-gpu on` ever fails to
+bring the GPU back, a reboot does.
 
 The HDMI port belongs to the NVIDIA GPU. A monitor on it works if it is
 plugged in when you log in after a boot. If you have logged out and in since,
-the driver is no longer loaded and tw cannot see the monitor: run `tw-gpu on`,
+the GPU is still switched off and tw cannot see the monitor: run `tw-gpu on`,
 then log out and in.
 
 ## Good to know

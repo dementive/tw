@@ -40,6 +40,7 @@ export GNOME_DESKTOP_SESSION_ID=this-is-deprecated
 # wired to the first GPU work at any time.
 sys=${TW_SYS:-/sys}             # the tests point these at a made-up machine
 share=${TW_SHARE:-/usr/share}
+run=${TW_RUN:-/run}
 gpu_step=
 if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 	gpus=0
@@ -59,14 +60,16 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 			fi
 		done
 	done
-	# A GPU whose driver is not loaded has no card. It counts all the same:
-	# tw-gpu leaves the NVIDIA GPU that way and loads the driver while tw
-	# runs, and tw must not pick the GPU up when that happens.
+	# A GPU whose driver is not loaded has no card, and one that tw-gpu has
+	# switched off is not even on the bus. Both count all the same: tw-gpu
+	# brings the NVIDIA GPU back while tw runs, and tw must not pick it up
+	# when that happens.
 	for gpu in "$sys"/bus/pci/devices/*; do
 		if [ -e "$gpu/boot_vga" ] && ! [ -d "$gpu/drm" ]; then
 			gpus=$((gpus + 1))
 		fi
 	done
+	[ -e "$run/tw-gpu-off" ] && gpus=$((gpus + 1))
 	if [ "$gpus" -gt 1 ] && [ -n "$primary" ]; then
 		# Naming the GPUs also stops tw from opening one that appears later.
 		export WLR_DRM_DEVICES="/dev/dri/$primary$others"
@@ -87,9 +90,9 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 			done
 			[ -n "$vulkan" ] && export VK_DRIVER_FILES="$vulkan"
 			# Nothing in the session uses the second GPU now, so switch it
-			# off for good: its driver is unloaded until a program asks
-			# for it through tw-gpu. (`login` and not `off`: the login
-			# screen still holds the GPU for a few seconds.)
+			# off for good, until a program asks for it through tw-gpu.
+			# (`login` and not `off`: the login screen still holds the GPU
+			# for a few seconds, and `login` waits for it to let go.)
 			gpu_step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
 		fi
 	fi

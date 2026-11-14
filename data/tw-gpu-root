@@ -1,13 +1,38 @@
 #!/bin/sh
-# Loads or unloads the NVIDIA kernel driver. Run as root by tw-gpu@on.service
-# and tw-gpu@off.service, which tw-gpu starts; the only input is the word
-# "on" or "off" from the unit's name.
+# Switches the NVIDIA GPU off or on. Run as root by tw-gpu@off.service and
+# tw-gpu@on.service, which tw-gpu starts; the only input is the word "on" or
+# "off" from the unit's name.
+#
+# Off: the driver is unloaded and the GPU is taken off the PCI bus. Its slot
+# then loses power, and with no NVIDIA GPU on the bus the driver refuses to
+# load, whoever asks. That matters because NVIDIA's own libraries load the
+# driver through a setuid helper as soon as a program so much as asks about
+# the GPU (btop, fastfetch, nvidia-smi), and nothing would unload it again.
+# On: the port the GPU sits behind is scanned again, and the driver loaded.
 set -u
 
-sys=${TW_SYS:-/sys} # the tests point this at a made-up machine
+sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
+proc=${TW_PROC:-/proc}
+# Present while the GPU is off the bus; holds the port to scan to get it back.
+flag=${TW_RUN:-/run}/tw-gpu-off
 # NVIDIA's daemon that shifts power between CPU and GPU under load. It keeps
 # the driver open, so it has to stop before the driver can go.
 powerd=nvidia-powerd.service
+
+# Prints the NVIDIA GPU's directory in sysfs; fails if it is not on the bus.
+gpu_device() {
+	for device in "$sys"/bus/pci/devices/*; do
+		[ -r "$device/vendor" ] && [ -r "$device/class" ] || continue
+		[ "$(cat "$device/vendor")" = 0x10de ] || continue
+		case $(cat "$device/class") in
+		0x03*)
+			echo "$device"
+			return 0
+			;;
+		esac
+	done
+	return 1
+}
 
 powerd_start() {
 	systemctl is-enabled --quiet "$powerd" 2>/dev/null || return 0
@@ -16,40 +41,92 @@ powerd_start() {
 	systemctl start --no-block "$powerd"
 }
 
+# Prints the programs that have the GPU open, apart from NVIDIA's daemon.
+users() {
+	set -- -lname '/dev/nvidia*'
+	for node in "$gpu"/drm/card[0-9]* "$gpu"/drm/renderD*; do
+		[ -e "$node" ] && set -- "$@" -o -lname "/dev/dri/${node##*/}"
+	done
+	find "$proc"/[0-9]*/fd -maxdepth 1 \( "$@" \) 2>/dev/null |
+		sed "s|^$proc/\([0-9]*\)/.*|\1|" | sort -u |
+		while read -r pid; do
+			name=$(cat "$proc/$pid/comm" 2>/dev/null) || continue
+			[ "$name" = nvidia-powerd ] || echo "$name"
+		done | sort -u | tr '\n' ' '
+}
+
 case ${1:-} in
 on)
-	# nvidia_drm needs nvidia and nvidia_modeset, and NVIDIA's own
-	# configuration adds nvidia_uvm.
+	if [ -e "$flag" ]; then
+		port=$(cat "$flag")
+		rm -f "$flag"
+		if ! gpu_device >/dev/null; then
+			case $port in
+			"$sys"/devices/*) [ -e "$port/rescan" ] && echo 1 >"$port/rescan" ;;
+			esac
+		fi
+	fi
+	# The port puts the GPU back at once; allow a slow one two seconds, and
+	# then look everywhere.
+	tries=0
+	until gpu_device >/dev/null; do
+		tries=$((tries + 1))
+		[ "$tries" = 10 ] && echo 1 >"$sys/bus/pci/rescan"
+		if [ "$tries" -ge 20 ]; then
+			echo "tw-gpu: the NVIDIA GPU did not come back on the PCI bus" >&2
+			exit 1
+		fi
+		sleep 0.2
+	done
+	# nvidia_drm needs nvidia and nvidia_modeset.
 	modprobe nvidia_drm || exit 1
 	powerd_start
 	;;
 off)
-	[ -d "$sys/module/nvidia" ] || exit 0
-	# Every program that draws with the GPU holds nvidia_drm, so try that
-	# first and disturb nothing if it is busy. A program that has just
-	# exited can take a moment to let go.
-	tries=0
-	while [ -d "$sys/module/nvidia_drm" ] && ! modprobe -r nvidia_drm 2>/dev/null; do
-		tries=$((tries + 1))
-		if [ "$tries" -ge 5 ]; then
-			echo "tw-gpu: the NVIDIA GPU is in use" >&2
+	gpu=$(gpu_device) || exit 0 # off the bus already, or no such GPU
+	if [ -d "$sys/module/nvidia" ]; then
+		# Leave a GPU in use exactly as it is.
+		in_use=$(users)
+		if [ -n "$in_use" ]; then
+			echo "tw-gpu: the NVIDIA GPU is in use by $in_use" >&2
 			exit 0 # nothing went wrong: it just stays on
 		fi
-		sleep 0.5
-	done
-	systemctl stop "$powerd" 2>/dev/null
-	# The rest, each only if it is still there: removing one also removes
-	# what only it needed, and modprobe then fails on the next name. (Seen
-	# on the real driver: all of it unloaded, and an error all the same.)
-	for module in nvidia_uvm nvidia_modeset nvidia; do
-		[ -d "$sys/module/$module" ] || continue
-		modprobe -r "$module" 2>/dev/null || break
-	done
-	if [ -d "$sys/module/nvidia" ]; then
-		# Used for computing only. Put back what was taken away.
-		modprobe nvidia_drm
-		powerd_start
-		echo "tw-gpu: the NVIDIA GPU is in use" >&2
+		# A program that has just exited can take a moment to let go of
+		# what it drew, which nvidia_drm counts as being in use.
+		tries=0
+		while [ -d "$sys/module/nvidia_drm" ] && ! modprobe -r nvidia_drm 2>/dev/null; do
+			tries=$((tries + 1))
+			if [ "$tries" -ge 5 ]; then
+				echo "tw-gpu: the NVIDIA GPU is in use" >&2
+				exit 0
+			fi
+			sleep 0.5
+		done
+		systemctl stop "$powerd" 2>/dev/null
+		# The rest, each only if it is still there: removing one also
+		# removes what only it needed, and modprobe then fails on the next
+		# name. (Seen on the real driver: all of it unloaded, and an error
+		# all the same.)
+		for module in nvidia_uvm nvidia_modeset nvidia; do
+			[ -d "$sys/module/$module" ] || continue
+			modprobe -r "$module" 2>/dev/null || break
+		done
+		if [ -d "$sys/module/nvidia" ]; then
+			# Something opened it in the meantime. Put back what was taken.
+			modprobe nvidia_drm
+			powerd_start
+			echo "tw-gpu: the NVIDIA GPU is in use" >&2
+			exit 0
+		fi
+	fi
+	# Off the bus. The port above it is what `on` scans to get it back.
+	port=$(readlink -f "$gpu")
+	port=${port%/*}
+	echo "$port" >"$flag"
+	if ! echo 1 >"$gpu/remove"; then
+		rm -f "$flag"
+		echo "tw-gpu: could not take the NVIDIA GPU off the PCI bus" >&2
+		exit 1
 	fi
 	;;
 *)

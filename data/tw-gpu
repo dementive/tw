@@ -10,34 +10,38 @@
 #                               (PrefersNonDefaultGPU=true), else runs the
 #                               command as it is.
 #   tw-gpu on                   switch it on and leave it on.
-#   tw-gpu off                  switch it off; refused while it is in use.
+#   tw-gpu off                  switch it off. If something still uses it,
+#                               it goes off when that has let go.
 #   tw-gpu status
 #
-# Off means the NVIDIA kernel driver is not loaded: the GPU is powered down,
-# nothing can wake it, and the memory the driver keeps (about 380 MB) is free.
-# Loading and unloading it needs root, so that part is done by the system
-# unit tw-gpu@.service, which a polkit rule lets you start.
+# Off means the NVIDIA kernel driver is unloaded and the GPU is off the PCI
+# bus: it is powered down, the memory the driver keeps (about 380 MB) is
+# free, and no program can switch it back on by looking at it. Only root can
+# do that, so that part is done by the system unit tw-gpu@.service, which a
+# polkit rule lets you start.
 #
 # On a machine with no NVIDIA GPU every command here just runs the program.
 set -u
 
-sys=${TW_SYS:-/sys}     # the tests point these at a made-up machine
+sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
 dev=${TW_DEV:-/dev}
 runtime=${XDG_RUNTIME_DIR:-/tmp}
+# Left by the root helper while the GPU is off the bus; names the port above.
+flag=${TW_RUN:-/run}/tw-gpu-off
 # Held shared by every program started with run, for as long as it or
 # anything it started is alive; switching off takes it exclusively.
 lock=$runtime/tw-gpu.lock
 # Present while `tw-gpu on` is in force.
 keep=$runtime/tw-gpu.keep
-# Seconds between tries at login; the tests shorten it.
-pause=${TW_GPU_PAUSE:-3}
+# Seconds between looks while waiting for a GPU in use; the tests shorten it.
+pause=${TW_GPU_PAUSE:-5}
 
 usage() {
 	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
 	exit 2
 }
 
-# Prints the NVIDIA GPU's directory in sysfs; fails if there is none.
+# Prints the NVIDIA GPU's directory in sysfs; fails if it is not on the bus.
 gpu_device() {
 	for device in "$sys"/bus/pci/devices/*; do
 		[ -r "$device/vendor" ] && [ -r "$device/class" ] || continue
@@ -75,10 +79,11 @@ drives_a_monitor() {
 }
 
 gpu_on() {
-	device=$(gpu_device) || return 1
+	# Off the bus or merely without its driver: the unit sees to both.
 	if ! [ -d "$sys/module/nvidia_drm" ]; then
 		systemctl start tw-gpu@on.service 2>/dev/null || return 1
 	fi
+	device=$(gpu_device) || return 1
 	tries=0
 	until render_node_ready "$device"; do
 		tries=$((tries + 1))
@@ -87,14 +92,16 @@ gpu_on() {
 	done
 }
 
-# Fails if the driver is still loaded afterwards: something is using the GPU.
+# Fails if the GPU is still on the bus afterwards: something is using it.
 gpu_off() {
-	loaded || return 0
-	device=$(gpu_device) || return 0
+	device=$(gpu_device) || return 0 # off already, or no such GPU
 	drives_a_monitor "$device" && return 1
 	systemctl start tw-gpu@off.service 2>/dev/null
-	! loaded
+	! gpu_device >/dev/null
 }
+
+# How much uses the driver, as a string that changes when a user comes or goes.
+use_count() { cat "$sys"/module/nvidia*/refcnt 2>/dev/null | tr '\n' ' '; }
 
 # True if the desktop entry with this ID asks for the discrete GPU.
 wants_gpu() {
@@ -116,14 +123,14 @@ case ${1:-} in
 run)
 	shift
 	[ $# -gt 0 ] || usage
-	gpu_device >/dev/null || exec "$@"
+	gpu_device >/dev/null || [ -e "$flag" ] || exec "$@"
 	exec 9>"$lock"
 	flock -s 9 # also waits for a switch-off in progress to finish
 	# Arrange the switch-off before starting anything. It waits for the
 	# lock, which the program and whatever it starts hold until the last of
 	# them is gone, and it waits in a session of its own: closing the
 	# terminal or pressing Ctrl-C ends the program, not this.
-	setsid -f flock -x "$lock" "$0" settle 9>&- </dev/null >/dev/null 2>&1
+	setsid -f flock -x -o "$lock" "$0" settle 9>&- </dev/null >/dev/null 2>&1
 	if gpu_on; then
 		# The session keeps programs on the other GPU with the first two;
 		# the rest are NVIDIA's way of asking for theirs.
@@ -136,28 +143,35 @@ run)
 	fi
 	exec "$@"
 	;;
-settle) # internal, run holding the lock: nothing started with run is left
+try) # internal, run holding the lock: off, unless it was asked to stay on
 	[ -e "$keep" ] || gpu_off
 	;;
-login) # internal, run by tw-session once tw is up: off, unless asked for
-	device=$(gpu_device) || exit 0
-	drives_a_monitor "$device" && exit 0
-	# The login screen keeps the GPU open for some seconds after it has
-	# handed the screen over (five on the ROG Strix), so one try is not
-	# enough. Between tries the lock is free for a program that wants the
-	# GPU; this gives up after half a minute.
-	exec 9>"$lock"
-	tries=0
+settle) # internal, run holding the lock: nothing started with run is left
+	"$0" try || setsid -f "$0" retry </dev/null >/dev/null 2>&1
+	;;
+retry) # internal: the GPU is still in use by something not started here
+	# Typically a program that only watches the GPU (btop), or at login the
+	# login screen, which lets go a few seconds late. Try again whenever the
+	# driver's use counts have changed, looking at them now and then. One of
+	# these is enough, and it ends when the GPU is off or meant to be on.
+	exec 8>"$runtime/tw-gpu.retry"
+	flock -n 8 || exit 0
 	while :; do
-		flock -x 9
-		if [ -e "$keep" ] || gpu_off; then
-			exit 0
-		fi
-		flock -u 9
-		tries=$((tries + 1))
-		[ "$tries" -lt 10 ] || exit 1
-		sleep "$pause"
+		# Taken before the try, so that a user leaving during it is noticed.
+		before=$(use_count)
+		flock -x -o "$lock" "$0" try && exit 0
+		while :; do
+			[ -e "$keep" ] && exit 0
+			device=$(gpu_device) || exit 0
+			drives_a_monitor "$device" && exit 0
+			loaded || exit 1 # no driver and still not off: nothing to wait for
+			sleep "$pause"
+			[ "$(use_count)" = "$before" ] || break
+		done
 	done
+	;;
+login) # internal, run by tw-session once tw is up
+	exec flock -x -o "$lock" "$0" settle
 	;;
 launch)
 	shift
@@ -168,7 +182,7 @@ launch)
 	exec "$@"
 	;;
 on)
-	if ! gpu_device >/dev/null; then
+	if ! gpu_device >/dev/null && ! [ -e "$flag" ]; then
 		echo "tw-gpu: this machine has no NVIDIA GPU" >&2
 		exit 1
 	fi
@@ -184,34 +198,37 @@ off)
 	rm -f "$keep"
 	exec 9>"$lock"
 	if ! flock -x -n 9; then
-		echo "tw-gpu: a program started with tw-gpu is still running" >&2
+		echo "tw-gpu: a program started with tw-gpu is still running; the GPU goes off when it exits" >&2
 		exit 1
 	fi
 	if ! gpu_off; then
-		echo "tw-gpu: the NVIDIA GPU is in use and stays on" >&2
+		setsid -f "$0" retry 9>&- </dev/null >/dev/null 2>&1
+		echo "tw-gpu: the NVIDIA GPU is in use; it goes off when that has let go" >&2
 		exit 1
 	fi
 	;;
 status)
-	if ! device=$(gpu_device); then
-		echo "no NVIDIA GPU"
-		exit 0
-	fi
-	if loaded; then
-		case $(cat "$device/power/runtime_status" 2>/dev/null) in
-		suspended) state="on, asleep" ;;
-		*) state="on, awake" ;;
-		esac
-		[ -e "$keep" ] && state="$state, kept on by 'tw-gpu on'"
-		drives_a_monitor "$device" && state="$state, drives a monitor"
-	else
-		power=$(cat "$device/power_state" 2>/dev/null)
+	if device=$(gpu_device); then
+		if loaded; then
+			case $(cat "$device/power/runtime_status" 2>/dev/null) in
+			suspended) state="on, asleep" ;;
+			*) state="on, awake" ;;
+			esac
+			[ -e "$keep" ] && state="$state, kept on by 'tw-gpu on'"
+			drives_a_monitor "$device" && state="$state, drives a monitor"
+		else
+			state="on the bus without its driver ($(cat "$device/power_state" 2>/dev/null))"
+		fi
+		echo "NVIDIA GPU ${device##*/}: $state"
+	elif [ -e "$flag" ]; then
+		power=$(cat "$(cat "$flag")/power_state" 2>/dev/null)
 		case $power in
-		D3cold) state="off, powered down" ;;
-		*) state="off, but still powered (${power:-unknown})" ;;
+		D3cold) echo "NVIDIA GPU: off, powered down" ;;
+		*) echo "NVIDIA GPU: off, but its slot is still powered (${power:-unknown})" ;;
 		esac
+	else
+		echo "no NVIDIA GPU"
 	fi
-	echo "NVIDIA GPU ${device##*/}: $state"
 	;;
 *)
 	usage
