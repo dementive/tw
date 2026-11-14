@@ -382,9 +382,20 @@ Taking the Claude app out of a reading made with it open gives roughly:
 290 MB of that reserve, 340 MB of kernel memory outside every counter,
 130 MB of slab, kernel stacks and page tables, 45 MB of system daemons,
 35 MB of session helpers, 45 MB of tw with its screen buffers, and the
-terminal showing the figure. What only root can read (`/proc/slabinfo`,
-`/proc/vmallocinfo`) has not been looked at; the sizes suggest that the
-swap device's table is 64 MB of the vmalloc part (zram, as large as the RAM).
+terminal showing the figure.
+
+The owner then ran a dump of what only root can read (`/proc/slabinfo`,
+`/proc/vmallocinfo`). Of the 340 MB outside every counter, 61 MB is the
+table of the swap device (zram's `disksize_store`: 16 bytes per page of a
+device as large as the RAM, allocated whether or not anything is swapped),
+42 MB is the 215 loaded modules (`xe` and `kvm` among them, 6.5 MB, unused),
+12 MB is other vmalloc, and 67 MB is free pages parked per CPU. The last
+160 MB are pages that drivers took straight from the page allocator, and
+this kernel cannot say whose: it is built without `PAGE_OWNER` and
+`MEM_ALLOC_PROFILING`. The slab holds nothing unusual (XFS inodes, dentries
+and the page cache's tree nodes lead). So the one thing found that can be
+shrunk is the swap device, with a drop-in in
+`/etc/systemd/zram-generator.conf.d/`: 8 GB instead of 16 frees 30 MB.
 
 The session helpers (the portals, PipeWire, the accessibility bus) all
 start at login although tw starts none of them: the KDE wallet daemon
