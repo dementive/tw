@@ -29,7 +29,7 @@ off)
 	# first and disturb nothing if it is busy. A program that has just
 	# exited can take a moment to let go.
 	tries=0
-	until modprobe -r nvidia_drm 2>/dev/null; do
+	while [ -d "$sys/module/nvidia_drm" ] && ! modprobe -r nvidia_drm 2>/dev/null; do
 		tries=$((tries + 1))
 		if [ "$tries" -ge 5 ]; then
 			echo "tw-gpu: the NVIDIA GPU is in use" >&2
@@ -38,7 +38,14 @@ off)
 		sleep 0.5
 	done
 	systemctl stop "$powerd" 2>/dev/null
-	if ! modprobe -r nvidia_uvm nvidia_modeset nvidia 2>/dev/null; then
+	# The rest, each only if it is still there: removing one also removes
+	# what only it needed, and modprobe then fails on the next name. (Seen
+	# on the real driver: all of it unloaded, and an error all the same.)
+	for module in nvidia_uvm nvidia_modeset nvidia; do
+		[ -d "$sys/module/$module" ] || continue
+		modprobe -r "$module" 2>/dev/null || break
+	done
+	if [ -d "$sys/module/nvidia" ]; then
 		# Used for computing only. Put back what was taken away.
 		modprobe nvidia_drm
 		powerd_start

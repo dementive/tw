@@ -76,9 +76,8 @@ cat >"$bin/driver" <<EOF
 #!/bin/sh
 case \$1 in
 load)
-	mkdir -p "$sys/module/nvidia" "$sys/module/nvidia_modeset" "$sys/module/nvidia_uvm" \\
-		"$sys/module/nvidia_drm" "$nvidia/drm/card0" "$nvidia/drm/renderD129" \\
-		"$sys/class/drm/card0-HDMI-A-1"
+	mkdir -p "$sys/module/nvidia" "$sys/module/nvidia_modeset" "$sys/module/nvidia_drm" \\
+		"$nvidia/drm/card0" "$nvidia/drm/renderD129" "$sys/class/drm/card0-HDMI-A-1"
 	ln -sfn ../../drivers/nvidia "$nvidia/driver"
 	ln -sfn "$nvidia" "$nvidia/drm/card0/device"
 	ln -sfn "$nvidia/drm/card0" "$sys/class/drm/card0"
@@ -157,6 +156,16 @@ status=0
 gpu "$data/tw-gpu" run sh -c 'exit 7' || status=$?
 [ "$status" = 7 ] || fail "run returned $status for a program that exited with 7"
 wait_until "the switch-off to finish" settled
+
+# A program whose terminal is closed: everything in the terminal's process
+# group is hung up on, and the GPU still goes off. (On the real machine it
+# once did not, because the part that switches off was hung up on too.)
+(gpu setsid "$data/tw-gpu" run sleep 31.7 2>/dev/null &)
+wait_until "the program to start" pgrep -xf 'sleep 31.7'
+loaded || fail "the GPU is not on for a running program"
+kill -HUP -- "-$(pgrep -xf 'sleep 31.7')"
+wait_until "the GPU to go off after the terminal was closed" settled
+loaded && fail "the GPU stayed on after its program's terminal was closed"
 
 # Two programs: the GPU stays on until the second one is gone, and is
 # switched off once.
@@ -266,18 +275,34 @@ gpu "$data/tw-gpu" off || fail "off failed without an NVIDIA GPU"
 [ "$(calls systemctl)" = "$before" ] || fail "something was started on a machine with no NVIDIA GPU"
 
 # --- The root helper ---------------------------------------------------------------
+# Like the real one where it matters: removing a module also removes what
+# only that module needed, and a name that is no longer loaded is an error
+# (the real one is not always that strict; the helper must not rely on it).
 cat >"$rootbin/modprobe" <<EOF
 #!/bin/sh
 echo "modprobe \$*" >>"$log"
-case "\$*" in
+case \$1 in
 nvidia_drm) "$bin/driver" load ;;
-"-r nvidia_drm")
-	[ -e "$tmp/drawing" ] && exit 1
-	rm -rf "$sys/module/nvidia_drm"
-	;;
-"-r nvidia_uvm nvidia_modeset nvidia")
-	[ -e "$tmp/computing" ] && exit 1
-	"$bin/driver" unload
+-r)
+	[ -d "$sys/module/\$2" ] || exit 1
+	case \$2 in
+	nvidia_drm)
+		[ -e "$tmp/drawing" ] && exit 1
+		rm -rf "$sys/module/nvidia_drm"
+		;;
+	nvidia_uvm)
+		[ -e "$tmp/computing" ] && exit 1
+		rm -rf "$sys/module/nvidia_uvm"
+		;;
+	nvidia_modeset)
+		rm -rf "$sys/module/nvidia_modeset"
+		[ -e "$tmp/computing" ] || [ -d "$sys/module/nvidia_uvm" ] || "$bin/driver" unload
+		;;
+	nvidia)
+		[ -e "$tmp/computing" ] && exit 1
+		"$bin/driver" unload
+		;;
+	esac
 	;;
 esac
 EOF
@@ -302,10 +327,18 @@ root on || fail "the helper failed to load the driver"
 [ "$ran" = "modprobe nvidia_drm;$powerd_start" ] || fail "helper on ran: $ran"
 loaded || fail "helper on did not load the driver"
 
+# nvidia goes along with nvidia_modeset, so it is not asked for by name.
 root off || fail "the helper failed to unload the driver"
-[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_uvm nvidia_modeset nvidia;" ] ||
+[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_modeset;" ] ||
 	fail "helper off ran: $ran"
 loaded && fail "helper off left the driver loaded"
+# With the computing module loaded as well (a program asked for it earlier).
+root on
+mkdir "$sys/module/nvidia_uvm"
+root off || fail "the helper failed to unload the driver and its computing module"
+[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_uvm;modprobe -r nvidia_modeset;" ] ||
+	fail "helper off with the computing module ran: $ran"
+loaded && fail "helper off left the driver loaded next to its computing module"
 root off || fail "the helper failed with the driver already unloaded"
 [ -z "$ran" ] || fail "helper off with nothing loaded ran: $ran"
 
@@ -323,9 +356,10 @@ rm "$tmp/drawing"
 # A program is computing with it: what was unloaded is put back.
 : >"$tmp/computing"
 root off || fail "the helper reported an error for a GPU computing"
-[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_uvm nvidia_modeset nvidia;modprobe nvidia_drm;$powerd_start" ] ||
+[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_modeset;modprobe -r nvidia;modprobe nvidia_drm;$powerd_start" ] ||
 	fail "helper off on a GPU computing ran: $ran"
 [ -d "$sys/module/nvidia_drm" ] || fail "the helper did not put the driver back"
+grep -q 'in use' "$tmp/err" || fail "the helper did not say the GPU is in use for computing"
 rm "$tmp/computing"
 
 # The power daemon is left alone if the owner switched it off.

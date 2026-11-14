@@ -117,30 +117,24 @@ run)
 	gpu_device >/dev/null || exec "$@"
 	exec 9>"$lock"
 	flock -s 9 # also waits for a switch-off in progress to finish
+	# Arrange the switch-off before starting anything. It waits for the
+	# lock, which the program and whatever it starts hold until the last of
+	# them is gone, and it waits in a session of its own: closing the
+	# terminal or pressing Ctrl-C ends the program, not this.
+	setsid -f flock -x "$lock" "$0" settle 9>&- </dev/null >/dev/null 2>&1
 	if gpu_on; then
-		(
-			# The session keeps programs on the other GPU with the first
-			# two; the rest are NVIDIA's way of asking for theirs.
-			unset __EGL_VENDOR_LIBRARY_FILENAMES VK_DRIVER_FILES
-			export __NV_PRIME_RENDER_OFFLOAD=1
-			export __VK_LAYER_NV_optimus=NVIDIA_only
-			export __GLX_VENDOR_LIBRARY_NAME=nvidia
-			exec "$@"
-		)
+		# The session keeps programs on the other GPU with the first two;
+		# the rest are NVIDIA's way of asking for theirs.
+		unset __EGL_VENDOR_LIBRARY_FILENAMES VK_DRIVER_FILES
+		export __NV_PRIME_RENDER_OFFLOAD=1
+		export __VK_LAYER_NV_optimus=NVIDIA_only
+		export __GLX_VENDOR_LIBRARY_NAME=nvidia
 	else
 		echo "tw-gpu: could not switch the NVIDIA GPU on; running without it" >&2
-		"$@"
 	fi
-	status=$?
-	exec 9>&-
-	# Whatever the program left running still holds the lock. Wait for that
-	# too, detached, so that this command returns when the program does.
-	setsid -f "$0" settle </dev/null >/dev/null 2>&1
-	exit "$status"
+	exec "$@"
 	;;
-settle) # internal: switch off once nothing started with run is left
-	exec 9>"$lock"
-	flock -x 9
+settle) # internal, run holding the lock: nothing started with run is left
 	[ -e "$keep" ] || gpu_off
 	;;
 launch)
