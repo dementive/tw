@@ -241,6 +241,12 @@ With a GPU renderer, LeakSanitizer reports small leaks at exit from inside the
 GPU driver (seen with the NVIDIA driver and the libdbus it loads). They are not
 ours. The tests use the software renderer, where the report must be empty.
 
+Xwayland running although no X11 window is open means something only asked
+X11 a question, which is enough to start it. The usual culprit is a shell
+plugin: fish's `done` runs `xprop` each time a shell starts when `DISPLAY` is
+set. To find one, open a terminal in a private headless tw run with `-d` and
+look for "started xwayland-satellite" in its log.
+
 The memory figure of the budget test moves by 100 to 200 kB with what else is
 running on the machine, because shared library pages are divided among the
 processes that map them. To tell what a change costs, compare the line
