@@ -49,7 +49,7 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
-| `data/` | `tw-session` (session start script, picks the GPUs), the login-screen entry, the portal configuration |
+| `data/` | `tw-session` (session start script: picks the GPUs, sets up the keyring), the login-screen entry, the portal configuration |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
 | `tests/keys.c` | Presses key combinations and moves and clicks the mouse, through the virtual-keyboard and virtual-pointer protocols |
@@ -223,6 +223,13 @@ machine be suspended or the clock set from a test, so the wake-up watch in
 The GPU choice in `data/tw-session` only runs at a real login. Its logic can
 be dry-run by sourcing that part of the script against a fake `/sys` tree;
 never run the script itself inside a session.
+
+The keyring set-up in `data/tw-session` also only runs at a real login. It
+does two things, both checked by hand in a live session: it passes the
+session environment to the KDE wallet daemon that the login screen left
+waiting (after which that daemon owns `org.freedesktop.secrets`), and it sets
+`GNOME_DESKTOP_SESSION_ID`, without which Chromium and Electron programs use
+no keyring at all (their `safeStorage` reports `basic_text`).
 
 `tests/x11.sh` uses a stand-in for xwayland-satellite. It proves tw's half of
 the hand-over (display, arguments, sockets, restart, cleanup), not that the

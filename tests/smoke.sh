@@ -183,8 +183,11 @@ expect_keyboard d enter "the keyboard to return to the window"
 press super+shift+f
 expect_state d "$on fullscreen=1" "Mod+Shift+F to make the window fullscreen"
 full=$(current_size d)
-[ "${full%x*}" -gt "${maximized%x*}" ] ||
-	fail "fullscreen ($full) is not wider than a maximized column ($maximized)"
+# The whole 1280x720 output. Without gaps a maximized column is as large, so
+# what tells them apart is the fullscreen state, checked above.
+[ "$full" = 1280x720 ] || fail "fullscreen is $full, not the whole output"
+[ "${full%x*}" -ge "${maximized%x*}" ] ||
+	fail "fullscreen ($full) is narrower than a maximized column ($maximized)"
 expect_state f "suspended=1" "the neighbour of a fullscreen window to be hidden"
 press super+shift+f
 expect_state d "$on fullscreen=0" "Mod+Shift+F again to leave fullscreen"

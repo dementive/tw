@@ -13,9 +13,9 @@
 
 #include "tw.h"
 
-/* Space between windows and around them, in logical pixels. Windows have no
- * borders. */
-static const int gap = 8;
+/* Space between windows and around them, in logical pixels. 0: windows touch
+ * each other and the screen edges. Windows have no borders either. */
+static const int gap = 0;
 
 /* Column widths as fractions of the output, cycled with Mod+R. */
 static const struct tw_fraction column_widths[] = {{1, 3}, {1, 2}, {2, 3}};

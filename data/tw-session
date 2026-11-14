@@ -24,6 +24,12 @@ export XDG_SESSION_TYPE=wayland
 # Ask toolkits that would default to X11 to use Wayland instead.
 export ELECTRON_OZONE_PLATFORM_HINT=auto
 export MOZ_ENABLE_WAYLAND=1
+# Chromium and Electron programs (the Claude app, VS Code) pick their keyring
+# by desktop name alone. For one they do not know they use none, and then
+# cannot keep a login. This variable is the old way of saying "use the
+# desktop's keyring service", and is the only hint they take from the
+# environment that does not rename the desktop.
+export GNOME_DESKTOP_SESSION_ID=this-is-deprecated
 
 # On a laptop with two GPUs, render on the one wired to the built-in panel
 # (the "boot VGA" device). The other GPU is used only if a monitor is plugged
@@ -71,6 +77,18 @@ startup='
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
 	dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP \
 		${DISPLAY:+DISPLAY}
+fi
+# The keyring. A login screen set up for KDE unlocks the KDE wallet with the
+# login password and leaves its daemon running, waiting to be told where the
+# session is; KDE does that from its autostart. Do the same, and the daemon
+# serves as the keyring (the Secret Service) without asking for a password.
+if [ -n "${PAM_KWALLET5_LOGIN:-}" ]; then
+	for init in /usr/lib/pam_kwallet_init /usr/libexec/pam_kwallet_init; do
+		if [ -x "$init" ]; then
+			"$init"
+			break
+		fi
+	done
 fi
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
 if [ -x "$autostart" ]; then
