@@ -125,8 +125,9 @@ A program gets the GPU in one of two ways:
   launch options can be `tw-gpu run %command%`, which keeps Steam itself on
   the Intel GPU.
 
-The driver is loaded before the program starts, which takes a moment, and
-unloaded when the program and everything it started have exited.
+The driver is loaded before the program starts, which takes about two
+seconds, and unloaded when the program and everything it started have
+exited, also if you close its terminal or press Ctrl-C.
 
 | Command | What it does |
 | --- | --- |
@@ -150,9 +151,10 @@ tw-gpu run vkcube     # a spinning cube; close it
 tw-gpu status         # a few seconds later: "off, powered down"
 ```
 
-If the status says "off, but still powered", the GPU did not power down by
-itself with its driver gone, and it uses more battery that way than before.
-Run `tw-gpu on` to go back to how it was, and look into it.
+On the ROG Strix this is what happens. If on another machine the status says
+"off, but still powered", the GPU did not power down by itself with its
+driver gone, and it uses more battery that way than before. Run `tw-gpu on`
+to go back to how it was, and look into it.
 
 The HDMI port belongs to the NVIDIA GPU. A monitor on it works if it is
 plugged in when you log in after a boot. If you have logged out and in since,

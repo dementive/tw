@@ -249,11 +249,25 @@ machine be suspended or the clock set from a test, so the wake-up watch in
 `idle.c` is untested, and the suspend command is a stand-in.
 
 `tests/gpu.sh` runs the GPU choice in `data/tw-session` and all of `tw-gpu`
-against a made-up machine. What only a real machine shows: that the NVIDIA
-driver unloads and loads again, that the GPU powers down without it
-(`tw-gpu status` says so), that polkit lets `tw-gpu` start its units, and that
-a program started with `tw-gpu run` draws with the NVIDIA GPU and shows up in
-tw. A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
+against a made-up machine, so it cannot show that any of it works on a real
+GPU. Seen to work on the owner's laptop (2026-11-14, RTX 3070 Ti, driver
+620.70): the polkit rule; loading the driver (2.4 s) and unloading it
+(0.5 s); the GPU powered down afterwards (`power_state` D3cold, also for the
+port above it); Vulkan on Wayland, and OpenGL and Vulkan on X11, drawing
+with the NVIDIA GPU into a headless tw that draws with the Intel one;
+`tw-gpu launch` with a real desktop entry; the switch-off after the
+program's process group was hung up on. The first real run found two faults
+the made-up machine had not, both now in the test. Not seen yet: the
+switch-off at login, the launcher going through `tw-gpu launch`, a window on
+the real screen (the probe had the same renderer but no monitor), a monitor
+on the NVIDIA GPU, and suspend with the driver unloaded. To repeat such a
+probe, start a headless tw with `WLR_RENDERER=gles2` and
+`WLR_RENDER_DRM_DEVICE` set to the Intel render node, and run
+`tw-gpu run vkcube --wsi wayland --c 240` with `WAYLAND_DISPLAY` set to the
+probe's socket by its full path, so that `tw-gpu` keeps the real
+`XDG_RUNTIME_DIR` and its lock.
+
+A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
 path has never been run.
 
