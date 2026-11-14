@@ -50,6 +50,7 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
 | `data/` | `tw-session` (session start script: picks the GPUs, sets up the keyring), the login-screen entry, the portal configuration |
+| `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
 | `tests/keys.c` | Presses key combinations and moves and clicks the mouse, through the virtual-keyboard and virtual-pointer protocols |
@@ -225,7 +226,7 @@ be dry-run by sourcing that part of the script against a fake `/sys` tree;
 never run the script itself inside a session.
 
 The keyring set-up in `data/tw-session` also only runs at a real login. It
-does two things, both checked by hand in a live session: it passes the
+does two things, both seen to work at a real login: it passes the
 session environment to the KDE wallet daemon that the login screen left
 waiting (after which that daemon owns `org.freedesktop.secrets`), and it sets
 `GNOME_DESKTOP_SESSION_ID`, without which Chromium and Electron programs use
@@ -244,8 +245,9 @@ ours. The tests use the software renderer, where the report must be empty.
 Xwayland running although no X11 window is open means something only asked
 X11 a question, which is enough to start it. The usual culprit is a shell
 plugin: fish's `done` runs `xprop` each time a shell starts when `DISPLAY` is
-set. To find one, open a terminal in a private headless tw run with `-d` and
-look for "started xwayland-satellite" in its log.
+set (README.md says how to remove it). To find one, open a terminal in a
+private headless tw run with `-d`, giving it the environment of a terminal
+from the real session, and look for "started xwayland-satellite" in its log.
 
 The memory figure of the budget test moves by 100 to 200 kB with what else is
 running on the machine, because shared library pages are divided among the
