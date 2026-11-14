@@ -263,10 +263,28 @@ program's process group was hung up on; fuzzel starting a program through
 `DESKTOP_ENTRY_ID`). Real runs found three faults the made-up machine had
 not, all now in the test; the third was the switch-off at the first real
 login, which came two seconds after tw started and three seconds before the
-login screen let go of the GPU. `tw-gpu login` was then seen to wait out a
-GPU held for five seconds, but not yet at a real login. Not seen yet either:
-a window on the real screen (the probe had the same renderer but no
-monitor), a monitor on the NVIDIA GPU, and suspend with the driver unloaded. To repeat such a
+login screen let go of the GPU. `tw-gpu login` then worked at a real login:
+refused once, and the driver was unloaded on the second try, eight seconds
+after tw started. Not seen yet: a window on the real screen (the probe had
+the same renderer but no monitor), a monitor on the NVIDIA GPU, and suspend
+with the driver unloaded.
+
+**Off does not stay off, and this is open.** Any program that asks NVIDIA's
+own libraries about the GPU loads the driver again, through the setuid
+`nvidia-modprobe` those libraries run, and nothing unloads it afterwards.
+The session's two variables only cover Vulkan and EGL; NVML is not covered,
+and `btop` and `fastfetch` both use it. At the second real login the owner
+ran both ten seconds in, and the driver was back two seconds after it had
+been unloaded (the sign: `nvidia` and `nvidia_uvm` loaded, `nvidia_drm`
+not). Refusing the load in modprobe's configuration does not work: an
+`install nvidia ...` line is read but ignored, because kmod ignores install
+commands for a module that has soft dependencies, and `nvidia` has them
+(`modprobe -C <dir> -n -v nvidia` shows `insmod`, not `install`). What is
+left is taking the GPU off the PCI bus while it is off (`remove` on the
+device, `rescan` on the port above it): the module contains the refusal for
+that case ("NVRM: No NVIDIA GPU found"), but neither that nor the rescan has
+been tried on the machine, and `tw-gpu` and `tw-session` find the GPU by
+scanning the bus, so both would need to know about a removed one. To repeat such a
 probe, start a headless tw with `WLR_RENDERER=gles2` and
 `WLR_RENDER_DRM_DEVICE` set to the Intel render node, and run
 `tw-gpu run vkcube --wsi wayland --c 240` with `WAYLAND_DISPLAY` set to the
