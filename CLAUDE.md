@@ -223,7 +223,10 @@ machine be suspended or the clock set from a test, so the wake-up watch in
 
 The GPU choice in `data/tw-session` only runs at a real login. Its logic can
 be dry-run by sourcing that part of the script against a fake `/sys` tree;
-never run the script itself inside a session.
+never run the script itself inside a session. That choice only covers the
+GPUs present at login: wlroots opens any GPU that appears later
+(`backend/drm/monitor.c`), whatever `WLR_DRM_DEVICES` said. That path has
+never been run.
 
 The keyring set-up in `data/tw-session` also only runs at a real login. It
 does two things, both seen to work at a real login: it passes the
@@ -254,3 +257,18 @@ running on the machine, because shared library pages are divided among the
 processes that map them. To tell what a change costs, compare the line
 "of which allocated by tw", which does not move, and for the rest build the
 previous commit too and run both budget tests back to back.
+
+At a real login tw's private memory is 15 to 20 MB, not the budget test's
+0.8. The difference is the GPU driver (Mesa), which the tests' software
+renderer never loads: 14 MB the moment the GLES2 renderer exists on Intel, in
+two driver instances, because wlroots opens one for the allocator and one for
+the renderer. Turning off Mesa's shader cache makes it larger, not smaller.
+tw also holds the screen's buffers, three at the panel's size (about 50 MB at
+2560x1600), which show up as shared memory and not in any process.
+
+When the owner asks where the machine's memory goes, account for the whole
+machine before looking at tw: `/proc/meminfo`, `smaps_rollup` per process,
+and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. The first time
+(2026-11-14, 2.7 GB in use) tw and everything its session starts came to
+under 200 MB; the rest was the one application running and 760 MB of kernel
+memory that no counter in `/proc/meminfo` explains.
