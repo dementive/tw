@@ -300,8 +300,12 @@ helper's own load, a moment later, failed with it. The helper now runs
 `udevadm settle` first and tries the load up to five times. With that, ten
 switch-ons in a row put the program on the NVIDIA GPU, after the slot had
 been cold for 2 to 60 seconds; udev's early load failed in two of them and
-did no harm. Still not seen: a real login with the GPU going off the bus, a
-login while it is off, and suspend while it is off.
+did no harm. A real login followed: the first two tries were refused ("in
+use by kwin_wayland systemd systemd-logind", the login screen), the login
+screen stopped five seconds after tw started, and the GPU was off the bus
+three seconds later; `fastfetch` and `btop`, run by the owner in those same
+seconds, were refused and it stayed off. Still not seen: a login while the
+GPU is off, and suspend while it is off.
 
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
