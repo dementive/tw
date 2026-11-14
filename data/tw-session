@@ -88,8 +88,9 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 			[ -n "$vulkan" ] && export VK_DRIVER_FILES="$vulkan"
 			# Nothing in the session uses the second GPU now, so switch it
 			# off for good: its driver is unloaded until a program asks
-			# for it through tw-gpu.
-			gpu_step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu off >/dev/null 2>&1 &'
+			# for it through tw-gpu. (`login` and not `off`: the login
+			# screen still holds the GPU for a few seconds.)
+			gpu_step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
 		fi
 	fi
 fi
@@ -98,7 +99,7 @@ if [ -n "${TW_SESSION_PRINT:-}" ]; then
 	echo "WLR_DRM_DEVICES=${WLR_DRM_DEVICES-}"
 	echo "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES-}"
 	echo "VK_DRIVER_FILES=${VK_DRIVER_FILES-}"
-	echo "switch the second GPU off=${gpu_step:+yes}"
+	echo "once tw is up=$gpu_step"
 	exit 0
 fi
 

@@ -144,8 +144,10 @@ tw may use in `WLR_DRM_DEVICES` whenever the machine has a second GPU, loaded
 or not, because wlroots opens a GPU that appears later only when that
 variable is unset; so the driver can come and go under a running tw. It keeps
 programs on the Intel GPU (`__EGL_VENDOR_LIBRARY_FILENAMES`,
-`VK_DRIVER_FILES`). And once tw is up it runs `tw-gpu off`, unless a monitor
-is on the NVIDIA GPU. `tw-gpu run <program>` loads the driver, starts the
+`VK_DRIVER_FILES`). And once tw is up it runs `tw-gpu login`, unless a
+monitor is on the NVIDIA GPU: that switches the GPU off, trying for half a
+minute, because the login screen keeps the GPU open for some seconds after
+tw has the screen. `tw-gpu run <program>` loads the driver, starts the
 program with NVIDIA's offload variables, and unloads the driver afterwards;
 the launcher starts everything through `tw-gpu launch`, which does the same
 for desktop entries with `PrefersNonDefaultGPU=true`. Who still needs the GPU
@@ -256,11 +258,15 @@ GPU. Seen to work on the owner's laptop (2026-11-14, RTX 3070 Ti, driver
 port above it); Vulkan on Wayland, and OpenGL and Vulkan on X11, drawing
 with the NVIDIA GPU into a headless tw that draws with the Intel one;
 `tw-gpu launch` with a real desktop entry; the switch-off after the
-program's process group was hung up on. The first real run found two faults
-the made-up machine had not, both now in the test. Not seen yet: the
-switch-off at login, the launcher going through `tw-gpu launch`, a window on
-the real screen (the probe had the same renderer but no monitor), a monitor
-on the NVIDIA GPU, and suspend with the driver unloaded. To repeat such a
+program's process group was hung up on; fuzzel starting a program through
+`tw-gpu launch` in the real session (the program's environment has
+`DESKTOP_ENTRY_ID`). Real runs found three faults the made-up machine had
+not, all now in the test; the third was the switch-off at the first real
+login, which came two seconds after tw started and three seconds before the
+login screen let go of the GPU. `tw-gpu login` was then seen to wait out a
+GPU held for five seconds, but not yet at a real login. Not seen yet either:
+a window on the real screen (the probe had the same renderer but no
+monitor), a monitor on the NVIDIA GPU, and suspend with the driver unloaded. To repeat such a
 probe, start a headless tw with `WLR_RENDERER=gles2` and
 `WLR_RENDER_DRM_DEVICE` set to the Intel render node, and run
 `tw-gpu run vkcube --wsi wayland --c 240` with `WAYLAND_DISPLAY` set to the
@@ -289,9 +295,12 @@ GPU driver (seen with the NVIDIA driver and the libdbus it loads). They are not
 ours. The tests use the software renderer, where the report must be empty.
 
 Xwayland running although no X11 window is open means something only asked
-X11 a question, which is enough to start it. The usual culprit is a shell
+X11 a question, which is enough to start it. Two culprits are known. A shell
 plugin: fish's `done` runs `xprop` each time a shell starts when `DISPLAY` is
-set (README.md says how to remove it). To find one, open a terminal in a
+set (README.md says how to remove it). And the Claude desktop app, which
+connects to X11 for a moment as it starts (seen with the plugin gone: the
+helper started in the same second as the app's GPU process, and no X11
+client was left afterwards). To find one, open a terminal in a
 private headless tw run with `-d`, giving it the environment of a terminal
 from the real session, and look for "started xwayland-satellite" in its log.
 
@@ -299,7 +308,11 @@ The memory figure of the budget test moves by 100 to 200 kB with what else is
 running on the machine, because shared library pages are divided among the
 processes that map them. To tell what a change costs, compare the line
 "of which allocated by tw", which does not move, and for the rest build the
-previous commit too and run both budget tests back to back.
+previous commit too and run both budget tests back to back. After a reboot
+on 2026-11-14 the figure read 2320 to 2484 kB over 17 runs, against a budget
+of 2500, and the test failed once in a full run with nothing in tw changed:
+when it fails, run it again and look at the allocated figure before looking
+for a regression.
 
 At a real login tw's private memory is 15 to 20 MB, not the budget test's
 0.8. The difference is the GPU driver (Mesa), which the tests' software

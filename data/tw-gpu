@@ -29,6 +29,8 @@ runtime=${XDG_RUNTIME_DIR:-/tmp}
 lock=$runtime/tw-gpu.lock
 # Present while `tw-gpu on` is in force.
 keep=$runtime/tw-gpu.keep
+# Seconds between tries at login; the tests shorten it.
+pause=${TW_GPU_PAUSE:-3}
 
 usage() {
 	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
@@ -136,6 +138,26 @@ run)
 	;;
 settle) # internal, run holding the lock: nothing started with run is left
 	[ -e "$keep" ] || gpu_off
+	;;
+login) # internal, run by tw-session once tw is up: off, unless asked for
+	device=$(gpu_device) || exit 0
+	drives_a_monitor "$device" && exit 0
+	# The login screen keeps the GPU open for some seconds after it has
+	# handed the screen over (five on the ROG Strix), so one try is not
+	# enough. Between tries the lock is free for a program that wants the
+	# GPU; this gives up after half a minute.
+	exec 9>"$lock"
+	tries=0
+	while :; do
+		flock -x 9
+		if [ -e "$keep" ] || gpu_off; then
+			exit 0
+		fi
+		flock -u 9
+		tries=$((tries + 1))
+		[ "$tries" -lt 10 ] || exit 1
+		sleep "$pause"
+	done
 	;;
 launch)
 	shift

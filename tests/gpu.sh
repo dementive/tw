@@ -104,7 +104,13 @@ case "\$*" in
 	"$bin/driver" load
 	;;
 "start tw-gpu@off.service")
-	[ -e "$tmp/busy" ] || "$bin/driver" unload
+	# $tmp/busy: the GPU is in use; with a number in it, for that many tries.
+	if [ -s "$tmp/busy" ]; then
+		left=\$((\$(cat "$tmp/busy") - 1))
+		[ "\$left" -gt 0 ] && echo "\$left" >"$tmp/busy" || rm "$tmp/busy"
+	elif [ ! -e "$tmp/busy" ]; then
+		"$bin/driver" unload
+	fi
 	;;
 esac
 EOF
@@ -119,11 +125,13 @@ EOF
 chmod +x "$bin/driver" "$bin/systemctl" "$bin/report"
 
 # tw-gpu as a program in the session would run it: the session's two
-# variables that keep programs on the Intel GPU are set.
+# variables that keep programs on the Intel GPU are set. The launcher's
+# variables are not, even if this test was started from a launched program.
 gpu() {
-	env PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" HOME="$tmp/home" \
+	env -u DESKTOP_ENTRY_ID -u FUZZEL_DESKTOP_FILE_ID \
+		PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" HOME="$tmp/home" \
 		XDG_RUNTIME_DIR="$tmp/run" XDG_DATA_DIRS="$tmp/share" \
-		WLR_DRM_DEVICES=/dev/dri/card1 \
+		WLR_DRM_DEVICES=/dev/dri/card1 TW_GPU_PAUSE=0.2 \
 		__EGL_VENDOR_LIBRARY_FILENAMES=/mesa.json VK_DRIVER_FILES=/intel.json \
 		"$@"
 }
@@ -218,6 +226,43 @@ fi
 gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" status |
 	grep -q 'drives a monitor' || fail "status does not mention the monitor"
 gpu "$data/tw-gpu" off || fail "off failed once the GPU was free"
+
+# --- login: what tw-session runs once tw is up ------------------------------------
+# The login screen still has the GPU open for the first tries. (On the real
+# machine one try was not enough, and the GPU stayed on all session.)
+"$bin/driver" load
+before=$(calls 'start tw-gpu@off')
+echo 2 >"$tmp/busy"
+gpu "$data/tw-gpu" login || fail "login gave up on a GPU that was only briefly busy"
+loaded && fail "login left the GPU on"
+[ "$(calls 'start tw-gpu@off')" = $((before + 3)) ] || fail "login did not try until the GPU was free"
+# A GPU that stays busy: login gives up, and says so with its exit status.
+"$bin/driver" load
+: >"$tmp/busy"
+before=$(calls 'start tw-gpu@off')
+if gpu "$data/tw-gpu" login; then fail "login claimed success on a GPU that stayed busy"; fi
+[ "$(calls 'start tw-gpu@off')" = $((before + 10)) ] || fail "login did not stop after ten tries"
+# While login waits for its next try, a program can still get the GPU.
+gpu "$data/tw-gpu" login &
+login=$!
+sleep 0.3
+gpu "$data/tw-gpu" run report during-login
+kill -0 "$login" 2>/dev/null || fail "a program had to wait until login gave up"
+expect_report "a program started while login was waiting" "^$on_nvidia args=during-login\$"
+wait "$login" || true
+wait_until "the switch-off check to finish" settled
+# Driving a monitor: login leaves it alone, without a single try.
+before=$(calls 'start tw-gpu@off')
+gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" login ||
+	fail "login failed on a GPU driving a monitor"
+[ "$(calls 'start tw-gpu@off')" = "$before" ] || fail "login tried to switch off a GPU driving a monitor"
+rm "$tmp/busy"
+# Asked to stay on: likewise.
+gpu "$data/tw-gpu" on
+gpu "$data/tw-gpu" login || fail "login failed on a GPU that was asked to stay on"
+loaded || fail "login switched off a GPU that was asked to stay on"
+[ "$(calls 'start tw-gpu@off')" = "$before" ] || fail "login tried to switch off a GPU that was asked to stay on"
+gpu "$data/tw-gpu" off || fail "off failed after login"
 
 # --- The GPU cannot be switched on: the program still runs -----------------------
 : >"$tmp/on-fails"
@@ -386,20 +431,22 @@ session() { # [VAR=value...]: what tw-session decides, on one line
 	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$sys" TW_SHARE="$tmp/usr" TW_SESSION_PRINT=1 \
 		"$@" sh "$data/tw-session" | tr '\n' ';'
 }
-expect_session() { # <description> <devices> <egl> <vulkan> <off> [VAR=value...]
+# What tw-session runs once tw is up to switch the second GPU off.
+off='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
+expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...]
 	description=$1
-	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_DRIVER_FILES=$4;switch the second GPU off=$5;"
+	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_DRIVER_FILES=$4;once tw is up=$5;"
 	shift 5
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
 }
 
 machine
-expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" yes
+expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$off"
 # Its driver unloaded: there is no second card, and tw must still be told to
 # use the first one only, or it would open the second when the driver loads.
 "$bin/driver" unload
-expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" yes
+expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$off"
 # A monitor on the NVIDIA GPU: tw uses both, and the GPU stays on.
 : >"$tmp/hdmi"
 "$bin/driver" load
