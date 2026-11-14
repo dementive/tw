@@ -274,7 +274,7 @@ with the NVIDIA GPU into a headless tw that draws with the Intel one;
 `tw-gpu launch` with a real desktop entry; the switch-off after the
 program's process group was hung up on; fuzzel starting a program through
 `tw-gpu launch` in the real session (the program's environment has
-`DESKTOP_ENTRY_ID`). Real runs found three faults the made-up machine had
+`DESKTOP_ENTRY_ID`). Real runs found four faults the made-up machine had
 not, all now in the test; the third was the switch-off at the first real
 login, which came two seconds after tw started and three seconds before the
 login screen let go of the GPU. `tw-gpu login` then worked at a real login:
@@ -286,10 +286,19 @@ with the driver unloaded.
 Taking the GPU off the bus came out of the second real login: the owner ran
 `fastfetch` and `btop` ten seconds in, and the driver was back two seconds
 after it had been unloaded (the sign: `nvidia` and `nvidia_uvm` loaded,
-`nvidia_drm` not). **Not yet seen on the machine:** that the GPU leaves the
-bus and its slot powers down, that the driver then refuses to load, and that
-scanning the port brings the GPU back. The module does contain the refusal
-("NVRM: No NVIDIA GPU found").
+`nvidia_drm` not). Seen on the machine since: the GPU leaves the bus and the
+port above it reports D3cold; `nvidia-modprobe`, `nvidia-smi`, `fastfetch`
+and `btop` are all refused ("NVRM: No NVIDIA GPU found" in the kernel log)
+and leave it off; scanning the port brings it back, driver loaded, in 2.4 s;
+a GPU that another program has open is left alone, named in the journal
+("in use by ..."), and goes off within seconds of that program exiting.
+
+Scanning the port found a fourth fault, in two of five switch-ons: the
+kernel announces the GPU before a driver can bind to it, udev loads the
+driver in answer, that load fails ("probe routine was not called"), and the
+helper's own load, a moment later, failed with it. The helper now runs
+`udevadm settle` first and tries the load up to five times; that version has
+not run on the machine yet.
 
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that

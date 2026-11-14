@@ -78,8 +78,21 @@ on)
 		fi
 		sleep 0.2
 	done
+	# The kernel announces the GPU before a driver can be bound to it, and
+	# udev answers the announcement by loading the driver at once. That
+	# load fails ("probe routine was not called"), and one made here can
+	# collide with it. So let udev finish first, and try more than once.
 	# nvidia_drm needs nvidia and nvidia_modeset.
-	modprobe nvidia_drm || exit 1
+	udevadm settle --timeout=5
+	tries=0
+	until modprobe nvidia_drm 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 5 ]; then
+			modprobe nvidia_drm || exit 1 # once more, for the error message
+			break
+		fi
+		sleep 0.3
+	done
 	powerd_start
 	;;
 off)

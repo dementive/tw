@@ -420,7 +420,16 @@ cat >"$rootbin/modprobe" <<EOF
 #!/bin/sh
 echo "modprobe \$*" >>"$log"
 case \$1 in
-nvidia_drm) "$bin/driver" load ;;
+nvidia_drm)
+	# $tmp/colliding: udev's own load of the driver is in the way, for as
+	# many tries as the number in it.
+	if [ -s "$tmp/colliding" ]; then
+		left=\$((\$(cat "$tmp/colliding") - 1))
+		[ "\$left" -gt 0 ] && echo "\$left" >"$tmp/colliding" || rm "$tmp/colliding"
+		exit 1
+	fi
+	"$bin/driver" load
+	;;
 -r)
 	[ -d "$sys/module/\$2" ] || exit 1
 	case \$2 in
@@ -451,7 +460,8 @@ case "\$*" in
 "is-enabled --quiet nvidia-powerd.service") [ ! -e "$tmp/powerd-disabled" ] ;;
 esac
 EOF
-chmod +x "$rootbin/modprobe" "$rootbin/systemctl"
+printf '#!/bin/sh\necho "udevadm $*" >>"%s"\n' "$log" >"$rootbin/udevadm"
+chmod +x "$rootbin/modprobe" "$rootbin/systemctl" "$rootbin/udevadm"
 # The kernel's part: act on what the helper writes into sysfs.
 kernel() {
 	while [ ! -e "$tmp/kernel-stop" ]; do
@@ -470,6 +480,7 @@ root() { # tw-gpu-root <on|off>, then what it ran, on one line
 	ran=$(tr '\n' ';' <"$log")
 }
 powerd_start='systemctl is-enabled --quiet nvidia-powerd.service;systemctl reset-failed nvidia-powerd.service;systemctl start --no-block nvidia-powerd.service;'
+load='udevadm settle --timeout=5;modprobe nvidia_drm;'
 unload='modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_modeset;'
 process() { # <pid> <name> <open file>: a running program with a file open
 	mkdir -p "$proc/$1/fd"
@@ -494,14 +505,32 @@ root off || fail "the helper failed with the GPU already off"
 
 # On: the port is scanned, the GPU comes back, the driver is loaded.
 root on || fail "the helper failed to switch the GPU on"
-[ "$ran" = "modprobe nvidia_drm;$powerd_start" ] || fail "helper on ran: $ran"
+[ "$ran" = "$load$powerd_start" ] || fail "helper on ran: $ran"
 on_bus || fail "helper on did not bring the GPU back on the bus"
 loaded || fail "helper on did not load the driver"
 [ ! -e "$flag" ] || fail "helper on left its note behind"
 # On with the GPU on the bus all along: just the driver.
 "$bin/driver" unload
 root on || fail "the helper failed to load the driver"
-[ "$ran" = "modprobe nvidia_drm;$powerd_start" ] || fail "helper on, GPU on the bus, ran: $ran"
+[ "$ran" = "$load$powerd_start" ] || fail "helper on, GPU on the bus, ran: $ran"
+
+# udev's own attempt to load the driver is still in the way for the first
+# tries. (On the real machine two of five switch-ons failed on this.)
+"$bin/driver" unload
+echo 2 >"$tmp/colliding"
+root on || fail "the helper gave up on a driver that loads at the third try"
+[ "$ran" = "${load}modprobe nvidia_drm;modprobe nvidia_drm;$powerd_start" ] ||
+	fail "helper on with a load in the way ran: $ran"
+loaded || fail "the helper did not load the driver at the third try"
+# One that never loads: an error, after a handful of tries.
+"$bin/driver" unload
+echo 99 >"$tmp/colliding"
+status=0
+root on || status=$?
+[ "$status" = 1 ] || fail "helper on returned $status for a driver that never loads"
+[ "$(grep -c 'modprobe nvidia_drm' "$log")" = 6 ] || fail "helper on tried $(grep -c 'modprobe nvidia_drm' "$log") times"
+rm "$tmp/colliding"
+root on
 
 # With the computing module loaded as well (a program asked for it earlier).
 mkdir "$sys/module/nvidia_uvm"
@@ -554,7 +583,7 @@ rm "$tmp/computing"
 root off
 wait_until "the GPU to leave the bus" off
 root on
-[ "$ran" = "modprobe nvidia_drm;systemctl is-enabled --quiet nvidia-powerd.service;" ] ||
+[ "$ran" = "${load}systemctl is-enabled --quiet nvidia-powerd.service;" ] ||
 	fail "helper on with the power daemon disabled ran: $ran"
 rm "$tmp/powerd-disabled"
 
