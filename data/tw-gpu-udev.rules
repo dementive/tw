@@ -1,0 +1,6 @@
+# An NVIDIA GPU whose driver has been unloaded may be powered down. NVIDIA's
+# own rule (71-nvidia.rules) forbids that at this point, which leaves the GPU
+# running with nothing to put it to sleep; tw-gpu unloads the driver exactly
+# so that the GPU goes off. This file sorts after theirs, so it wins.
+ACTION=="unbind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03[0-9]*", \
+    TEST=="power/control", ATTR{power/control}="auto"

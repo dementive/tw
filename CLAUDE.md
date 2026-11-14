@@ -34,6 +34,8 @@ override the screen-blanking and suspend timeouts from `config.h`.
 
 Never run `data/tw-session` from inside a desktop session to try it out: it
 publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
+The one safe way is `TW_SESSION_PRINT=1 sh data/tw-session`, which prints
+which GPUs it would use and starts nothing.
 
 ## Code map
 
@@ -49,7 +51,10 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
-| `data/` | `tw-session` (session start script: picks the GPUs, sets up the keyring), the login-screen entry, the portal configuration |
+| `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring |
+| `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
+| `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
+| `data/` (rest) | The login-screen entry, the portal configuration |
 | `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
@@ -60,6 +65,7 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets and starting the helper on demand, with a stand-in helper |
+| `tests/gpu.sh` | `tw-gpu`, its root helper and the GPU choice in `tw-session`, against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
 
@@ -128,6 +134,27 @@ display sockets, sets `DISPLAY` for the programs tw starts, and on the first
 connection hands the sockets to xwayland-satellite, whose windows then arrive
 as ordinary xdg-shell windows. While the helper runs tw does not watch the
 sockets; when it exits (a pidfd tells us) tw watches them again.
+
+The NVIDIA GPU of a laptop that also has an Intel one is handled like X11:
+off until something needs it, and none of it is in tw's C code. Off means its
+kernel driver is unloaded, which is the only state in which the GPU cannot be
+woken by a program that merely lists the GPUs, and in which the driver's
+380 MB are free. `tw-session` does three things for that. It names the GPUs
+tw may use in `WLR_DRM_DEVICES` whenever the machine has a second GPU, loaded
+or not, because wlroots opens a GPU that appears later only when that
+variable is unset; so the driver can come and go under a running tw. It keeps
+programs on the Intel GPU (`__EGL_VENDOR_LIBRARY_FILENAMES`,
+`VK_DRIVER_FILES`). And once tw is up it runs `tw-gpu off`, unless a monitor
+is on the NVIDIA GPU. `tw-gpu run <program>` loads the driver, starts the
+program with NVIDIA's offload variables, and unloads the driver afterwards;
+the launcher starts everything through `tw-gpu launch`, which does the same
+for desktop entries with `PrefersNonDefaultGPU=true`. Who still needs the GPU
+is tracked with one lock file: every program started by `run` inherits a
+shared lock on it, and switching off waits for the exclusive lock, so there
+is no counter to get out of step and nothing polls. Loading and unloading
+need root: `tw-gpu` starts `tw-gpu@on.service` or `tw-gpu@off.service`, which
+a polkit rule allows, and those run `tw-gpu-root`. The kernel has the last
+word: a driver in use does not unload, and then the GPU simply stays on.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -221,12 +248,14 @@ remaining output taking over the active workspace) is untested. Nor can the
 machine be suspended or the clock set from a test, so the wake-up watch in
 `idle.c` is untested, and the suspend command is a stand-in.
 
-The GPU choice in `data/tw-session` only runs at a real login. Its logic can
-be dry-run by sourcing that part of the script against a fake `/sys` tree;
-never run the script itself inside a session. That choice only covers the
-GPUs present at login: wlroots opens any GPU that appears later
-(`backend/drm/monitor.c`), whatever `WLR_DRM_DEVICES` said. That path has
-never been run.
+`tests/gpu.sh` runs the GPU choice in `data/tw-session` and all of `tw-gpu`
+against a made-up machine. What only a real machine shows: that the NVIDIA
+driver unloads and loads again, that the GPU powers down without it
+(`tw-gpu status` says so), that polkit lets `tw-gpu` start its units, and that
+a program started with `tw-gpu run` draws with the NVIDIA GPU and shows up in
+tw. A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
+without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
+path has never been run.
 
 The keyring set-up in `data/tw-session` also only runs at a real login. It
 does two things, both seen to work at a real login: it passes the
@@ -273,6 +302,8 @@ and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. The first time
 under 200 MB; the rest was the one application running and 760 MB of kernel
 memory that no counter in `/proc/meminfo` explains. The NVIDIA driver held
 376 MB of that although its GPU was asleep: the owner unloaded its modules
-and the figure fell to 384 MB. Of what remains, about 100 MB is free pages
+and the figure fell to 384 MB (which is why `tw-gpu` exists). With the driver
+loaded the GPU was also awake about 40% of the time with nothing using it
+(`power/runtime_active_time` of its PCI device). Of what remains, about 100 MB is free pages
 parked per CPU (`count:` lines in `/proc/zoneinfo`) and about 100 MB is
 vmalloc.

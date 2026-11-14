@@ -1,0 +1,9 @@
+# tw-gpu@on.service loads the NVIDIA driver, tw-gpu@off.service unloads it.
+# Started by tw-gpu; tw-gpu.rules lets the person at the computer do that
+# without a password.
+[Unit]
+Description=Switch the NVIDIA GPU %i (tw-gpu)
+
+[Service]
+Type=oneshot
+ExecStart=@libexecdir@/tw-gpu-root %i

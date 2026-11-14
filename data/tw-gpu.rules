@@ -1,0 +1,12 @@
+// Lets tw-gpu switch the NVIDIA GPU on and off without asking for a password.
+// It does so by starting one of two units, and this allows exactly that:
+// for whoever sits at the computer, and for administrators.
+polkit.addRule(function(action, subject) {
+	if (action.id == "org.freedesktop.systemd1.manage-units" &&
+			action.lookup("verb") == "start" &&
+			(action.lookup("unit") == "tw-gpu@on.service" ||
+			 action.lookup("unit") == "tw-gpu@off.service") &&
+			((subject.local && subject.active) || subject.isInGroup("wheel"))) {
+		return polkit.Result.YES;
+	}
+});

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Loads or unloads the NVIDIA kernel driver. Run as root by tw-gpu@on.service
+# and tw-gpu@off.service, which tw-gpu starts; the only input is the word
+# "on" or "off" from the unit's name.
+set -u
+
+sys=${TW_SYS:-/sys} # the tests point this at a made-up machine
+# NVIDIA's daemon that shifts power between CPU and GPU under load. It keeps
+# the driver open, so it has to stop before the driver can go.
+powerd=nvidia-powerd.service
+
+powerd_start() {
+	systemctl is-enabled --quiet "$powerd" 2>/dev/null || return 0
+	# Started with no driver, it fails until its unit gives up for good.
+	systemctl reset-failed "$powerd" 2>/dev/null
+	systemctl start --no-block "$powerd"
+}
+
+case ${1:-} in
+on)
+	# nvidia_drm needs nvidia and nvidia_modeset, and NVIDIA's own
+	# configuration adds nvidia_uvm.
+	modprobe nvidia_drm || exit 1
+	powerd_start
+	;;
+off)
+	[ -d "$sys/module/nvidia" ] || exit 0
+	# Every program that draws with the GPU holds nvidia_drm, so try that
+	# first and disturb nothing if it is busy. A program that has just
+	# exited can take a moment to let go.
+	tries=0
+	until modprobe -r nvidia_drm 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 5 ]; then
+			echo "tw-gpu: the NVIDIA GPU is in use" >&2
+			exit 0 # nothing went wrong: it just stays on
+		fi
+		sleep 0.5
+	done
+	systemctl stop "$powerd" 2>/dev/null
+	if ! modprobe -r nvidia_uvm nvidia_modeset nvidia 2>/dev/null; then
+		# Used for computing only. Put back what was taken away.
+		modprobe nvidia_drm
+		powerd_start
+		echo "tw-gpu: the NVIDIA GPU is in use" >&2
+	fi
+	;;
+*)
+	echo "usage: tw-gpu-root on|off" >&2
+	exit 2
+	;;
+esac

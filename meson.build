@@ -143,6 +143,39 @@ install_data(
 	'data/tw-portals.conf',
 	install_dir: get_option('datadir') / 'xdg-desktop-portal',
 )
+# tw-gpu keeps a laptop's NVIDIA GPU off and switches it on for the programs
+# that want it. The command itself, then the parts that let it load and
+# unload the driver: a root helper, the system unit that runs it, the polkit
+# rule that lets the user start that unit, and a udev rule that lets the GPU
+# power down once its driver is gone. All of it does nothing on a machine
+# without an NVIDIA GPU.
+install_data(
+	'data/tw-gpu',
+	install_dir: get_option('bindir'),
+	install_mode: 'rwxr-xr-x',
+)
+install_data(
+	'data/tw-gpu-root',
+	install_dir: get_option('libexecdir'),
+	install_mode: 'rwxr-xr-x',
+)
+configure_file(
+	input: 'data/tw-gpu@.service.in',
+	output: 'tw-gpu@.service',
+	configuration: {'libexecdir': get_option('prefix') / get_option('libexecdir')},
+	install: true,
+	install_dir: get_option('prefix') / 'lib/systemd/system',
+)
+install_data(
+	'data/tw-gpu.rules',
+	rename: '50-tw-gpu.rules',
+	install_dir: get_option('datadir') / 'polkit-1/rules.d',
+)
+install_data(
+	'data/tw-gpu-udev.rules',
+	rename: '72-tw-gpu.rules',
+	install_dir: get_option('prefix') / 'lib/udev/rules.d',
+)
 configure_file(
 	input: 'data/tw.desktop.in',
 	output: 'tw.desktop',
@@ -246,6 +279,15 @@ test(
 	find_program('tests/x11.sh'),
 	args: [tw, test_client],
 	is_parallel: false,
+	timeout: 120,
+)
+
+# tw-gpu and the GPU choice in tw-session, against a made-up machine: no GPU,
+# driver or root involved.
+test(
+	'gpu',
+	find_program('tests/gpu.sh'),
+	args: [meson.current_source_dir() / 'data'],
 	timeout: 120,
 )
 

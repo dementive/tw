@@ -40,6 +40,9 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
+`vulkan-tools` is worth having too: step 6 uses its `vkcube` to check the
+NVIDIA GPU.
+
 ### 2. Build and install
 
 Meson downloads the pinned wlroots on the first `setup`.
@@ -104,18 +107,65 @@ Then close every terminal that was already open, and free the memory with
 To find some other program doing this, look for X11 tools in your shell's
 startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
 
+### 6. The NVIDIA GPU: off until a program needs it
+
+On a laptop with an Intel and an NVIDIA GPU, tw draws with the Intel one. The
+NVIDIA driver is unloaded when you log in, unless a monitor is plugged into
+one of the NVIDIA GPU's ports at that moment. With the driver gone the GPU is
+powered down, no program can wake it by accident, and the memory the driver
+keeps (about 380 MB) is free. Nothing has to be set up for that part.
+
+A program gets the GPU in one of two ways:
+
+- From the launcher, automatically, if its desktop entry asks for the
+  discrete GPU with `PrefersNonDefaultGPU=true`. Steam and Blender ship that
+  line. To give it to another program, copy its entry from
+  `/usr/share/applications` to `~/.local/share/applications` and add the line.
+- From a terminal or a script: `tw-gpu run <program>`. In Steam, a game's
+  launch options can be `tw-gpu run %command%`, which keeps Steam itself on
+  the Intel GPU.
+
+The driver is loaded before the program starts, which takes a moment, and
+unloaded when the program and everything it started have exited.
+
+| Command | What it does |
+| --- | --- |
+| `tw-gpu run <program>` | runs a program on the NVIDIA GPU |
+| `tw-gpu on` | switches it on and leaves it on until `tw-gpu off` |
+| `tw-gpu off` | switches it off; refused while something uses it |
+| `tw-gpu status` | says whether it is on, and whether it is powered |
+
+After the first install, make the system read the new files:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl restart polkit
+sudo udevadm control --reload
+```
+
+Then check it on the machine, because no test can:
+
+```sh
+tw-gpu run vkcube     # a spinning cube; close it
+tw-gpu status         # a few seconds later: "off, powered down"
+```
+
+If the status says "off, but still powered", the GPU did not power down by
+itself with its driver gone, and it uses more battery that way than before.
+Run `tw-gpu on` to go back to how it was, and look into it.
+
+The HDMI port belongs to the NVIDIA GPU. A monitor on it works if it is
+plugged in when you log in after a boot. If you have logged out and in since,
+the driver is no longer loaded and tw cannot see the monitor: run `tw-gpu on`,
+then log out and in.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
   Ports wired to the second GPU only work if the monitor is connected when you
-  log in. On the ROG Strix the Intel GPU has two DisplayPort outputs (most
-  likely the USB-C ports) and the NVIDIA GPU has HDMI and one DisplayPort.
-- The NVIDIA driver keeps about 380 MB of memory for as long as it is loaded,
-  even while its GPU is asleep and nothing uses it. It belongs to no program,
-  so it only shows in the total. Measured by unloading the driver:
-  `sudo systemctl stop nvidia-powerd`, then
-  `sudo modprobe -r nvidia_drm nvidia_uvm nvidia_modeset nvidia`; a reboot
-  brings it back.
+  log in; see step 6. On the ROG Strix the Intel GPU has two DisplayPort
+  outputs (most likely the USB-C ports) and the NVIDIA GPU has HDMI and one
+  DisplayPort.
 - The laptop suspends after 15 minutes without input, also on mains power. Run
   a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
