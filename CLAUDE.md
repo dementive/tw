@@ -404,10 +404,24 @@ huge pages are off, takes 105 MB out of what MemAvailable leaves out (288 to
 183 MB by the kernel's formula) and should shrink the per-CPU parked pages
 with it, since their limit follows the low watermark. Nothing on this
 machine writes that setting or the huge-page `enabled` file after boot
-(writing `enabled` makes the kernel raise the reserve again). Computed, not
-yet applied. The rest is small: `ananicy-cpp`, `avahi-daemon`,
-`switcheroo-control` and `bolt` are about 12 MB together, the `xe` module
-5 MB.
+(writing `enabled` makes the kernel raise the reserve again). Computed,
+never applied: the owner wants CachyOS's huge pages left as they are for
+performance, and the kernel raises this reserve precisely to keep huge
+pages available, so do not propose it again.
+
+Userspace outside the one application was 122 MB of private memory at that
+reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
+connected to 19, plus 6 MB of buffers (the Claude app asks X11 a question
+as it starts; `ss -x` showed no socket on the display); PipeWire and
+WirePlumber 13; the portals 11; systemd, D-Bus, udev, polkit and the
+journal 23; CachyOS's `ananicy-cpp` 7; the login manager, which stays
+loaded all session, 6; NetworkManager and wpa_supplicant 6; the keyring 5;
+upower and power-profiles-daemon 4; `systemd-userdbd` 2; the accessibility
+bus 2; fnott and wl-clip-persist 2; bolt, switcheroo-control, avahi and
+bluetoothd under 1 each. None of the daemons wakes more than once a second.
+tw itself woke 610 times a second during that reading and had used 149 s
+of CPU in 45 minutes: the application was animating, and tw draws at the
+panel's 300 Hz. The panel also has a 60 Hz mode.
 
 Two ideas for tw's own share were tried in a headless tw drawing with the
 Intel GPU, and dropped. Keeping huge pages out of tw (`PR_SET_THP_DISABLE`):
