@@ -297,8 +297,11 @@ Scanning the port found a fourth fault, in two of five switch-ons: the
 kernel announces the GPU before a driver can bind to it, udev loads the
 driver in answer, that load fails ("probe routine was not called"), and the
 helper's own load, a moment later, failed with it. The helper now runs
-`udevadm settle` first and tries the load up to five times; that version has
-not run on the machine yet.
+`udevadm settle` first and tries the load up to five times. With that, ten
+switch-ons in a row put the program on the NVIDIA GPU, after the slot had
+been cold for 2 to 60 seconds; udev's early load failed in two of them and
+did no harm. Still not seen: a real login with the GPU going off the bus, a
+login while it is off, and suspend while it is off.
 
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
