@@ -35,6 +35,21 @@ static const bool touchpad_natural_scroll = true;
 static const bool touchpad_disable_while_typing = true;
 
 /*
+ * A swipe with this many fingers belongs to tw: sideways drags the strip,
+ * up or down by at least swipe_workspace_distance pixels switches workspace.
+ * Swipes with other finger counts, pinches and holds go to the application.
+ */
+static const unsigned swipe_fingers = 3;
+static const int swipe_workspace_distance = 60;
+
+/*
+ * Stiffness of the spring that glides the strip to its place. Higher is
+ * snappier (niri uses 800); 0 turns the animation off and the strip jumps.
+ * Nothing is drawn or computed once the strip has arrived.
+ */
+static const int scroll_stiffness = 800;
+
+/*
  * Turn the screen off after this many seconds without input; 0 never does.
  * Windows are told to stop drawing while it is off. A visible window that
  * inhibits idling (a playing video) holds it off. `tw -b` overrides this.
@@ -98,6 +113,22 @@ static const struct tw_binding bindings[] = {
 	{MOD | CTRL,    XKB_KEY_Right,      action_move,                        {.i = +1}},
 	{MOD | CTRL,    XKB_KEY_Home,       action_move_edge,                   {.i = -1}},
 	{MOD | CTRL,    XKB_KEY_End,        action_move_edge,                   {.i = +1}},
+
+	/* Windows within a column. */
+	{MOD,           XKB_KEY_j,          action_focus_window,                {.i = +1}},
+	{MOD,           XKB_KEY_k,          action_focus_window,                {.i = -1}},
+	{MOD,           XKB_KEY_Down,       action_focus_window,                {.i = +1}},
+	{MOD,           XKB_KEY_Up,         action_focus_window,                {.i = -1}},
+	{MOD | CTRL,    XKB_KEY_j,          action_move_window,                 {.i = +1}},
+	{MOD | CTRL,    XKB_KEY_k,          action_move_window,                 {.i = -1}},
+	{MOD | CTRL,    XKB_KEY_Down,       action_move_window,                 {.i = +1}},
+	{MOD | CTRL,    XKB_KEY_Up,         action_move_window,                 {.i = -1}},
+	/* Into and out of columns: a lone window joins the column on that side,
+	 * a window sharing a column leaves it. */
+	{MOD,           XKB_KEY_bracketleft,  action_consume_or_expel,          {.i = -1}},
+	{MOD,           XKB_KEY_bracketright, action_consume_or_expel,          {.i = +1}},
+	{MOD,           XKB_KEY_comma,      action_consume,                     {0}},
+	{MOD,           XKB_KEY_period,     action_expel,                       {0}},
 
 	/* Column width. */
 	{MOD,           XKB_KEY_r,          action_cycle_width,                 {0}},

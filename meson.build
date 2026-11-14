@@ -57,6 +57,7 @@ wayland_server = dependency('wayland-server')
 wayland_client = dependency('wayland-client')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput') # touchpad settings
+libm = cc.find_library('m')
 
 # --- Protocols ---------------------------------------------------------------
 
@@ -121,7 +122,7 @@ tw = executable(
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
-	dependencies: [wlroots, wayland_server, xkbcommon, libinput],
+	dependencies: [wlroots, wayland_server, xkbcommon, libinput, libm],
 	install: true,
 )
 
@@ -148,6 +149,7 @@ test('layout', executable(
 	'tests/layout_test.c',
 	'src/layout.c',
 	include_directories: 'src',
+	dependencies: libm,
 ))
 
 # A minimal client that reports the state the compositor gives it, and a tool
@@ -178,6 +180,15 @@ test_keys = executable(
 test(
 	'smoke',
 	find_program('tests/smoke.sh'),
+	args: [tw, test_client, test_keys],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# Windows sharing a column, and floating dialogs.
+test(
+	'columns',
+	find_program('tests/columns.sh'),
 	args: [tw, test_client, test_keys],
 	is_parallel: false,
 	timeout: 120,

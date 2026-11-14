@@ -27,9 +27,20 @@ struct wlr_surface;
 
 /* One scrolling strip. Only the active workspace is on screen. */
 struct tw_workspace {
-	struct wl_list windows; /* tw_window.link; left to right, one per column */
-	struct tw_window *focused; /* remembered while the workspace is hidden */
-	int view_x; /* strip coordinate at the left edge of the output */
+	struct wl_list columns;  /* tw_column.link; the strip, left to right */
+	struct wl_list floating; /* tw_window.link; dialogs, topmost first */
+	/* Both are remembered while the workspace is hidden. */
+	struct tw_window *focused; /* gets the keyboard; tiled or floating */
+	struct tw_window *tiled;   /* last focused tiled window; the strip scrolls to it */
+
+	/* view_x is the strip coordinate that belongs at the left edge of the
+	 * output. view_pos is where the view is drawn right now: it trails
+	 * view_x while animating and leads it during a touchpad swipe. */
+	int view_x;
+	double view_pos;
+	double view_velocity; /* pixels per second */
+	bool swiping;
+	uint32_t swipe_time_msec; /* of the last swipe event, to measure speed */
 };
 
 struct tw_output {
@@ -58,11 +69,12 @@ struct tw_server {
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
 	/* Stacking order, bottom to top: layer_trees[background], [bottom],
-	 * window_tree, layer_trees[top], fullscreen_tree, layer_trees[overlay],
-	 * lock_tree. */
+	 * window_tree, layer_trees[top], fullscreen_tree, float_tree,
+	 * layer_trees[overlay], lock_tree. */
 	struct wlr_scene_tree *layer_trees[4]; /* by zwlr_layer_shell_v1_layer */
 	struct wlr_scene_tree *window_tree;
 	struct wlr_scene_tree *fullscreen_tree;
+	struct wlr_scene_tree *float_tree;
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
 	struct wl_list outputs; /* tw_output.link; the first usable one shows the strip */
 	struct wl_listener new_output;
@@ -77,6 +89,10 @@ struct tw_server {
 	struct tw_workspace workspaces[TW_WORKSPACES];
 	size_t active; /* index of the workspace on screen */
 	struct tw_window *focused; /* the window currently drawn as active */
+	/* The active workspace's view is moving toward view_x. Stepped once per
+	 * output frame, which is also what stops it: no frame, no work. */
+	bool animating;
+	int64_t animation_last_ms;
 
 	/* layer.c */
 	struct wlr_layer_shell_v1 *layer_shell;
@@ -107,6 +123,11 @@ struct tw_server {
 	struct wlr_xcursor_manager *cursor_manager;
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
 	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
+	struct wlr_pointer_gestures_v1 *pointer_gestures;
+	/* A touchpad swipe tw is handling itself rather than passing on. */
+	bool swipe_ours;
+	int swipe_axis; /* 0 undecided, 1 sideways (scroll), 2 vertical (workspace) */
+	double swipe_dx, swipe_dy;
 	uint32_t mod; /* what TW_MOD resolves to */
 	struct wl_list keyboards; /* tw_keyboard.link */
 	struct wl_listener new_input;
@@ -118,6 +139,14 @@ struct tw_server {
 	struct wl_listener cursor_button;
 	struct wl_listener cursor_axis;
 	struct wl_listener cursor_frame;
+	struct wl_listener swipe_begin;
+	struct wl_listener swipe_update;
+	struct wl_listener swipe_end;
+	struct wl_listener pinch_begin;
+	struct wl_listener pinch_update;
+	struct wl_listener pinch_end;
+	struct wl_listener hold_begin;
+	struct wl_listener hold_end;
 	struct wl_listener request_set_cursor;
 	struct wl_listener pointer_focus_change;
 	struct wl_listener request_set_selection;
@@ -169,6 +198,13 @@ void window_focus(struct tw_server *server, struct tw_window *window);
 void focus_update(struct tw_server *server);
 /* Scrolls the focused column into view and places every window. */
 void strip_arrange(struct tw_server *server);
+/* Advances the scroll animation by one frame; true if it needs another. */
+bool strip_animate(struct tw_server *server);
+/* A touchpad swipe drags the strip: `dx` is the finger movement in pixels. */
+void strip_swipe_begin(struct tw_server *server);
+void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
+/* Lets go: the strip glides to the nearest column edge. */
+void strip_swipe_end(struct tw_server *server, bool cancelled);
 /* Whether the window or layer surface this surface belongs to is on screen. */
 bool surface_visible(struct wlr_surface *surface);
 
@@ -178,6 +214,16 @@ void action_focus(struct tw_server *server, const union tw_arg *arg);
 void action_focus_edge(struct tw_server *server, const union tw_arg *arg);
 void action_move(struct tw_server *server, const union tw_arg *arg);
 void action_move_edge(struct tw_server *server, const union tw_arg *arg);
+/* Windows within a column. arg.i is -1 up, +1 down. */
+void action_focus_window(struct tw_server *server, const union tw_arg *arg);
+void action_move_window(struct tw_server *server, const union tw_arg *arg);
+/* A window alone in its column joins the column on that side (arg.i); a
+ * window that shares a column leaves it for a column of its own. */
+void action_consume_or_expel(struct tw_server *server, const union tw_arg *arg);
+/* Pulls the top window of the column on the right into the focused column. */
+void action_consume(struct tw_server *server, const union tw_arg *arg);
+/* Puts the focused window into a column of its own, to the right. */
+void action_expel(struct tw_server *server, const union tw_arg *arg);
 void action_cycle_width(struct tw_server *server, const union tw_arg *arg);
 void action_maximize(struct tw_server *server, const union tw_arg *arg);
 void action_fullscreen(struct tw_server *server, const union tw_arg *arg);

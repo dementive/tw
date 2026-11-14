@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdlib.h>
 #include <wlr/backend.h>
 #include <wlr/backend/session.h>
@@ -8,6 +9,7 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
@@ -297,6 +299,114 @@ static void handle_cursor_frame(struct wl_listener *listener, void *data) {
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
+/* --- Touchpad gestures ------------------------------------------------------ */
+
+/*
+ * A swipe with `swipe_fingers` fingers is ours: sideways it drags the strip,
+ * vertically it switches workspace. Which of the two is decided by the first
+ * few pixels of movement. Every other gesture is passed to the application
+ * under the pointer (pinch to zoom, swipe back in a browser).
+ */
+enum { SWIPE_UNDECIDED, SWIPE_SIDEWAYS, SWIPE_VERTICAL };
+
+static void handle_swipe_begin(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, swipe_begin);
+	struct wlr_pointer_swipe_begin_event *event = data;
+	idle_activity(server);
+	if (event->fingers == swipe_fingers && !server->locked) {
+		server->swipe_ours = true;
+		server->swipe_axis = SWIPE_UNDECIDED;
+		server->swipe_dx = server->swipe_dy = 0;
+		return;
+	}
+	wlr_pointer_gestures_v1_send_swipe_begin(server->pointer_gestures, server->seat,
+		event->time_msec, event->fingers);
+}
+
+static void handle_swipe_update(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, swipe_update);
+	struct wlr_pointer_swipe_update_event *event = data;
+	idle_activity(server);
+	if (!server->swipe_ours) {
+		wlr_pointer_gestures_v1_send_swipe_update(server->pointer_gestures, server->seat,
+			event->time_msec, event->dx, event->dy);
+		return;
+	}
+	server->swipe_dx += event->dx;
+	server->swipe_dy += event->dy;
+	if (server->swipe_axis == SWIPE_UNDECIDED &&
+			fabs(server->swipe_dx) + fabs(server->swipe_dy) > 8) {
+		if (fabs(server->swipe_dx) > fabs(server->swipe_dy)) {
+			server->swipe_axis = SWIPE_SIDEWAYS;
+			strip_swipe_begin(server);
+			/* Do not lose the movement that made up our mind. */
+			strip_swipe_update(server, server->swipe_dx - event->dx, event->time_msec);
+		} else {
+			server->swipe_axis = SWIPE_VERTICAL;
+		}
+	}
+	if (server->swipe_axis == SWIPE_SIDEWAYS) {
+		strip_swipe_update(server, event->dx, event->time_msec);
+	}
+}
+
+static void handle_swipe_end(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, swipe_end);
+	struct wlr_pointer_swipe_end_event *event = data;
+	if (!server->swipe_ours) {
+		wlr_pointer_gestures_v1_send_swipe_end(server->pointer_gestures, server->seat,
+			event->time_msec, event->cancelled);
+		return;
+	}
+	server->swipe_ours = false;
+	if (server->swipe_axis == SWIPE_SIDEWAYS) {
+		strip_swipe_end(server, event->cancelled);
+	} else if (server->swipe_axis == SWIPE_VERTICAL && !event->cancelled &&
+			fabs(server->swipe_dy) >= swipe_workspace_distance) {
+		/* Workspaces are stacked: pushing the screen up shows the next one. */
+		union tw_arg arg = {.i = server->swipe_dy < 0 ? +1 : -1};
+		action_workspace_relative(server, &arg);
+	}
+}
+
+static void handle_pinch_begin(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, pinch_begin);
+	struct wlr_pointer_pinch_begin_event *event = data;
+	idle_activity(server);
+	wlr_pointer_gestures_v1_send_pinch_begin(server->pointer_gestures, server->seat,
+		event->time_msec, event->fingers);
+}
+
+static void handle_pinch_update(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, pinch_update);
+	struct wlr_pointer_pinch_update_event *event = data;
+	idle_activity(server);
+	wlr_pointer_gestures_v1_send_pinch_update(server->pointer_gestures, server->seat,
+		event->time_msec, event->dx, event->dy, event->scale, event->rotation);
+}
+
+static void handle_pinch_end(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, pinch_end);
+	struct wlr_pointer_pinch_end_event *event = data;
+	wlr_pointer_gestures_v1_send_pinch_end(server->pointer_gestures, server->seat,
+		event->time_msec, event->cancelled);
+}
+
+static void handle_hold_begin(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, hold_begin);
+	struct wlr_pointer_hold_begin_event *event = data;
+	idle_activity(server);
+	wlr_pointer_gestures_v1_send_hold_begin(server->pointer_gestures, server->seat,
+		event->time_msec, event->fingers);
+}
+
+static void handle_hold_end(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, hold_end);
+	struct wlr_pointer_hold_end_event *event = data;
+	wlr_pointer_gestures_v1_send_hold_end(server->pointer_gestures, server->seat,
+		event->time_msec, event->cancelled);
+}
+
 /* --- Seat ------------------------------------------------------------------- */
 
 static void handle_request_set_cursor(struct wl_listener *listener, void *data) {
@@ -360,6 +470,24 @@ void input_init(struct tw_server *server) {
 	server->cursor_frame.notify = handle_cursor_frame;
 	wl_signal_add(&server->cursor->events.frame, &server->cursor_frame);
 
+	server->pointer_gestures = wlr_pointer_gestures_v1_create(server->display);
+	server->swipe_begin.notify = handle_swipe_begin;
+	wl_signal_add(&server->cursor->events.swipe_begin, &server->swipe_begin);
+	server->swipe_update.notify = handle_swipe_update;
+	wl_signal_add(&server->cursor->events.swipe_update, &server->swipe_update);
+	server->swipe_end.notify = handle_swipe_end;
+	wl_signal_add(&server->cursor->events.swipe_end, &server->swipe_end);
+	server->pinch_begin.notify = handle_pinch_begin;
+	wl_signal_add(&server->cursor->events.pinch_begin, &server->pinch_begin);
+	server->pinch_update.notify = handle_pinch_update;
+	wl_signal_add(&server->cursor->events.pinch_update, &server->pinch_update);
+	server->pinch_end.notify = handle_pinch_end;
+	wl_signal_add(&server->cursor->events.pinch_end, &server->pinch_end);
+	server->hold_begin.notify = handle_hold_begin;
+	wl_signal_add(&server->cursor->events.hold_begin, &server->hold_begin);
+	server->hold_end.notify = handle_hold_end;
+	wl_signal_add(&server->cursor->events.hold_end, &server->hold_end);
+
 	server->seat = wlr_seat_create(server->display, "seat0");
 	/* Always advertise both: a laptop always has them, and virtual keyboards
 	 * come and go without making every client rebind its keyboard. */
@@ -399,6 +527,14 @@ void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->cursor_button.link);
 	wl_list_remove(&server->cursor_axis.link);
 	wl_list_remove(&server->cursor_frame.link);
+	wl_list_remove(&server->swipe_begin.link);
+	wl_list_remove(&server->swipe_update.link);
+	wl_list_remove(&server->swipe_end.link);
+	wl_list_remove(&server->pinch_begin.link);
+	wl_list_remove(&server->pinch_update.link);
+	wl_list_remove(&server->pinch_end.link);
+	wl_list_remove(&server->hold_begin.link);
+	wl_list_remove(&server->hold_end.link);
 	wl_list_remove(&server->request_set_cursor.link);
 	wl_list_remove(&server->pointer_focus_change.link);
 	wl_list_remove(&server->request_set_selection.link);

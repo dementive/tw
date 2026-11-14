@@ -38,8 +38,15 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 	 * handler stops being called.
 	 */
 	struct tw_output *output = wl_container_of(listener, output, frame);
+	struct tw_server *server = output->server;
 	struct wlr_scene_output *scene_output =
-		wlr_scene_get_scene_output(output->server->scene, output->wlr_output);
+		wlr_scene_get_scene_output(server->scene, output->wlr_output);
+
+	/* A scroll animation moves one step per frame of the output showing the
+	 * strip, and asks for the next frame only while it is still moving. */
+	if (server->animating && output == output_primary(server) && strip_animate(server)) {
+		wlr_output_schedule_frame(output->wlr_output);
+	}
 
 	wlr_scene_output_commit(scene_output, NULL);
 
@@ -136,6 +143,7 @@ void output_init(struct tw_server *server) {
 	server->window_tree = wlr_scene_tree_create(root);
 	server->layer_trees[2] = wlr_scene_tree_create(root);
 	server->fullscreen_tree = wlr_scene_tree_create(root);
+	server->float_tree = wlr_scene_tree_create(root);
 	server->layer_trees[3] = wlr_scene_tree_create(root);
 	server->lock_tree = wlr_scene_tree_create(root);
 

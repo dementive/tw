@@ -12,6 +12,7 @@
  * Modes:
  *   (none)        one ordinary window
  *   --fullscreen  a window that asks to start fullscreen
+ *   --fixed       a 300x200 window that cannot be resized, like a dialog
  *   --inhibit     a window that asks to keep the screen on, like a video player
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
@@ -53,6 +54,7 @@ static struct wl_buffer *buffer;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen;
+static bool fixed_size;
 static bool running = true;
 
 static void say(const char *line) {
@@ -101,7 +103,9 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 		pending_height, pending_activated, pending_suspended, pending_fullscreen);
 	fflush(stdout);
 	/* 0x0 means "pick your own size". */
-	draw(pending_width > 0 ? pending_width : 640, pending_height > 0 ? pending_height : 480);
+	int32_t own_width = fixed_size ? 300 : 640, own_height = fixed_size ? 200 : 480;
+	draw(pending_width > 0 ? pending_width : own_width,
+		pending_height > 0 ? pending_height : own_height);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -349,7 +353,11 @@ int main(int argc, char *argv[]) {
 		struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg_surface);
 		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
 		xdg_toplevel_set_title(toplevel, "tw-test-client");
-		if (strcmp(mode, "--fullscreen") == 0) {
+		if (strcmp(mode, "--fixed") == 0) {
+			fixed_size = true;
+			xdg_toplevel_set_min_size(toplevel, 300, 200);
+			xdg_toplevel_set_max_size(toplevel, 300, 200);
+		} else if (strcmp(mode, "--fullscreen") == 0) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
 		} else if (strcmp(mode, "--inhibit") == 0) {
 			zwp_idle_inhibit_manager_v1_create_inhibitor(inhibit_manager, surface);

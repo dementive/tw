@@ -39,27 +39,46 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | File | Role |
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: gaps, colours, column widths, key bindings |
-| `src/layout.c` | Scrolling-strip maths. Pure functions, no wlroots, unit tested |
-| `src/window.c` | xdg-shell windows, popups, decorations, workspaces, focus, `strip_arrange()` |
+| `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Pure functions, no wlroots, unit tested |
+| `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, `strip_arrange()`, scroll animation and swipes |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
 | `src/idle.c` | Screen blanking after inactivity, idle inhibitors |
 | `src/lock.c` | Session lock, for `swaylock` |
 | `src/output.c` | Outputs, scene layers, the frame handler |
-| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings, seat |
+| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings and gestures, seat |
 | `src/main.c` | Startup, teardown, `spawn()` |
 | `data/` | `tw-session` (session start script) and the login-screen entry |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
 | `tests/keys.c` | Presses key combinations through the virtual-keyboard protocol |
 | `tests/smoke.sh` | End-to-end behaviour on the headless backend |
+| `tests/columns.sh` | Windows sharing a column, floating dialogs |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 
-There are `TW_WORKSPACES` workspaces, each a strip: a list of windows, left to
-right, one window per column. Only the active workspace is on screen, on the
-first output. `strip_arrange()` is the only place that positions windows; call
-it after anything that changes a strip, the focus, a column width, the active
-workspace or the output.
+There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
+right. A column (`struct tw_column`) is a stack of windows, top to bottom,
+sharing the column's width and splitting its height; it is never empty and is
+freed when its last window leaves (`column_take()`). A fullscreen window is
+always alone in its column. Dialogs (windows with a parent or a fixed size)
+are not in the strip: they sit in the workspace's `floating` list, centred, at
+the size their client chose.
+
+Only the active workspace is on screen, on the first output. `strip_arrange()`
+decides where the view should be (`view_x`) and places everything; call it
+after anything that changes a strip, the focus, a column width, the active
+workspace or the output. Nothing else positions windows.
+
+The view glides to `view_x` on a spring. `view_pos` is where it is drawn now;
+`strip_animate()` advances it once per output frame and stops asking for
+frames when it arrives. A three-finger swipe moves `view_pos` directly and
+`strip_swipe_end()` picks the column edge to settle on. A window is drawn
+where `view_pos` puts it, but told to draw (not `suspended`) as soon as it is
+visible at either `view_pos` or `view_x`.
+
+Each workspace has `focused` (tiled or floating; gets the keyboard) and `tiled`
+(the strip's focus, which the view scrolls to). They differ only while a
+dialog is focused.
 
 Focus has two parts, both derived by `focus_update()`: the active window (the
 focused window of the active workspace, drawn with the focused border), and
@@ -130,6 +149,13 @@ something done: a sanitizer report or a leak fails the smoke test.
 
 **Budgets ratchet down.** They are the two numbers at the bottom of
 `meson.build`. Raising one needs a stated reason.
+
+## Not covered by tests
+
+The headless backend has no touchpad and no way to inject gestures, so the
+gesture handlers in `input.c` and the swipe functions in `window.c`
+(`strip_swipe_*`, `workspace_snap()`) are untested glue. Keep them thin, and
+put anything with logic in `layout.c` where it can be unit tested.
 
 ## Known noise
 

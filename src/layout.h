@@ -24,12 +24,39 @@ struct tw_fraction {
 int tw_column_width(int view_width, int gap, struct tw_fraction f);
 
 /*
+ * Outer height of window `index` (from the top) of `count` windows stacked in
+ * a column `avail` pixels tall with `gap` between them. The windows share the
+ * height equally; the last one absorbs the rounding remainder, so the stack
+ * always fills the column exactly.
+ */
+int tw_stack_height(int avail, int gap, int count, int index);
+
+/*
  * New view_x after the smallest scroll that brings the column, plus a gap on
  * each side, fully into view. Returns view_x unchanged if it already is.
  */
 int tw_view_fit(int view_x, int view_width, int col_x, int col_width, int gap);
 
+/*
+ * Keeps the view on the strip: never before its start, and never so far that
+ * blank space shows past the last column while columns are hidden on the
+ * left. `strip_width` is the whole strip including the gaps at both ends.
+ */
+int tw_view_clamp(int view_x, int view_width, int strip_width);
+
 /* Whether any part of the column is on the output. */
 bool tw_column_visible(int view_x, int view_width, int col_x, int col_width);
+
+/*
+ * Advances a critically damped spring by `dt` seconds: *pos moves toward
+ * `target` as fast as it can without overshooting, carrying on from whatever
+ * *vel (units per second) it had. `omega` is sqrt(stiffness). The step is the
+ * exact solution, so it is correct for any frame time, and a retarget or a
+ * touchpad swipe that ends with some speed just continues from that state.
+ */
+void tw_spring_step(double *pos, double *vel, double target, double omega, double dt);
+
+/* Whether a spring is close enough to its target to stop animating. */
+bool tw_spring_settled(double pos, double vel, double target);
 
 #endif

@@ -1,7 +1,10 @@
+#include <math.h>
 #include <stdlib.h>
+#include <time.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
@@ -14,21 +17,37 @@
 #include "config.h"
 
 /*
- * Scene layout of one window, under server->window_tree (or, while it is
- * fullscreen, server->fullscreen_tree, which sits above bars):
+ * A workspace is a strip of columns, left to right. A column is a stack of
+ * windows, top to bottom, that share the column's width and split its height.
+ * A column is never empty: removing its last window frees it.
+ */
+struct tw_column {
+	struct wl_list link; /* tw_workspace.columns */
+	struct tw_workspace *workspace;
+	struct wl_list windows; /* tw_window.link */
+	struct tw_window *active; /* the window focused when the column is */
+	size_t width_idx; /* index into column_widths */
+	bool maximized;   /* full width, overriding width_idx */
+};
+
+/*
+ * Scene layout of one window. Its scene_tree lives under server->window_tree,
+ * or fullscreen_tree while fullscreen, or float_tree while floating.
  *
- *   scene_tree          positioned at the column; node.data = window
+ *   scene_tree          positioned at the window; node.data = window
  *   ├── border[0..3]    solid rectangles
- *   ├── surface_tree    the client's surfaces, clipped to the column
+ *   ├── surface_tree    the client's surfaces, clipped to the window's box
  *   └── popup_tree      the client's popups, unclipped; node.data = window
  *
  * xdg_surface.data points at the tree its popups attach to: popup_tree for a
  * toplevel, the popup's own tree for a popup.
  */
 struct tw_window {
-	struct wl_list link; /* tw_workspace.windows; valid only while mapped */
+	/* tw_column.windows, or tw_workspace.floating; valid only while mapped. */
+	struct wl_list link;
 	struct tw_server *server;
 	struct tw_workspace *workspace; /* NULL unless mapped */
+	struct tw_column *column;       /* NULL unless mapped and tiled */
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_xdg_toplevel_decoration_v1 *decoration; /* NULL if none */
 
@@ -38,9 +57,8 @@ struct tw_window {
 	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 
 	bool mapped;
-	size_t width_idx; /* index into column_widths */
-	bool maximized;   /* full width, overriding width_idx */
-	bool fullscreen;  /* covers the whole output, no borders */
+	bool floating;   /* a dialog: centred, sized by the client, not in the strip */
+	bool fullscreen; /* covers the whole output, no borders; alone in its column */
 
 	/* The last state sent to the client or the scene, so that re-arranging
 	 * an unchanged strip sends no configure and causes no damage. */
@@ -66,6 +84,12 @@ struct tw_popup {
 	struct wl_listener commit;
 	struct wl_listener destroy;
 };
+
+static int64_t now_ms(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 static struct tw_window *window_from_toplevel(struct wlr_xdg_toplevel *toplevel) {
 	struct wlr_scene_tree *tree = toplevel->base->data;
@@ -106,12 +130,130 @@ struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 	return NULL;
 }
 
+/* --- Columns ---------------------------------------------------------------- */
+
+static struct tw_column *column_neighbour(struct tw_column *column, int direction) {
+	struct wl_list *link = direction < 0 ? column->link.prev : column->link.next;
+	if (link == &column->workspace->columns) {
+		return NULL;
+	}
+	struct tw_column *neighbour = wl_container_of(link, neighbour, link);
+	return neighbour;
+}
+
+/* The window above (-1) or below (+1) in the same column. */
+static struct tw_window *window_sibling(struct tw_window *window, int direction) {
+	struct wl_list *link = direction < 0 ? window->link.prev : window->link.next;
+	if (link == &window->column->windows) {
+		return NULL;
+	}
+	struct tw_window *sibling = wl_container_of(link, sibling, link);
+	return sibling;
+}
+
+static struct tw_window *column_first(struct tw_column *column) {
+	struct tw_window *window = wl_container_of(column->windows.next, window, link);
+	return window;
+}
+
+static bool column_single(struct tw_column *column) {
+	return column->windows.next == column->windows.prev;
+}
+
+/* A fullscreen window is always alone in its column. */
+static bool column_fullscreen(struct tw_column *column) {
+	return column_first(column)->fullscreen;
+}
+
+/* An empty column linked after `after`; the caller must put a window in it. */
+static struct tw_column *column_new(struct tw_workspace *workspace, struct wl_list *after) {
+	struct tw_column *column = calloc(1, sizeof(*column));
+	if (column == NULL) {
+		return NULL;
+	}
+	column->workspace = workspace;
+	column->width_idx = default_column_width;
+	wl_list_init(&column->windows);
+	wl_list_insert(after, &column->link);
+	return column;
+}
+
+static void column_insert(struct tw_column *column, struct tw_window *window,
+		struct wl_list *after) {
+	wl_list_insert(after, &window->link);
+	window->column = column;
+	window->workspace = column->workspace;
+}
+
+/*
+ * Unlinks the window from its column, freeing the column if that empties it.
+ * Returns the window that takes its place: the one below, else above, else
+ * the active window of the column to the left, else right; NULL if the strip
+ * is now empty. Focus pointers are the caller's business.
+ */
+static struct tw_window *column_take(struct tw_window *window) {
+	struct tw_column *column = window->column;
+	struct tw_window *next = window_sibling(window, +1);
+	if (next == NULL) {
+		next = window_sibling(window, -1);
+	}
+	wl_list_remove(&window->link);
+	window->column = NULL;
+
+	if (next != NULL) {
+		if (column->active == window) {
+			column->active = next;
+		}
+		return next;
+	}
+	struct tw_column *other = column_neighbour(column, -1);
+	if (other == NULL) {
+		other = column_neighbour(column, +1);
+	}
+	wl_list_remove(&column->link);
+	free(column);
+	return other != NULL ? other->active : NULL;
+}
+
+/* Moves a window that shares its column into a new column on that side. */
+static bool window_expel(struct tw_window *window, int direction) {
+	struct tw_column *old = window->column;
+	struct tw_column *column = column_new(old->workspace,
+		direction < 0 ? old->link.prev : &old->link);
+	if (column == NULL) {
+		return false;
+	}
+	column->width_idx = old->width_idx;
+	column_take(window);
+	column_insert(column, window, &column->windows);
+	column->active = window;
+	return true;
+}
+
+/* Moves a window to the bottom of another column. */
+static void window_join(struct tw_window *window, struct tw_column *column) {
+	column_first(column)->fullscreen = false;
+	window->fullscreen = false;
+	column_take(window);
+	column_insert(column, window, column->windows.prev);
+}
+
+static void window_set_fullscreen(struct tw_window *window, bool fullscreen) {
+	if (window->floating || window->fullscreen == fullscreen) {
+		return;
+	}
+	if (fullscreen && !column_single(window->column) && !window_expel(window, +1)) {
+		return;
+	}
+	window->fullscreen = fullscreen;
+}
+
 /* --- Geometry --------------------------------------------------------------- */
 
-static int column_width(const struct tw_window *window, const struct wlr_box *area) {
+static int column_width(const struct tw_column *column, const struct wlr_box *area) {
 	static const struct tw_fraction full = {1, 1};
 	return tw_column_width(area->width, gap,
-		window->maximized ? full : column_widths[window->width_idx]);
+		column->maximized ? full : column_widths[column->width_idx]);
 }
 
 static int content_size(int outer) {
@@ -131,7 +273,7 @@ static void window_update_borders(struct tw_window *window) {
 }
 
 /* A client may ignore the size it was given; never let it draw outside its
- * column. The clip is in surface coordinates, hence the geometry offset. */
+ * box. The clip is in surface coordinates, hence the geometry offset. */
 static void window_update_clip(struct tw_window *window) {
 	const struct wlr_box *geometry = &window->xdg_toplevel->base->geometry;
 	struct wlr_box clip = {
@@ -147,14 +289,34 @@ static void window_update_clip(struct tw_window *window) {
 	wlr_scene_subsurface_tree_set_clip(&window->surface_tree->node, &clip);
 }
 
-static void window_set_size(struct tw_window *window, int width, int height) {
+/* Records the content size and fits the borders to it. With `configure` the
+ * client is also asked for that size; a floating window picks its own. */
+static void window_resize(struct tw_window *window, int width, int height, bool configure) {
 	if (window->width == width && window->height == height) {
 		return;
 	}
 	window->width = width;
 	window->height = height;
-	wlr_xdg_toplevel_set_size(window->xdg_toplevel, width, height);
+	if (configure) {
+		wlr_xdg_toplevel_set_size(window->xdg_toplevel, width, height);
+	}
 	window_update_borders(window);
+}
+
+/*
+ * `on_screen`: draw it. `wanted`: it is, or is about to be, on screen, so the
+ * client should be drawing. The two differ while the strip is moving.
+ *
+ * The battery win of a scrolling layout: most windows are off-screen or on
+ * another workspace. A disabled node gets no frame callbacks, and `suspended`
+ * tells the client outright to stop drawing.
+ */
+static void window_show(struct tw_window *window, bool on_screen, bool wanted) {
+	wlr_scene_node_set_enabled(&window->scene_tree->node, on_screen);
+	if (window->suspended == wanted) {
+		window->suspended = !wanted;
+		wlr_xdg_toplevel_set_suspended(window->xdg_toplevel, !wanted);
+	}
 }
 
 /*
@@ -174,61 +336,26 @@ static void window_apply_fullscreen_scene(struct tw_window *window, bool fullscr
 		fullscreen ? server->fullscreen_tree : server->window_tree);
 }
 
-static void workspace_arrange(struct tw_workspace *workspace, const struct wlr_box *area,
-		const struct wlr_box *full, bool shown) {
-	struct tw_window *window;
+/* A dialog: has a parent, or cannot be resized. */
+static bool wants_float(struct wlr_xdg_toplevel *toplevel) {
+	const struct wlr_xdg_toplevel_state *state = &toplevel->current;
+	return toplevel->parent != NULL ||
+		(state->min_width > 0 && state->min_height > 0 &&
+		state->min_width == state->max_width && state->min_height == state->max_height);
+}
 
-	/* Scroll just far enough to show the focused column completely. A
-	 * fullscreen column has no margin: it must cover the output exactly. */
-	int x = gap;
-	wl_list_for_each(window, &workspace->windows, link) {
-		int width = window->fullscreen ? area->width : column_width(window, area);
-		if (window == workspace->focused) {
-			workspace->view_x = tw_view_fit(workspace->view_x, area->width, x, width,
-				window->fullscreen ? 0 : gap);
-		}
-		x += width + gap;
-	}
-	if (wl_list_empty(&workspace->windows)) {
-		workspace->view_x = 0;
-	}
+/* Centres a floating window, at whatever size its client chose. */
+static void float_place(struct tw_window *window, const struct wlr_box *area) {
+	const struct wlr_box *geometry = &window->xdg_toplevel->base->geometry;
+	int width = geometry->width > 0 ? geometry->width : 1;
+	int height = geometry->height > 0 ? geometry->height : 1;
+	window_resize(window, width, height, false);
+	window_update_clip(window);
 
-	x = gap;
-	wl_list_for_each(window, &workspace->windows, link) {
-		int width = window->fullscreen ? area->width : column_width(window, area);
-		bool visible = shown &&
-			tw_column_visible(workspace->view_x, area->width, x, width);
-
-		if (window->fullscreen_applied != window->fullscreen) {
-			window->fullscreen_applied = window->fullscreen;
-			window_apply_fullscreen_scene(window, window->fullscreen);
-			wlr_xdg_toplevel_set_fullscreen(window->xdg_toplevel, window->fullscreen);
-		}
-		if (window->fullscreen) {
-			wlr_scene_node_set_position(&window->scene_tree->node,
-				full->x + x - workspace->view_x, full->y);
-			window_set_size(window, full->width, full->height);
-		} else {
-			wlr_scene_node_set_position(&window->scene_tree->node,
-				area->x + x - workspace->view_x, area->y + gap);
-			window_set_size(window, content_size(width),
-				content_size(area->height - 2 * gap));
-		}
-		window_update_clip(window);
-
-		/*
-		 * The battery win of a scrolling layout: most windows are off-screen
-		 * or on another workspace. A disabled node gets no frame callbacks,
-		 * and `suspended` tells the client outright to stop drawing.
-		 */
-		wlr_scene_node_set_enabled(&window->scene_tree->node, visible);
-		if (window->suspended == visible) {
-			window->suspended = !visible;
-			wlr_xdg_toplevel_set_suspended(window->xdg_toplevel, !visible);
-		}
-
-		x += width + gap;
-	}
+	int x = area->x + (area->width - width) / 2 - border_width;
+	int y = area->y + (area->height - height) / 2 - border_width;
+	wlr_scene_node_set_position(&window->scene_tree->node,
+		x > area->x ? x : area->x, y > area->y ? y : area->y);
 }
 
 /* `area` is what windows may use, `full` the whole output (for fullscreen). */
@@ -239,6 +366,88 @@ static bool screen_boxes(struct tw_server *server, struct wlr_box *area, struct 
 	}
 	wlr_output_layout_get_box(server->output_layout, output->wlr_output, full);
 	return true;
+}
+
+/*
+ * Puts every window of the workspace where the current view position says it
+ * goes. Runs on every arrange and on every frame of a scroll animation, so
+ * everything in it is a cached no-op when nothing changed.
+ */
+static void workspace_place(struct tw_workspace *workspace, const struct wlr_box *area,
+		const struct wlr_box *full, bool shown) {
+	int view = (int)lround(workspace->view_pos);
+	int x = gap;
+	struct tw_column *column;
+	struct tw_window *window;
+
+	wl_list_for_each(column, &workspace->columns, link) {
+		bool fullscreen = column_fullscreen(column);
+		int width = fullscreen ? area->width : column_width(column, area);
+		bool on_screen = shown && tw_column_visible(view, area->width, x, width);
+		/* Also wake the windows the view is heading for. */
+		bool wanted = on_screen ||
+			(shown && tw_column_visible(workspace->view_x, area->width, x, width));
+
+		int count = wl_list_length(&column->windows), index = 0;
+		int avail = area->height - 2 * gap;
+		int y = area->y + gap;
+		wl_list_for_each(window, &column->windows, link) {
+			if (window->fullscreen_applied != window->fullscreen) {
+				window->fullscreen_applied = window->fullscreen;
+				window_apply_fullscreen_scene(window, window->fullscreen);
+				wlr_xdg_toplevel_set_fullscreen(window->xdg_toplevel, window->fullscreen);
+			}
+			if (window->fullscreen) {
+				wlr_scene_node_set_position(&window->scene_tree->node,
+					full->x + x - view, full->y);
+				window_resize(window, full->width, full->height, true);
+			} else {
+				int height = tw_stack_height(avail, gap, count, index);
+				wlr_scene_node_set_position(&window->scene_tree->node,
+					area->x + x - view, y);
+				window_resize(window, content_size(width), content_size(height), true);
+				y += height + gap;
+			}
+			window_update_clip(window);
+			window_show(window, on_screen, wanted);
+			index++;
+		}
+		x += width + gap;
+	}
+
+	wl_list_for_each(window, &workspace->floating, link) {
+		float_place(window, area);
+		window_show(window, shown, shown);
+	}
+}
+
+static void workspace_arrange(struct tw_workspace *workspace, const struct wlr_box *area,
+		const struct wlr_box *full, bool shown) {
+	/* Scroll just far enough to show the focused column completely. A
+	 * fullscreen column has no margin: it must cover the output exactly.
+	 * During a swipe the fingers decide instead. */
+	if (!workspace->swiping) {
+		int x = gap;
+		struct tw_column *column;
+		wl_list_for_each(column, &workspace->columns, link) {
+			bool fullscreen = column_fullscreen(column);
+			int width = fullscreen ? area->width : column_width(column, area);
+			if (workspace->tiled != NULL && workspace->tiled->column == column) {
+				workspace->view_x = tw_view_fit(workspace->view_x, area->width, x, width,
+					fullscreen ? 0 : gap);
+			}
+			x += width + gap;
+		}
+		/* x is now the width of the whole strip. Closing or merging columns
+		 * shortens it; scroll back rather than show blank space. */
+		workspace->view_x = tw_view_clamp(workspace->view_x, area->width, x);
+		/* Only a workspace on screen is worth animating. */
+		if (!shown || scroll_stiffness <= 0) {
+			workspace->view_pos = workspace->view_x;
+			workspace->view_velocity = 0;
+		}
+	}
+	workspace_place(workspace, area, full, shown);
 }
 
 void strip_arrange(struct tw_server *server) {
@@ -256,6 +465,140 @@ void strip_arrange(struct tw_server *server) {
 	}
 	/* Visibility decides whether a video player may keep the screen on. */
 	idle_update_inhibited(server);
+
+	/* If the view is not where it should be, glide there. The animation is
+	 * stepped from the output's frame handler, so it costs nothing once it
+	 * has arrived. */
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	if (screen_on && !workspace->swiping && workspace->view_pos != workspace->view_x) {
+		if (!server->animating) {
+			server->animating = true;
+			server->animation_last_ms = now_ms();
+		}
+		wlr_output_schedule_frame(output_primary(server)->wlr_output);
+	}
+}
+
+bool strip_animate(struct tw_server *server) {
+	if (!server->animating) {
+		return false;
+	}
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	struct wlr_box area, full;
+	int64_t now = now_ms();
+	double dt = (double)(now - server->animation_last_ms) / 1000.0;
+	server->animation_last_ms = now;
+
+	bool screen_on = !server->blanked && !server->locked;
+	if (workspace->swiping || !screen_on || !screen_boxes(server, &area, &full)) {
+		server->animating = false;
+		return false;
+	}
+	tw_spring_step(&workspace->view_pos, &workspace->view_velocity, workspace->view_x,
+		sqrt(scroll_stiffness), dt < 0.1 ? dt : 0.1);
+	if (tw_spring_settled(workspace->view_pos, workspace->view_velocity, workspace->view_x)) {
+		workspace->view_pos = workspace->view_x;
+		workspace->view_velocity = 0;
+		server->animating = false;
+	}
+	workspace_place(workspace, &area, &full, true);
+	idle_update_inhibited(server);
+	return server->animating;
+}
+
+/* --- Touchpad swipe --------------------------------------------------------- */
+
+void strip_swipe_begin(struct tw_server *server) {
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	workspace->swiping = true;
+	workspace->view_velocity = 0;
+	server->animating = false;
+}
+
+void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec) {
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	struct wlr_box area, full;
+	if (!workspace->swiping || !screen_boxes(server, &area, &full)) {
+		return;
+	}
+	/* The strip follows the fingers, so the view moves the other way. Keep a
+	 * smoothed speed for the glide after they lift. */
+	double dt = (double)(time_msec - workspace->swipe_time_msec) / 1000.0;
+	if (dt > 0 && dt < 0.1) {
+		workspace->view_velocity = 0.5 * workspace->view_velocity + 0.5 * (-dx / dt);
+	}
+	workspace->swipe_time_msec = time_msec;
+	workspace->view_pos -= dx;
+
+	workspace_place(workspace, &area, &full, !server->blanked && !server->locked);
+	idle_update_inhibited(server);
+}
+
+/*
+ * Picks where the strip comes to rest after a swipe: the column edge nearest
+ * to where it would have coasted. Focus then follows the view, staying on the
+ * focused column if it is still entirely visible.
+ */
+static void workspace_snap(struct tw_workspace *workspace, const struct wlr_box *area) {
+	double projected = workspace->view_pos + workspace->view_velocity * 0.15;
+	struct tw_column *column;
+
+	int total = gap;
+	wl_list_for_each(column, &workspace->columns, link) {
+		total += (column_fullscreen(column) ? area->width : column_width(column, area)) + gap;
+	}
+
+	/* Candidates: each column flush left, and the far end of the strip. */
+	int best = tw_view_clamp(total, area->width, total);
+	int x = gap;
+	wl_list_for_each(column, &workspace->columns, link) {
+		bool fullscreen = column_fullscreen(column);
+		int candidate = tw_view_clamp(fullscreen ? x : x - gap, area->width, total);
+		if (fabs(candidate - projected) < fabs(best - projected)) {
+			best = candidate;
+		}
+		x += (fullscreen ? area->width : column_width(column, area)) + gap;
+	}
+	workspace->view_x = best;
+
+	struct tw_column *focused = workspace->tiled != NULL ? workspace->tiled->column : NULL;
+	struct tw_column *first_whole = NULL, *first_partial = NULL;
+	x = gap;
+	wl_list_for_each(column, &workspace->columns, link) {
+		bool fullscreen = column_fullscreen(column);
+		int width = fullscreen ? area->width : column_width(column, area);
+		int margin = fullscreen ? 0 : gap;
+		if (x - margin >= best && x + width + margin <= best + area->width) {
+			if (column == focused) {
+				return;
+			}
+			if (first_whole == NULL) {
+				first_whole = column;
+			}
+		} else if (first_partial == NULL && tw_column_visible(best, area->width, x, width)) {
+			first_partial = column;
+		}
+		x += width + gap;
+	}
+	struct tw_column *target = first_whole != NULL ? first_whole : first_partial;
+	if (target != NULL) {
+		workspace->tiled = workspace->focused = target->active;
+	}
+}
+
+void strip_swipe_end(struct tw_server *server, bool cancelled) {
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	struct wlr_box area, full;
+	if (!workspace->swiping) {
+		return;
+	}
+	workspace->swiping = false;
+	/* A cancelled swipe glides back to where it started. */
+	if (!cancelled && screen_boxes(server, &area, &full)) {
+		workspace_snap(workspace, &area);
+	}
+	focus_update(server);
+	strip_arrange(server);
 }
 
 /* --- Focus ------------------------------------------------------------------ */
@@ -310,42 +653,18 @@ void focus_update(struct tw_server *server) {
 }
 
 void window_focus(struct tw_server *server, struct tw_window *window) {
-	window->workspace->focused = window;
-	focus_update(server);
-}
-
-static struct tw_window *window_neighbour(struct tw_window *window, int direction) {
-	struct wl_list *link = direction < 0 ? window->link.prev : window->link.next;
-	if (link == &window->workspace->windows) {
-		return NULL;
-	}
-	struct tw_window *neighbour = wl_container_of(link, neighbour, link);
-	return neighbour;
-}
-
-/* Takes the window out of its workspace, handing that workspace's focus to
- * the column on its left, or failing that on its right. */
-static void window_detach(struct tw_window *window) {
 	struct tw_workspace *workspace = window->workspace;
-	if (workspace->focused == window) {
-		struct tw_window *next = window_neighbour(window, -1);
-		if (next == NULL) {
-			next = window_neighbour(window, +1);
-		}
-		workspace->focused = next;
-	}
-	wl_list_remove(&window->link);
-	window->workspace = NULL;
-}
-
-/* Adds the window to a workspace as a new column to the right of the focused
- * one, and focuses it there. Existing columns are never resized. */
-static void window_attach(struct tw_window *window, struct tw_workspace *workspace) {
-	struct wl_list *after = workspace->focused != NULL ?
-		&workspace->focused->link : workspace->windows.prev;
-	wl_list_insert(after, &window->link);
-	window->workspace = workspace;
 	workspace->focused = window;
+	if (window->floating) {
+		/* The focused dialog is on top of the others. */
+		wl_list_remove(&window->link);
+		wl_list_insert(&workspace->floating, &window->link);
+		wlr_scene_node_raise_to_top(&window->scene_tree->node);
+	} else {
+		workspace->tiled = window;
+		window->column->active = window;
+	}
+	focus_update(server);
 }
 
 /* --- Toplevel lifecycle ----------------------------------------------------- */
@@ -365,10 +684,45 @@ static void decoration_detach(struct tw_window *window) {
 	window->decoration = NULL;
 }
 
+static struct tw_window *first_floating(struct tw_workspace *workspace) {
+	if (wl_list_empty(&workspace->floating)) {
+		return NULL;
+	}
+	struct tw_window *window = wl_container_of(workspace->floating.next, window, link);
+	return window;
+}
+
+/* Takes the window out of its workspace and passes its focus on: a closed
+ * dialog to the next dialog or back to the strip, a closed tiled window to
+ * whatever took its place. */
+static void window_remove(struct tw_window *window) {
+	struct tw_workspace *workspace = window->workspace;
+	struct tw_window *next;
+	if (window->floating) {
+		wl_list_remove(&window->link);
+		next = first_floating(workspace);
+		if (next == NULL) {
+			next = workspace->tiled;
+		}
+	} else {
+		next = column_take(window);
+		if (workspace->tiled == window) {
+			workspace->tiled = next;
+		}
+		if (next == NULL) {
+			next = first_floating(workspace);
+		}
+	}
+	if (workspace->focused == window) {
+		workspace->focused = next;
+	}
+	window->workspace = NULL;
+}
+
 static void window_unmap(struct tw_window *window) {
 	struct tw_server *server = window->server;
 
-	window_detach(window);
+	window_remove(window);
 	if (server->focused == window) {
 		/* Cleared directly: this surface must not be sent a configure now. */
 		server->focused = NULL;
@@ -379,11 +733,14 @@ static void window_unmap(struct tw_window *window) {
 	/* If the client maps again it starts from a fresh initial commit. */
 	window->width = window->height = 0;
 	window->suspended = false;
-	window->maximized = false;
 	window->fullscreen = false;
 	if (window->fullscreen_applied) {
 		window->fullscreen_applied = false;
 		window_apply_fullscreen_scene(window, false);
+	}
+	if (window->floating) {
+		window->floating = false;
+		wlr_scene_node_reparent(&window->scene_tree->node, server->window_tree);
 	}
 	window->clip = (struct wlr_box){0};
 
@@ -394,51 +751,86 @@ static void window_unmap(struct tw_window *window) {
 static void handle_map(struct wl_listener *listener, void *data) {
 	struct tw_window *window = wl_container_of(listener, window, map);
 	struct tw_server *server = window->server;
+	struct tw_workspace *workspace = &server->workspaces[server->active];
 
-	window_attach(window, &server->workspaces[server->active]);
+	if (window->floating) {
+		window->workspace = workspace;
+		wl_list_insert(&workspace->floating, &window->link);
+		wlr_scene_node_reparent(&window->scene_tree->node, server->float_tree);
+	} else {
+		/* A new column opens to the right of the focused one and never
+		 * resizes the others. */
+		struct tw_column *column = column_new(workspace, workspace->tiled != NULL ?
+			&workspace->tiled->column->link : workspace->columns.prev);
+		if (column == NULL) {
+			wlr_log(WLR_ERROR, "out of memory, closing a new window");
+			wlr_xdg_toplevel_send_close(window->xdg_toplevel);
+			return;
+		}
+		column_insert(column, window, &column->windows);
+		column->active = window;
+		window->fullscreen = window->xdg_toplevel->requested.fullscreen;
+		workspace->tiled = window;
+	}
 	window->mapped = true;
-	window->fullscreen = window->xdg_toplevel->requested.fullscreen;
+	workspace->focused = window;
 	focus_update(server);
 	strip_arrange(server);
 
 	const char *app_id = window->xdg_toplevel->app_id;
-	wlr_log(WLR_DEBUG, "map %s %dx%d workspace=%zu decorations=%s%s",
+	wlr_log(WLR_DEBUG, "map %s %dx%d workspace=%zu decorations=%s%s%s",
 		app_id != NULL ? app_id : "(no app_id)", window->width, window->height,
 		server->active + 1, window->decoration != NULL ? "server" : "client",
-		window->fullscreen ? " fullscreen" : "");
+		window->fullscreen ? " fullscreen" : "", window->floating ? " floating" : "");
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
 	struct tw_window *window = wl_container_of(listener, window, unmap);
-	window_unmap(window);
+	if (window->mapped) {
+		window_unmap(window);
+	}
 }
 
 static void handle_commit(struct wl_listener *listener, void *data) {
 	struct tw_window *window = wl_container_of(listener, window, commit);
 	struct wlr_xdg_toplevel *toplevel = window->xdg_toplevel;
+	struct wlr_box area, full;
 
 	if (toplevel->base->initial_commit) {
+		window->floating = wants_float(toplevel);
+		decoration_apply(window);
+		if (window->floating || !screen_boxes(window->server, &area, &full)) {
+			/* A dialog picks its own size. */
+			wlr_xdg_toplevel_set_size(toplevel, 0, 0);
+			return;
+		}
 		/* Tell the client its column size before it draws anything, so the
 		 * first frame already fits and nothing visibly resizes on map. */
-		struct wlr_box area, full;
 		wlr_xdg_toplevel_set_tiled(toplevel,
 			WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
-		decoration_apply(window);
-		if (!screen_boxes(window->server, &area, &full)) {
-			wlr_xdg_toplevel_set_size(toplevel, 0, 0);
-		} else if (toplevel->requested.fullscreen) {
+		if (toplevel->requested.fullscreen) {
 			/* It asked to start fullscreen (`mpv --fs`): size it for that. */
 			window->fullscreen = window->fullscreen_applied = true;
 			window_apply_fullscreen_scene(window, true);
 			wlr_xdg_toplevel_set_fullscreen(toplevel, true);
-			window_set_size(window, full.width, full.height);
+			window_resize(window, full.width, full.height, true);
 		} else {
-			window_set_size(window, content_size(column_width(window, &area)),
-				content_size(area.height - 2 * gap));
+			/* It will get a column of its own, at the default width. */
+			int width = tw_column_width(area.width, gap, column_widths[default_column_width]);
+			window_resize(window, content_size(width),
+				content_size(area.height - 2 * gap), true);
 		}
 		return;
 	}
-	if (window->mapped) {
+	if (!window->mapped) {
+		return;
+	}
+	if (window->floating) {
+		/* Its size is its own, so re-centre when it changes. */
+		if (screen_boxes(window->server, &area, &full)) {
+			float_place(window, &area);
+		}
+	} else {
 		window_update_clip(window);
 	}
 }
@@ -479,7 +871,7 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data) 
 	struct tw_window *window = wl_container_of(listener, window, request_fullscreen);
 	struct wlr_xdg_toplevel *toplevel = window->xdg_toplevel;
 	if (window->mapped) {
-		window->fullscreen = toplevel->requested.fullscreen;
+		window_set_fullscreen(window, toplevel->requested.fullscreen);
 		strip_arrange(window->server);
 	}
 	/* xdg-shell wants a configure in reply even if nothing changed. A request
@@ -500,7 +892,6 @@ static void handle_new_toplevel(struct wl_listener *listener, void *data) {
 	}
 	window->server = server;
 	window->xdg_toplevel = toplevel;
-	window->width_idx = default_column_width;
 
 	bool ok = (window->scene_tree = wlr_scene_tree_create(server->window_tree)) != NULL;
 	for (size_t i = 0; ok && i < LENGTH(window->border); i++) {
@@ -643,85 +1034,156 @@ static void handle_new_popup(struct wl_listener *listener, void *data) {
 
 /* --- Actions ---------------------------------------------------------------- */
 
-static struct tw_window *active_window(struct tw_server *server) {
-	return server->workspaces[server->active].focused;
+/* The strip's focused window, whether or not a dialog has the keyboard.
+ * Moving focus along the strip starts from here and leaves the dialog. */
+static struct tw_window *strip_window(struct tw_server *server) {
+	return server->workspaces[server->active].tiled;
+}
+
+/* The same, but only if it really is the focused window: actions that change
+ * a window do nothing while a dialog is in front. */
+static struct tw_window *focused_tiled(struct tw_server *server) {
+	struct tw_workspace *workspace = &server->workspaces[server->active];
+	return workspace->focused == workspace->tiled ? workspace->tiled : NULL;
 }
 
 void action_close(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
+	struct tw_window *window = server->workspaces[server->active].focused;
 	if (window != NULL) {
 		wlr_xdg_toplevel_send_close(window->xdg_toplevel);
 	}
 }
 
 void action_focus(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
-	struct tw_window *neighbour = window != NULL ? window_neighbour(window, arg->i) : NULL;
-	if (neighbour != NULL) {
-		window_focus(server, neighbour);
-		strip_arrange(server);
+	struct tw_window *window = strip_window(server);
+	if (window == NULL) {
+		return;
 	}
+	struct tw_column *column = column_neighbour(window->column, arg->i);
+	window_focus(server, column != NULL ? column->active : window);
+	strip_arrange(server);
 }
 
 void action_focus_edge(struct tw_server *server, const union tw_arg *arg) {
 	struct tw_workspace *workspace = &server->workspaces[server->active];
-	if (wl_list_empty(&workspace->windows)) {
+	if (wl_list_empty(&workspace->columns)) {
 		return;
 	}
-	struct wl_list *link = arg->i < 0 ? workspace->windows.next : workspace->windows.prev;
-	struct tw_window *window = wl_container_of(link, window, link);
-	window_focus(server, window);
+	struct wl_list *link = arg->i < 0 ? workspace->columns.next : workspace->columns.prev;
+	struct tw_column *column = wl_container_of(link, column, link);
+	window_focus(server, column->active);
+	strip_arrange(server);
+}
+
+void action_focus_window(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = strip_window(server);
+	if (window == NULL) {
+		return;
+	}
+	struct tw_window *sibling = window_sibling(window, arg->i);
+	window_focus(server, sibling != NULL ? sibling : window);
 	strip_arrange(server);
 }
 
 void action_move(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
-	struct tw_window *neighbour = window != NULL ? window_neighbour(window, arg->i) : NULL;
+	struct tw_window *window = focused_tiled(server);
+	struct tw_column *neighbour = window != NULL ?
+		column_neighbour(window->column, arg->i) : NULL;
 	if (neighbour == NULL) {
 		return;
 	}
-	wl_list_remove(&window->link);
-	wl_list_insert(arg->i < 0 ? neighbour->link.prev : &neighbour->link, &window->link);
+	wl_list_remove(&window->column->link);
+	wl_list_insert(arg->i < 0 ? neighbour->link.prev : &neighbour->link, &window->column->link);
 	strip_arrange(server);
 }
 
 void action_move_edge(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
+	struct tw_window *window = focused_tiled(server);
 	if (window == NULL) {
 		return;
 	}
-	struct wl_list *windows = &window->workspace->windows;
+	struct wl_list *columns = &window->workspace->columns;
+	wl_list_remove(&window->column->link);
+	wl_list_insert(arg->i < 0 ? columns : columns->prev, &window->column->link);
+	strip_arrange(server);
+}
+
+void action_move_window(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = focused_tiled(server);
+	struct tw_window *sibling = window != NULL ? window_sibling(window, arg->i) : NULL;
+	if (sibling == NULL) {
+		return;
+	}
 	wl_list_remove(&window->link);
-	wl_list_insert(arg->i < 0 ? windows : windows->prev, &window->link);
+	wl_list_insert(arg->i < 0 ? sibling->link.prev : &sibling->link, &window->link);
+	strip_arrange(server);
+}
+
+void action_consume_or_expel(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = focused_tiled(server);
+	if (window == NULL) {
+		return;
+	}
+	if (!column_single(window->column)) {
+		if (!window_expel(window, arg->i)) {
+			return;
+		}
+	} else {
+		struct tw_column *neighbour = column_neighbour(window->column, arg->i);
+		if (neighbour == NULL) {
+			return;
+		}
+		window_join(window, neighbour);
+		neighbour->active = window;
+	}
+	strip_arrange(server);
+}
+
+void action_consume(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = focused_tiled(server);
+	struct tw_column *right = window != NULL ? column_neighbour(window->column, +1) : NULL;
+	if (right == NULL) {
+		return;
+	}
+	window_join(column_first(right), window->column);
+	strip_arrange(server);
+}
+
+void action_expel(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = focused_tiled(server);
+	if (window == NULL || column_single(window->column) || !window_expel(window, +1)) {
+		return;
+	}
 	strip_arrange(server);
 }
 
 void action_cycle_width(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
+	struct tw_window *window = focused_tiled(server);
 	if (window == NULL) {
 		return;
 	}
+	struct tw_column *column = window->column;
 	/* Leaving the maximized state lands on the first preset. */
-	window->width_idx = window->maximized ? 0 : (window->width_idx + 1) % LENGTH(column_widths);
-	window->maximized = false;
+	column->width_idx = column->maximized ? 0 : (column->width_idx + 1) % LENGTH(column_widths);
+	column->maximized = false;
 	strip_arrange(server);
 }
 
 void action_maximize(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
+	struct tw_window *window = focused_tiled(server);
 	if (window == NULL) {
 		return;
 	}
-	window->maximized = !window->maximized;
+	window->column->maximized = !window->column->maximized;
 	strip_arrange(server);
 }
 
 void action_fullscreen(struct tw_server *server, const union tw_arg *arg) {
-	struct tw_window *window = active_window(server);
+	struct tw_window *window = focused_tiled(server);
 	if (window == NULL) {
 		return;
 	}
-	window->fullscreen = !window->fullscreen;
+	window_set_fullscreen(window, !window->fullscreen);
 	strip_arrange(server);
 }
 
@@ -734,13 +1196,40 @@ static void workspace_show(struct tw_server *server, size_t index) {
 	strip_arrange(server);
 }
 
+/* Sends the focused column (or the focused dialog) to another workspace and
+ * follows it there. */
 static void workspace_take_column(struct tw_server *server, size_t index) {
-	struct tw_window *window = active_window(server);
+	struct tw_workspace *from = &server->workspaces[server->active];
+	struct tw_window *window = from->focused;
 	if (window == NULL || index >= TW_WORKSPACES || index == server->active) {
 		return;
 	}
-	window_detach(window);
-	window_attach(window, &server->workspaces[index]);
+	struct tw_workspace *to = &server->workspaces[index];
+
+	if (window->floating) {
+		window_remove(window);
+		wl_list_insert(&to->floating, &window->link);
+		window->workspace = to;
+	} else {
+		struct tw_column *column = window->column;
+		struct tw_column *other = column_neighbour(column, -1);
+		if (other == NULL) {
+			other = column_neighbour(column, +1);
+		}
+		from->tiled = other != NULL ? other->active : NULL;
+		from->focused = from->tiled != NULL ? from->tiled : first_floating(from);
+
+		wl_list_remove(&column->link);
+		wl_list_insert(to->tiled != NULL ? &to->tiled->column->link : to->columns.prev,
+			&column->link);
+		column->workspace = to;
+		struct tw_window *member;
+		wl_list_for_each(member, &column->windows, link) {
+			member->workspace = to;
+		}
+		to->tiled = window;
+	}
+	to->focused = window;
 	/* The column stays the active window, so no focus events are sent. */
 	server->active = index;
 	focus_update(server);
@@ -773,7 +1262,8 @@ void action_move_to_workspace_relative(struct tw_server *server, const union tw_
 
 void window_init(struct tw_server *server) {
 	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		wl_list_init(&server->workspaces[i].windows);
+		wl_list_init(&server->workspaces[i].columns);
+		wl_list_init(&server->workspaces[i].floating);
 	}
 
 	/* Version 6 is the first with the `suspended` state. */

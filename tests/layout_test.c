@@ -1,4 +1,5 @@
 /* Unit tests for the scrolling-strip maths. Runs without a compositor. */
+#include <math.h>
 #include <stdio.h>
 
 #include "layout.h"
@@ -47,6 +48,61 @@ int main(void) {
 	/* One pixel on the output still counts as visible. */
 	CHECK(tw_column_visible(col0 + w - 1, view, col0, w));
 	CHECK(!tw_column_visible(col0 + w, view, col0, w));
+
+	/* The view stays on the strip. Three half columns are wider than the
+	 * output, so the view can scroll by exactly one column and no further. */
+	int strip = 3 * w + 4 * gap;
+	CHECK(tw_view_clamp(0, view, strip) == 0);
+	CHECK(tw_view_clamp(-50, view, strip) == 0);
+	CHECK(tw_view_clamp(view_x, view, strip) == view_x);
+	CHECK(tw_view_clamp(view_x + 1, view, strip) == view_x);
+	/* A strip that fits on the output never scrolls. */
+	CHECK(tw_view_clamp(view_x, view, 2 * w + 3 * gap) == 0);
+	CHECK(tw_view_clamp(view_x, view, 0) == 0);
+
+	/* Stacked windows share a column and always fill it exactly. */
+	CHECK(tw_stack_height(560, gap, 1, 0) == 560);
+	CHECK(tw_stack_height(560, gap, 2, 0) == 276);
+	CHECK(tw_stack_height(560, gap, 2, 1) == 276);
+	for (int count = 1; count <= 6; count++) {
+		int sum = 0;
+		for (int i = 0; i < count; i++) {
+			sum += tw_stack_height(563, gap, count, i);
+		}
+		CHECK(sum + (count - 1) * gap == 563);
+	}
+	/* Too many windows for the height still get a positive size. */
+	CHECK(tw_stack_height(10, gap, 4, 0) >= 1);
+
+	/* The scroll spring. From rest it approaches the target monotonically
+	 * and never passes it. */
+	const double omega = sqrt(800.0), target = 500.0;
+	double pos = 0, vel = 0;
+	CHECK(!tw_spring_settled(pos, vel, target));
+	for (int frame = 0; frame < 60; frame++) {
+		double before = pos;
+		tw_spring_step(&pos, &vel, target, omega, 1.0 / 60.0);
+		CHECK(pos >= before);
+		CHECK(pos <= target);
+	}
+	CHECK(tw_spring_settled(pos, vel, target));
+	/* The step is exact, so the frame rate does not change the motion. */
+	double coarse_pos = 0, coarse_vel = 0, fine_pos = 0, fine_vel = 0;
+	tw_spring_step(&coarse_pos, &coarse_vel, target, omega, 0.1);
+	for (int i = 0; i < 10; i++) {
+		tw_spring_step(&fine_pos, &fine_vel, target, omega, 0.01);
+	}
+	CHECK(fabs(coarse_pos - fine_pos) < 1e-6);
+	CHECK(fabs(coarse_vel - fine_vel) < 1e-6);
+	/* A swipe that ends moving toward the target gets there sooner. */
+	double flung_pos = 0, flung_vel = 2000, rest_pos = 0, rest_vel = 0;
+	tw_spring_step(&flung_pos, &flung_vel, target, omega, 0.05);
+	tw_spring_step(&rest_pos, &rest_vel, target, omega, 0.05);
+	CHECK(flung_pos > rest_pos);
+	/* A zero-length step changes nothing. */
+	double still_pos = 123, still_vel = 45;
+	tw_spring_step(&still_pos, &still_vel, target, omega, 0);
+	CHECK(still_pos == 123 && still_vel == 45);
 
 	if (failures > 0) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
