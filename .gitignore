@@ -1,0 +1,7 @@
+/build*/
+/compile_commands.json
+
+# Vendored sources are fetched by Meson from the pinned wlroots.wrap; the other
+# .wrap files here are redirects Meson generates for wlroots' own dependencies.
+/subprojects/*
+!/subprojects/wlroots.wrap
