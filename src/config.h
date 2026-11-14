@@ -140,6 +140,7 @@ static const struct tw_binding bindings[] = {
 	/* modifiers    key                 action                              argument */
 	{MOD,           XKB_KEY_t,          action_spawn,                       {.s = terminal}},
 	{MOD,           XKB_KEY_d,          action_spawn,                       {.s = launcher}},
+	{MOD,           XKB_KEY_space,      action_spawn,                       {.s = launcher}},
 	{MOD,           XKB_KEY_q,          action_close,                       {0}},
 	{MOD | SHIFT,   XKB_KEY_e,          action_quit,                        {0}},
 
