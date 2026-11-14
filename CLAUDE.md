@@ -271,4 +271,8 @@ machine before looking at tw: `/proc/meminfo`, `smaps_rollup` per process,
 and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. The first time
 (2026-11-14, 2.7 GB in use) tw and everything its session starts came to
 under 200 MB; the rest was the one application running and 760 MB of kernel
-memory that no counter in `/proc/meminfo` explains.
+memory that no counter in `/proc/meminfo` explains. The NVIDIA driver held
+376 MB of that although its GPU was asleep: the owner unloaded its modules
+and the figure fell to 384 MB. Of what remains, about 100 MB is free pages
+parked per CPU (`count:` lines in `/proc/zoneinfo`) and about 100 MB is
+vmalloc.

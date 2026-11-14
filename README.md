@@ -110,6 +110,12 @@ startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
   Ports wired to the second GPU only work if the monitor is connected when you
   log in. On the ROG Strix the Intel GPU has two DisplayPort outputs (most
   likely the USB-C ports) and the NVIDIA GPU has HDMI and one DisplayPort.
+- The NVIDIA driver keeps about 380 MB of memory for as long as it is loaded,
+  even while its GPU is asleep and nothing uses it. It belongs to no program,
+  so it only shows in the total. Measured by unloading the driver:
+  `sudo systemctl stop nvidia-powerd`, then
+  `sudo modprobe -r nvidia_drm nvidia_uvm nvidia_modeset nvidia`; a reboot
+  brings it back.
 - The laptop suspends after 15 minutes without input, also on mains power. Run
   a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
