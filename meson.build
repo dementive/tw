@@ -82,8 +82,11 @@ protocols = {
 	'ext-session-lock-v1': wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 	'idle-inhibit-unstable-v1': wl_protocol_dir / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
 	'xdg-activation-v1': wl_protocol_dir / 'staging/xdg-activation/xdg-activation-v1.xml',
+	'pointer-constraints-unstable-v1': wl_protocol_dir / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
+	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
+	'wlr-virtual-pointer-unstable-v1': 'protocols/wlr-virtual-pointer-unstable-v1.xml',
 }
 server_header = {}
 client_header = {}
@@ -135,6 +138,11 @@ install_data(
 	install_dir: get_option('bindir'),
 	install_mode: 'rwxr-xr-x',
 )
+# Tells xdg-desktop-portal which backends to use in a tw session.
+install_data(
+	'data/tw-portals.conf',
+	install_dir: get_option('datadir') / 'xdg-desktop-portal',
+)
 configure_file(
 	input: 'data/tw.desktop.in',
 	output: 'tw.desktop',
@@ -169,6 +177,10 @@ test_client = executable(
 	protocol_code['idle-inhibit-unstable-v1'],
 	client_header['xdg-activation-v1'],
 	protocol_code['xdg-activation-v1'],
+	client_header['pointer-constraints-unstable-v1'],
+	protocol_code['pointer-constraints-unstable-v1'],
+	client_header['relative-pointer-unstable-v1'],
+	protocol_code['relative-pointer-unstable-v1'],
 	dependencies: wayland_client,
 )
 test_keys = executable(
@@ -176,6 +188,8 @@ test_keys = executable(
 	'tests/keys.c',
 	client_header['virtual-keyboard-unstable-v1'],
 	protocol_code['virtual-keyboard-unstable-v1'],
+	client_header['wlr-virtual-pointer-unstable-v1'],
+	protocol_code['wlr-virtual-pointer-unstable-v1'],
 	dependencies: [wayland_client, xkbcommon],
 )
 
@@ -193,6 +207,24 @@ test(
 test(
 	'columns',
 	find_program('tests/columns.sh'),
+	args: [tw, test_client, test_keys],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# The mouse: pointer focus, click to focus, pointer lock and confinement.
+test(
+	'pointer',
+	find_program('tests/pointer.sh'),
+	args: [tw, test_client, test_keys],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# Two monitors: a workspace on each, moving the focus and columns between them.
+test(
+	'outputs',
+	find_program('tests/outputs.sh'),
 	args: [tw, test_client, test_keys],
 	is_parallel: false,
 	timeout: 120,

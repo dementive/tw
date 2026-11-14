@@ -12,7 +12,20 @@ keys_bin=$3
 on='activated=1 suspended=0'      # focused and visible
 off_screen='activated=0 suspended=1'
 
+# --- Autostart -----------------------------------------------------------------
+# Stand-ins for the programs in config.h's autostart list: each must be
+# started once, with its arguments.
+fake_program fnott "echo fnott >>'$run_dir/autostart.log'"
+fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart.log'"
+autostarted() {
+	grep -qx fnott "$run_dir/autostart.log" &&
+		grep -qx "wl-clip-persist --clipboard regular" "$run_dir/autostart.log"
+}
+
 start_tw
+wait_until "the autostart programs to be started" autostarted
+[ "$(grep -c . "$run_dir/autostart.log")" = 2 ] ||
+	fail "autostart ran something twice: $(cat "$run_dir/autostart.log")"
 
 # --- Columns -------------------------------------------------------------------
 start_client a
@@ -184,4 +197,4 @@ expect_keyboard h enter "the keyboard to return to the focused window"
 expect_state h "$on" "windows to come back after unlocking"
 
 stop_tw
-echo "ok: columns $size, bindings, workspaces, layer shell, fullscreen $full, lock, clean exit"
+echo "ok: autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"

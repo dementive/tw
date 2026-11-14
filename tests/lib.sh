@@ -98,6 +98,14 @@ press() {
 		fail "could not press: $*"
 }
 
+# The mouse, through the same tool. Positions are in pixels of the screen
+# area: one 1280x720 headless output, unless a test starts tw with more and
+# sets screen_size.
+screen_size=1280,720
+pointer_to() { press "move:$1,$2:$screen_size"; }  # <x> <y>
+pointer_by() { press "rel:$1,$2"; }                 # <dx> <dy>
+click() { press click; }
+
 # The checks below look at a client's most recent line of one kind, because
 # what matters is the state it is in now, not one it passed through.
 last_line_matches() { # <name> <line prefix> <regex>

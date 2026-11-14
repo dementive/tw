@@ -48,7 +48,7 @@ struct wlr_surface *lock_keyboard_surface(struct tw_server *server) {
 		return NULL;
 	}
 	/* Prefer the surface on the output the user works on. */
-	struct tw_output *primary = output_primary(server);
+	struct tw_output *primary = output_focused(server);
 	struct tw_lock_surface *surface, *any = NULL;
 	wl_list_for_each(surface, &server->lock->surfaces, link) {
 		if (primary != NULL && surface->lock_surface->output == primary->wlr_output) {

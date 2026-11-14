@@ -28,8 +28,9 @@ sudo meson install -C build-release --no-rebuild --skip-subprojects
 Always pass `--suite tw`; without it Meson also runs the vendored
 subprojects' own tests.
 
-`-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per window.
-`-b <seconds>` overrides the screen-blanking timeout from `config.h`.
+`-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per window
+and an `output <name>` line per monitor. `-b <seconds>` and `-z <seconds>`
+override the screen-blanking and suspend timeouts from `config.h`.
 
 Never run `data/tw-session` from inside a desktop session to try it out: it
 publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
@@ -38,23 +39,25 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 
 | File | Role |
 | --- | --- |
-| `src/config.h` | All configuration, compile-time: gaps, colours, column widths, key bindings |
+| `src/config.h` | All configuration, compile-time: gaps, colours, column widths, outputs, autostart, timeouts, key bindings |
 | `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Pure functions, no wlroots, unit tested |
 | `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, focus requests, `strip_arrange()`, scroll animation and swipes |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
-| `src/idle.c` | Screen blanking after inactivity, idle inhibitors |
+| `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up |
 | `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects |
-| `src/output.c` | Outputs, scene layers, the frame handler |
-| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings and gestures, lid switch, seat |
-| `src/main.c` | Startup, teardown, `spawn()`, `program_find()` |
-| `data/` | `tw-session` (session start script) and the login-screen entry |
+| `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
+| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
+| `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
+| `data/` | `tw-session` (session start script, picks the GPUs), the login-screen entry, the portal configuration |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
-| `tests/keys.c` | Presses key combinations through the virtual-keyboard protocol |
+| `tests/keys.c` | Presses key combinations and moves and clicks the mouse, through the virtual-keyboard and virtual-pointer protocols |
 | `tests/smoke.sh` | End-to-end behaviour on the headless backend |
 | `tests/columns.sh` | Windows sharing a column, floating dialogs |
-| `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle |
+| `tests/pointer.sh` | The mouse: pointer focus, click to focus, pointer lock, confinement |
+| `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
+| `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets and starting the helper on demand, with a stand-in helper |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
@@ -67,14 +70,24 @@ always alone in its column. Dialogs (windows with a parent or a fixed size)
 are not in the strip: they sit in the workspace's `floating` list, centred, at
 the size their client chose.
 
-Only the active workspace is on screen, on the first output. `strip_arrange()`
-decides where the view should be (`view_x`) and places everything; call it
-after anything that changes a strip, the focus, a column width, the active
-workspace or the output. Nothing else positions windows.
+Each output shows one workspace (`output->workspace`), and no two outputs show
+the same one; the rest are hidden. `server->active` is the workspace with the
+focus, and the output showing it is the focused output: new windows open
+there. Going to a workspace that another output shows moves the focus to that
+output; the workspace stays where it is. Unplugging an output only hides its
+workspace, so no window is ever moved because a monitor went away. With more
+than one output, a window sticking out of its output is trimmed at the edge
+(`window_trim()`), or it would show up on the neighbour.
+
+`strip_arrange()` decides where the view of each workspace on screen should be
+(`view_x`) and places everything; call it after anything that changes a
+strip, the focus, a column width, which workspace an output shows, or an
+output. Nothing else positions windows. A hidden workspace is not laid out at
+all until it is shown again, because sizes depend on the output.
 
 The view glides to `view_x` on a spring. `view_pos` is where it is drawn now;
-`strip_animate()` advances it once per output frame and stops asking for
-frames when it arrives. A three-finger swipe moves `view_pos` directly and
+`strip_animate()` advances it once per frame of the output showing it and
+stops asking for frames when it arrives. A three-finger swipe moves `view_pos` directly and
 `strip_swipe_end()` picks the column edge to settle on. A window is drawn
 where `view_pos` puts it, but told to draw (not `suspended`) as soon as it is
 visible at either `view_pos` or `view_x`.
@@ -90,9 +103,16 @@ that asked for exclusive focus, else to the active window. Change
 `workspace->focused`, `server->active`, `server->keyboard_layer` or the lock
 state, then call `focus_update()`; do not send focus events anywhere else.
 
-A window is on screen only if its column is in view, its workspace is active,
-the outputs are on (`!server->blanked`) and the session is unlocked. In every
-other case `strip_arrange()` disables its scene node and suspends it.
+A window is on screen only if its column is in view, an output shows its
+workspace, the outputs are on (`!server->blanked`) and the session is
+unlocked. In every other case `strip_arrange()` disables its scene node and
+suspends it.
+
+A client may lock the pointer in place and read raw mouse movement instead
+(games, 3D editors, and X11 programs through Xwayland), or confine it. A
+constraint is in force only while its window has both the keyboard and the
+pointer; `pointer_constraint_update()` re-derives that after either focus
+changes, so every focus binding releases a lock.
 
 tw locks in two ways. A lock client (swaylock) asks for the lock, or tw takes
 it by itself with `lock_now()`: on Mod+Alt+L, when the lid closes, and when
@@ -137,8 +157,11 @@ after listeners are attached must go through the teardown in `main()`.
 **Idle means zero wakeups.** No polling, no periodic work, no helper threads.
 Anything time-based must be driven by output frame events, or be a one-shot
 timer that is not re-armed per input event (see `idle.c`: input records a
-timestamp, the timer sorts it out when it fires), and must stop when it has
-nothing left to do. The budget test enforces 0.
+timestamp, the one timer sorts out blanking and suspending when it fires),
+and must stop when it has nothing left to do. Waiting for something that may
+never happen has to be free: the wake-up watch in `idle.c` is a timer that
+never expires and that the kernel cancels when the clock jumps. The budget
+test enforces 0.
 
 **Do not send what has not changed.** A redundant configure wakes a client and
 a redundant scene update causes a repaint. Cache the last value sent and
@@ -186,6 +209,15 @@ put anything with logic in `layout.c` where it can be unit tested.
 It has no lid switch either, so the switch handler in `input.c` is untested;
 what it calls (`lock_now()`) is tested through locking on idle.
 
+Its outputs cannot be unplugged, so `handle_destroy()` in `output.c` (the
+remaining output taking over the active workspace) is untested. Nor can the
+machine be suspended or the clock set from a test, so the wake-up watch in
+`idle.c` is untested, and the suspend command is a stand-in.
+
+The GPU choice in `data/tw-session` only runs at a real login. Its logic can
+be dry-run by sourcing that part of the script against a fake `/sys` tree;
+never run the script itself inside a session.
+
 `tests/x11.sh` uses a stand-in for xwayland-satellite. It proves tw's half of
 the hand-over (display, arguments, sockets, restart, cleanup), not that the
 real helper works with tw.
@@ -198,5 +230,6 @@ ours. The tests use the software renderer, where the report must be empty.
 
 The memory figure of the budget test moves by 100 to 200 kB with what else is
 running on the machine, because shared library pages are divided among the
-processes that map them. To tell what a change costs, build the previous
-commit too and run both budget tests back to back.
+processes that map them. To tell what a change costs, compare the line
+"of which allocated by tw", which does not move, and for the rest build the
+previous commit too and run both budget tests back to back.

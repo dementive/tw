@@ -8,6 +8,7 @@
 #define TW_CONFIG_H
 
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include "tw.h"
@@ -22,8 +23,19 @@ static const float border_unfocused[4] = {0.22f, 0.22f, 0.25f, 1.0f};
 static const struct tw_fraction column_widths[] = {{1, 3}, {1, 2}, {2, 3}};
 static const size_t default_column_width = 1; /* index into column_widths */
 
-/* Applied to every output; fractional values such as 1.5 work. */
-static const float output_scale = 1.25f;
+/*
+ * Outputs, by connector name (`tw -d` logs the name as each one appears).
+ * The entry with a NULL name applies to every output not listed. Scales may
+ * be fractional. x and y are where the output's top left corner goes in the
+ * combined screen area, in logical pixels; AUTO puts the output to the right
+ * of the others, in the order they were plugged in.
+ */
+#define AUTO TW_AUTO
+static const struct tw_output_rule output_rules[] = {
+	/* name     scale   x     y */
+	{"eDP-1",   1.25f,  AUTO, AUTO}, /* the laptop's own screen */
+	{NULL,      1.0f,   AUTO, AUTO},
+};
 
 /* Keyboard layout comes from the XKB_DEFAULT_* environment variables. */
 static const int repeat_rate = 25;   /* keys per second */
@@ -57,8 +69,19 @@ static const int scroll_stiffness = 800;
 static const int blank_after_seconds = 300;
 
 /*
- * Lock the session when the laptop lid closes, and when the screen turns off
- * after blank_after_seconds. tw locks at once and by itself, so nothing is
+ * Suspend the machine after this many seconds without input; 0 never does.
+ * The session is locked first (see lock_on_idle). A visible window that
+ * inhibits idling holds it off, and so does anything holding a systemd sleep
+ * inhibitor (`systemd-inhibit --what=sleep <command>` for a long build). If
+ * the machine is still awake afterwards, tw tries again after the same time.
+ * `tw -z` overrides this.
+ */
+static const int suspend_after_seconds = 900;
+static const char suspend_command[] = "systemctl suspend";
+
+/*
+ * Lock the session when the laptop lid closes, when the screen turns off
+ * after blank_after_seconds, and before suspending. tw locks at once and by itself, so nothing is
  * visible or reachable even if the machine suspends before the locker is up;
  * the locker then draws the lock screen. Neither does anything unless the
  * locker below is installed.
@@ -72,6 +95,17 @@ static const char launcher[] = "fuzzel";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";
+
+/*
+ * Programs started with the session, as shell commands; the list ends with
+ * NULL. Each is a process that stays in memory until you log out, so keep it
+ * short. One that is not installed is skipped.
+ */
+static const char *const autostart[] = {
+	"fnott",                               /* shows notifications */
+	"wl-clip-persist --clipboard regular", /* keeps a copy when its program exits */
+	NULL,
+};
 
 /*
  * X11 applications run through this helper, which starts Xwayland. tw starts
@@ -161,6 +195,25 @@ static const struct tw_binding bindings[] = {
 	{MOD | CTRL,    XKB_KEY_i,          action_move_to_workspace_relative,  {.i = -1}},
 	{MOD | CTRL,    XKB_KEY_Page_Down,  action_move_to_workspace_relative,  {.i = +1}},
 	{MOD | CTRL,    XKB_KEY_Page_Up,    action_move_to_workspace_relative,  {.i = -1}},
+	/* Monitors: Mod+Shift moves the focus to the next one in that direction,
+	 * Mod+Shift+Ctrl takes the focused column along. */
+	{MOD | SHIFT,        XKB_KEY_h,     action_focus_output,   {.i = WLR_DIRECTION_LEFT}},
+	{MOD | SHIFT,        XKB_KEY_l,     action_focus_output,   {.i = WLR_DIRECTION_RIGHT}},
+	{MOD | SHIFT,        XKB_KEY_k,     action_focus_output,   {.i = WLR_DIRECTION_UP}},
+	{MOD | SHIFT,        XKB_KEY_j,     action_focus_output,   {.i = WLR_DIRECTION_DOWN}},
+	{MOD | SHIFT,        XKB_KEY_Left,  action_focus_output,   {.i = WLR_DIRECTION_LEFT}},
+	{MOD | SHIFT,        XKB_KEY_Right, action_focus_output,   {.i = WLR_DIRECTION_RIGHT}},
+	{MOD | SHIFT,        XKB_KEY_Up,    action_focus_output,   {.i = WLR_DIRECTION_UP}},
+	{MOD | SHIFT,        XKB_KEY_Down,  action_focus_output,   {.i = WLR_DIRECTION_DOWN}},
+	{MOD | SHIFT | CTRL, XKB_KEY_h,     action_move_to_output, {.i = WLR_DIRECTION_LEFT}},
+	{MOD | SHIFT | CTRL, XKB_KEY_l,     action_move_to_output, {.i = WLR_DIRECTION_RIGHT}},
+	{MOD | SHIFT | CTRL, XKB_KEY_k,     action_move_to_output, {.i = WLR_DIRECTION_UP}},
+	{MOD | SHIFT | CTRL, XKB_KEY_j,     action_move_to_output, {.i = WLR_DIRECTION_DOWN}},
+	{MOD | SHIFT | CTRL, XKB_KEY_Left,  action_move_to_output, {.i = WLR_DIRECTION_LEFT}},
+	{MOD | SHIFT | CTRL, XKB_KEY_Right, action_move_to_output, {.i = WLR_DIRECTION_RIGHT}},
+	{MOD | SHIFT | CTRL, XKB_KEY_Up,    action_move_to_output, {.i = WLR_DIRECTION_UP}},
+	{MOD | SHIFT | CTRL, XKB_KEY_Down,  action_move_to_output, {.i = WLR_DIRECTION_DOWN}},
+
 	WORKSPACE(XKB_KEY_1, 0),
 	WORKSPACE(XKB_KEY_2, 1),
 	WORKSPACE(XKB_KEY_3, 2),

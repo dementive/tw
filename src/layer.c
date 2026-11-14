@@ -180,9 +180,12 @@ static void handle_new_layer_surface(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, new_layer_surface);
 	struct wlr_layer_surface_v1 *layer_surface = data;
 
-	/* A client that names no output gets the one showing the strip. */
+	/* A client that names no output (a launcher) gets the focused one. */
 	if (layer_surface->output == NULL) {
-		struct tw_output *output = output_primary(server);
+		struct tw_output *output = output_focused(server);
+		if (output == NULL && !wl_list_empty(&server->outputs)) {
+			output = wl_container_of(server->outputs.next, output, link);
+		}
 		if (output == NULL) {
 			wlr_layer_surface_v1_destroy(layer_surface);
 			return;

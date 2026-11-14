@@ -18,15 +18,20 @@
 /* Mod+1 .. Mod+9 */
 #define TW_WORKSPACES 9
 
+/* In an output rule: let tw place the output, to the right of the others. */
+#define TW_AUTO INT32_MIN
+
 struct tw_layer_surface;
 struct tw_lock;
 struct tw_server;
 struct tw_window;
 struct tw_x11;
 struct wlr_output;
+struct wlr_pointer_constraint_v1;
 struct wlr_surface;
 
-/* One scrolling strip. Only the active workspace is on screen. */
+/* One scrolling strip. It is on screen while an output shows it; each output
+ * shows a different one. */
 struct tw_workspace {
 	struct wl_list columns;  /* tw_column.link; the strip, left to right */
 	struct wl_list floating; /* tw_window.link; dialogs, topmost first */
@@ -42,6 +47,7 @@ struct tw_workspace {
 	double view_velocity; /* pixels per second */
 	bool swiping;
 	uint32_t swipe_time_msec; /* of the last swipe event, to measure speed */
+	bool on_output; /* an output showed it when it was last arranged */
 };
 
 struct tw_output {
@@ -49,6 +55,13 @@ struct tw_output {
 	struct tw_server *server;
 	struct wlr_output *wlr_output;
 	struct wlr_box usable; /* layout box minus layer-shell exclusive zones */
+	/* Index of the workspace it shows; no two outputs show the same one.
+	 * TW_WORKSPACES if there are more outputs than workspaces. */
+	size_t workspace;
+	/* That workspace's view is gliding toward view_x. Stepped once per frame
+	 * of this output, which is also what stops it: no frame, no work. */
+	bool animating;
+	int64_t animation_last_ms;
 	struct wl_listener frame;
 	struct wl_listener request_state;
 	struct wl_listener destroy;
@@ -77,7 +90,7 @@ struct tw_server {
 	struct wlr_scene_tree *fullscreen_tree;
 	struct wlr_scene_tree *float_tree;
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
-	struct wl_list outputs; /* tw_output.link; the first usable one shows the strip */
+	struct wl_list outputs; /* tw_output.link, in the order they appeared */
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
 
@@ -90,12 +103,10 @@ struct tw_server {
 	struct wl_listener new_decoration;
 	struct wl_listener request_activate;
 	struct tw_workspace workspaces[TW_WORKSPACES];
-	size_t active; /* index of the workspace on screen */
+	/* Index of the workspace with the focus. The output showing it is the
+	 * focused output: new windows open there. */
+	size_t active;
 	struct tw_window *focused; /* the window currently drawn as active */
-	/* The active workspace's view is moving toward view_x. Stepped once per
-	 * output frame, which is also what stops it: no frame, no work. */
-	bool animating;
-	int64_t animation_last_ms;
 
 	/* layer.c */
 	struct wlr_layer_shell_v1 *layer_shell;
@@ -107,8 +118,12 @@ struct tw_server {
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit_manager;
 	struct wl_listener new_idle_inhibitor;
-	struct wl_event_source *blank_timer;
-	int blank_after_ms; /* 0 never blanks */
+	struct wl_event_source *idle_timer;
+	struct wl_event_source *resume_watch; /* fires when the machine wakes up */
+	int resume_fd;
+	int blank_after_ms;   /* 0 never blanks */
+	int suspend_after_ms; /* 0 never suspends */
+	int suspend_tries;    /* suspend attempts since the last input */
 	int64_t last_activity_ms;
 	bool blanked; /* outputs are powered off */
 	bool idle_inhibited; /* a visible surface asked to keep the screen on */
@@ -133,6 +148,11 @@ struct tw_server {
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
 	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
 	struct wlr_pointer_gestures_v1 *pointer_gestures;
+	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager;
+	struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
+	struct wlr_pointer_constraints_v1 *pointer_constraints;
+	/* The pointer lock or confinement in force, or NULL. */
+	struct wlr_pointer_constraint_v1 *active_constraint;
 	/* A touchpad swipe tw is handling itself rather than passing on. */
 	bool swipe_ours;
 	int swipe_axis; /* 0 undecided, 1 sideways (scroll), 2 vertical (workspace) */
@@ -141,6 +161,8 @@ struct tw_server {
 	struct wl_list keyboards; /* tw_keyboard.link */
 	struct wl_listener new_input;
 	struct wl_listener new_virtual_keyboard;
+	struct wl_listener new_virtual_pointer;
+	struct wl_listener new_constraint;
 	struct wl_listener request_set_shape;
 	struct wl_listener request_set_primary_selection;
 	struct wl_listener cursor_motion;
@@ -175,6 +197,12 @@ struct tw_binding {
 	union tw_arg arg;
 };
 
+struct tw_output_rule {
+	const char *name; /* connector name such as "eDP-1"; NULL matches the rest */
+	float scale;
+	int x, y; /* position in the screen area, or TW_AUTO */
+};
+
 /* main.c */
 /* Monotonic clock in milliseconds. */
 int64_t now_ms(void);
@@ -190,10 +218,16 @@ void action_quit(struct tw_server *server, const union tw_arg *arg);
 /* output.c */
 void output_init(struct tw_server *server);
 void output_finish(struct tw_server *server);
-/* The output that shows the strip, or NULL. */
-struct tw_output *output_primary(struct tw_server *server);
-/* Area of that output left for windows; false if there is no output. */
-bool output_primary_box(struct tw_server *server, struct wlr_box *box);
+/* The output that shows this workspace, or NULL if it is hidden. */
+struct tw_output *output_showing(struct tw_server *server, size_t workspace);
+/* The output with the focus (the one showing the active workspace), or NULL. */
+struct tw_output *output_focused(struct tw_server *server);
+struct tw_output *output_at(struct tw_server *server, double lx, double ly);
+/* The nearest output in a direction (enum wlr_direction), or NULL. */
+struct tw_output *output_adjacent(struct tw_output *output, int direction);
+/* `area` is what windows may use on the output, `full` the whole of it.
+ * False if the output is NULL or has no room. */
+bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full);
 
 /* window.c */
 void window_init(struct tw_server *server);
@@ -214,8 +248,11 @@ void window_focus(struct tw_server *server, struct tw_window *window);
 void focus_update(struct tw_server *server);
 /* Scrolls the focused column into view and places every window. */
 void strip_arrange(struct tw_server *server);
-/* Advances the scroll animation by one frame; true if it needs another. */
-bool strip_animate(struct tw_server *server);
+/* Advances the scroll animation of the workspace on this output by one
+ * frame; true if it needs another. */
+bool strip_animate(struct tw_output *output);
+/* Moves the focus to the workspace this output shows. */
+void strip_focus_output(struct tw_server *server, struct tw_output *output);
 /* A touchpad swipe drags the strip: `dx` is the finger movement in pixels. */
 void strip_swipe_begin(struct tw_server *server);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
@@ -249,6 +286,10 @@ void action_workspace(struct tw_server *server, const union tw_arg *arg);
 void action_workspace_relative(struct tw_server *server, const union tw_arg *arg);
 void action_move_to_workspace(struct tw_server *server, const union tw_arg *arg);
 void action_move_to_workspace_relative(struct tw_server *server, const union tw_arg *arg);
+/* Monitors. arg.i is an enum wlr_direction. Moving a column to another
+ * monitor puts it on the workspace shown there and takes the focus along. */
+void action_focus_output(struct tw_server *server, const union tw_arg *arg);
+void action_move_to_output(struct tw_server *server, const union tw_arg *arg);
 
 /* layer.c */
 void layer_init(struct tw_server *server);
@@ -296,5 +337,11 @@ void x11_finish(struct tw_server *server);
 /* input.c */
 void input_init(struct tw_server *server);
 void input_finish(struct tw_server *server);
+/*
+ * Re-derives which pointer lock or confinement is in force: the one of the
+ * surface under the pointer, if that window also has the keyboard. Call
+ * after the keyboard or pointer focus changes.
+ */
+void pointer_constraint_update(struct tw_server *server);
 
 #endif

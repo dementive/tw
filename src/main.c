@@ -106,24 +106,30 @@ static int handle_signal(int signo, void *data) {
 }
 
 static void usage(const char *name) {
-	printf("Usage: %s [-d] [-b seconds] [-s startup-command]\n"
+	printf("Usage: %s [-d] [-b seconds] [-z seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
+		"      default %d)\n"
+		"  -z  suspend the machine after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -d  log debug output\n"
 		"  -s  run a shell command once the compositor is up\n",
-		name, blank_after_seconds);
+		name, blank_after_seconds, suspend_after_seconds);
 }
 
 int main(int argc, char *argv[]) {
 	const char *startup_cmd = NULL;
 	enum wlr_log_importance verbosity = WLR_ERROR;
 	int blank_after = blank_after_seconds;
+	int suspend_after = suspend_after_seconds;
 
 	int c;
-	while ((c = getopt(argc, argv, "b:ds:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:ds:z:h")) != -1) {
 		switch (c) {
 		case 'b':
 			blank_after = atoi(optarg);
+			break;
+		case 'z':
+			suspend_after = atoi(optarg);
 			break;
 		case 'd':
 			verbosity = WLR_DEBUG;
@@ -143,9 +149,11 @@ int main(int argc, char *argv[]) {
 	wlr_log_init(verbosity, NULL);
 
 	struct tw_server server = {0};
-	/* Capped so the value fits a millisecond timer. */
+	/* Capped so the values fit a millisecond timer. */
 	server.blank_after_ms = blank_after <= 0 ? 0 :
 		(blank_after > 86400 ? 86400 : blank_after) * 1000;
+	server.suspend_after_ms = suspend_after <= 0 ? 0 :
+		(suspend_after > 86400 ? 86400 : suspend_after) * 1000;
 
 	/* Inside another session the host compositor owns Super, so use Alt.
 	 * Checked before we overwrite WAYLAND_DISPLAY with our own socket. */
@@ -229,6 +237,14 @@ int main(int argc, char *argv[]) {
 	x11_init(&server);
 	if (startup_cmd != NULL) {
 		spawn(startup_cmd);
+	}
+	for (size_t i = 0; autostart[i] != NULL; i++) {
+		char path[4096];
+		if (program_find(autostart[i], path, sizeof(path))) {
+			spawn(autostart[i]);
+		} else {
+			wlr_log(WLR_INFO, "autostart: not installed: %s", autostart[i]);
+		}
 	}
 
 	wlr_log(WLR_INFO, "running on WAYLAND_DISPLAY=%s", socket);

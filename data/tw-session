@@ -3,12 +3,13 @@
 # tw.desktop; it also works when typed on a text console.
 #
 # Environment you can set beforehand:
-#   WLR_DRM_DEVICES   which GPUs to use (default: only the integrated one)
-#   TW_ALL_GPUS=1     use every GPU; needed for monitor ports wired to a
-#                     second GPU, at the cost of keeping that GPU awake
+#   WLR_DRM_DEVICES   which GPUs to use, the one that renders first
+#   TW_ALL_GPUS=1     use every GPU, whether or not a monitor is plugged into
+#                     the second one; costs its power and memory all session
 #
-# Programs to start with the session go in ~/.config/tw/autostart, an
-# executable script (for example: swaybg, mako, swayidle).
+# Programs to start with the session are listed in config.h (autostart). For
+# anything not worth a rebuild there is also ~/.config/tw/autostart, an
+# executable script.
 
 # This script starts tw as the whole session, on the real screen. Drop any
 # host display from the environment, or tw would try to open a window on it.
@@ -24,28 +25,41 @@ export XDG_SESSION_TYPE=wayland
 export ELECTRON_OZONE_PLATFORM_HINT=auto
 export MOZ_ENABLE_WAYLAND=1
 
-# On a laptop with two GPUs, drive only the one wired to the built-in panel
-# (the "boot VGA" device). wlroots would otherwise open both, which loads the
-# second GPU's driver and stops that GPU from powering down.
+# On a laptop with two GPUs, render on the one wired to the built-in panel
+# (the "boot VGA" device). The other GPU is used only if a monitor is plugged
+# into one of its ports as the session starts: opening it loads its driver
+# and keeps it powered, which is not worth paying just in case. A monitor
+# plugged into such a port later needs a new login (or TW_ALL_GPUS=1); ports
+# wired to the first GPU work at any time.
 if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 	cards=0
 	primary=
+	others=
 	for card in /sys/class/drm/card[0-9]*; do
 		[ -e "$card/device/boot_vga" ] || continue # skips connectors
 		cards=$((cards + 1))
 		if [ "$(cat "$card/device/boot_vga")" = 1 ]; then
 			primary=${card##*/}
+			continue
 		fi
+		for status in "$card"-*/status; do
+			if [ -e "$status" ] && [ "$(cat "$status")" = connected ]; then
+				others="$others:/dev/dri/${card##*/}"
+				break
+			fi
+		done
 	done
 	if [ "$cards" -gt 1 ] && [ -n "$primary" ]; then
-		export WLR_DRM_DEVICES="/dev/dri/$primary"
-		# Likewise keep other vendors' EGL libraries out of the session when
-		# the chosen GPU uses Mesa. Programs started from tw inherit this and
-		# render on the same GPU; unset it for one that should use the other:
+		export WLR_DRM_DEVICES="/dev/dri/$primary$others"
+		# With one GPU in use, likewise keep other vendors' EGL libraries out
+		# of the session when that GPU uses Mesa. Programs started from tw
+		# inherit this and render on the same GPU; unset it for one that
+		# should use the other:
 		#   env -u __EGL_VENDOR_LIBRARY_FILENAMES <program>
+		# With two in use tw needs the second vendor's library itself.
 		driver=$(basename "$(readlink "/sys/class/drm/$primary/device/driver")")
 		mesa_egl=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-		if [ "$driver" != nvidia ] && [ -f "$mesa_egl" ]; then
+		if [ -z "$others" ] && [ "$driver" != nvidia ] && [ -f "$mesa_egl" ]; then
 			export __EGL_VENDOR_LIBRARY_FILENAMES="$mesa_egl"
 		fi
 	fi

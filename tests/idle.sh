@@ -2,6 +2,7 @@
 # Screen blanking: the outputs power off after a while without input and every
 # window is told to stop drawing; a visible idle inhibitor (a video player)
 # holds that off. With a locker installed the session locks as it blanks.
+# After a longer time without input the machine is suspended.
 # $3 = tw-test-keys.
 #
 # "Blanked" is observed through the window state: a visible window is
@@ -106,4 +107,40 @@ press Return
 expect_state d "$on" "the locker to unlock again"
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart"
+
+# --- Suspend -------------------------------------------------------------------
+# After a longer time without input tw locks the session and runs the suspend
+# command. The stand-in suspends nothing, so tw finds the machine still awake
+# and tries again after the same time.
+fake_program systemctl "echo \"\$*\" >>'$run_dir/suspend.log'"
+suspends() {
+	n=0
+	[ -e "$run_dir/suspend.log" ] && n=$(grep -c . "$run_dir/suspend.log")
+	[ "$n" = "$1" ]
+}
+locked_before=$(grep -c '^locked' "$run_dir/locker.log")
+
+start_tw -b 0 -z 2 # never blank, suspend after two seconds
+start_client e
+expect_state e "$on" "the window to start visible"
+wait_until "the machine to be suspended after two seconds without input" suspends 1
+grep -qx suspend "$run_dir/suspend.log" ||
+	fail "unexpected suspend command: $(cat "$run_dir/suspend.log")"
+wait_until "the session to be locked before suspending" locks $((locked_before + 1))
+expect_state e "suspended=1" "windows to be hidden before suspending"
+wait_until "another attempt while the machine is still awake" suspends 2
+
+# Input starts the clock over. A visible idle inhibitor then holds suspending
+# off for as long as it is on screen.
+press Return
+expect_state e "$on" "the locker to unlock"
+start_client film --inhibit
+film_pid=$last_client_pid
+expect_state film "$on" "the inhibiting window to be focused"
+sleep 3.5
+suspends 2 || fail "the machine was suspended under a visible idle inhibitor"
+kill "$film_pid"
+wait_until "the machine to be suspended once the inhibitor is gone" suspends 3
+
+stop_tw
+echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart, suspend"

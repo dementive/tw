@@ -7,6 +7,9 @@
  *   lock configure <w>x<h>, locked, lock denied         with --lock
  *   keyboard enter | keyboard leave                     keyboard focus
  *   key <code> <pressed|released>                       keys it received
+ *   pointer enter <x> <y> | pointer leave               pointer focus
+ *   output enter <name> | output leave <name>           which monitor shows it
+ *   pointer motion <x> <y>, button <code> <pressed|released>
  *   closed                                              asked to close; it exits
  *   token, activate, activate forged                    see the focus modes below
  *   x11 connected, x11 served, x11 closed               with --x11
@@ -27,6 +30,15 @@
  *                      for it back with the token in <file>
  *   --activate-forged  the same, but with a token it made up without any
  *                      input event, which must not work
+ *
+ * Holding the pointer, as games and 3D editors do:
+ *   --lock-pointer     a window that locks the pointer when it enters. It
+ *                      then reports raw movement ("relative <dx> <dy>") and
+ *                      "pointer locked" / "pointer unlocked". A key press
+ *                      makes it let go, asking for the cursor to reappear at
+ *                      20,30 in the window ("pointer released")
+ *   --confine-pointer  a window that confines the pointer to its top left
+ *                      100x100 pixels ("pointer confined" / "unconfined")
  *
  * Without a Wayland connection, for the X11 socket tests:
  *   --x11 <path|abstract> <:N>   connects to X11 display N the way an X11
@@ -58,6 +70,8 @@
 
 #include "ext-session-lock-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
+#include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "relative-pointer-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -75,9 +89,20 @@ static struct zwlr_layer_shell_v1 *layer_shell;
 static struct ext_session_lock_manager_v1 *lock_manager;
 static struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
 static struct xdg_activation_v1 *activation;
+static struct zwp_pointer_constraints_v1 *constraints;
+static struct zwp_relative_pointer_manager_v1 *relative_manager;
+static struct wl_pointer *pointer;
+static struct zwp_locked_pointer_v1 *locked_pointer;
 static struct ext_session_lock_v1 *session_lock;
 static struct wl_surface *surface;
 static struct wl_buffer *buffer;
+
+/* Every monitor, to report by name which ones show the surface. */
+static struct {
+	struct wl_output *output;
+	char name[32];
+} outputs[4];
+static size_t output_count;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen;
@@ -88,6 +113,9 @@ static bool running = true;
 static const char *token_path;
 static bool issue_token, use_token, forge_token;
 static bool token_requested, was_activated, activation_sent;
+
+/* Pointer modes. */
+static bool lock_pointer, confine_pointer, constraint_requested;
 
 static void say(const char *line) {
 	puts(line);
@@ -322,6 +350,15 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
 	bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
 	printf("key %u %s\n", key, pressed ? "pressed" : "released");
 	fflush(stdout);
+	if (locked_pointer != NULL && pressed) {
+		/* Let go of the pointer the way a game leaving mouse-look does. */
+		zwp_locked_pointer_v1_set_cursor_position_hint(locked_pointer,
+			wl_fixed_from_int(20), wl_fixed_from_int(30));
+		wl_surface_commit(surface);
+		zwp_locked_pointer_v1_destroy(locked_pointer);
+		locked_pointer = NULL;
+		say("pointer released");
+	}
 	if (session_lock != NULL && key == KEY_RETURN && pressed) {
 		/* "Password accepted". */
 		ext_session_lock_v1_unlock_and_destroy(session_lock);
@@ -349,10 +386,109 @@ static const struct wl_keyboard_listener keyboard_listener = {
 	.repeat_info = keyboard_repeat_info,
 };
 
+/* --- Pointer ---------------------------------------------------------------- */
+
+static void locked_locked(void *data, struct zwp_locked_pointer_v1 *locked) {
+	say("pointer locked");
+}
+
+static void locked_unlocked(void *data, struct zwp_locked_pointer_v1 *locked) {
+	say("pointer unlocked");
+}
+
+static const struct zwp_locked_pointer_v1_listener locked_listener = {
+	.locked = locked_locked,
+	.unlocked = locked_unlocked,
+};
+
+static void confined_confined(void *data, struct zwp_confined_pointer_v1 *confined) {
+	say("pointer confined");
+}
+
+static void confined_unconfined(void *data, struct zwp_confined_pointer_v1 *confined) {
+	say("pointer unconfined");
+}
+
+static const struct zwp_confined_pointer_v1_listener confined_listener = {
+	.confined = confined_confined,
+	.unconfined = confined_unconfined,
+};
+
+static void relative_motion(void *data, struct zwp_relative_pointer_v1 *relative,
+		uint32_t utime_hi, uint32_t utime_lo, wl_fixed_t dx, wl_fixed_t dy,
+		wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel) {
+	printf("relative %d %d\n", wl_fixed_to_int(dx), wl_fixed_to_int(dy));
+	fflush(stdout);
+}
+
+static const struct zwp_relative_pointer_v1_listener relative_listener = {
+	.relative_motion = relative_motion,
+};
+
+static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+		struct wl_surface *wl_surface, wl_fixed_t x, wl_fixed_t y) {
+	printf("pointer enter %d %d\n", wl_fixed_to_int(x), wl_fixed_to_int(y));
+	fflush(stdout);
+	if (constraint_requested || !(lock_pointer || confine_pointer)) {
+		return;
+	}
+	constraint_requested = true;
+	if (lock_pointer) {
+		locked_pointer = zwp_pointer_constraints_v1_lock_pointer(constraints, surface,
+			wl_pointer, NULL, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+		zwp_locked_pointer_v1_add_listener(locked_pointer, &locked_listener, NULL);
+		zwp_relative_pointer_v1_add_listener(
+			zwp_relative_pointer_manager_v1_get_relative_pointer(relative_manager, wl_pointer),
+			&relative_listener, NULL);
+	} else {
+		struct wl_region *region = wl_compositor_create_region(compositor);
+		wl_region_add(region, 0, 0, 100, 100);
+		zwp_confined_pointer_v1_add_listener(
+			zwp_pointer_constraints_v1_confine_pointer(constraints, surface, wl_pointer,
+				region, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT),
+			&confined_listener, NULL);
+		wl_region_destroy(region);
+	}
+}
+
+static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+		struct wl_surface *wl_surface) {
+	say("pointer leave");
+}
+
+static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+		wl_fixed_t x, wl_fixed_t y) {
+	printf("pointer motion %d %d\n", wl_fixed_to_int(x), wl_fixed_to_int(y));
+	fflush(stdout);
+}
+
+static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+		uint32_t time, uint32_t button, uint32_t state) {
+	printf("button %u %s\n", button,
+		state == WL_POINTER_BUTTON_STATE_PRESSED ? "pressed" : "released");
+	fflush(stdout);
+}
+
+static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+		uint32_t axis, wl_fixed_t value) {
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+	.enter = pointer_enter,
+	.leave = pointer_leave,
+	.motion = pointer_motion,
+	.button = pointer_button,
+	.axis = pointer_axis,
+};
+
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
 	if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && keyboard == NULL) {
 		keyboard = wl_seat_get_keyboard(wl_seat);
 		wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
+	}
+	if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && pointer == NULL) {
+		pointer = wl_seat_get_pointer(wl_seat);
+		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
 	}
 }
 
@@ -362,6 +498,62 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
 static const struct wl_seat_listener seat_listener = {
 	.capabilities = seat_capabilities,
 	.name = seat_name,
+};
+
+/* --- Monitors --------------------------------------------------------------- */
+
+static void output_geometry(void *data, struct wl_output *wl_output, int32_t x, int32_t y,
+		int32_t physical_width, int32_t physical_height, int32_t subpixel,
+		const char *make, const char *model, int32_t transform) {
+}
+
+static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags,
+		int32_t width, int32_t height, int32_t refresh) {
+}
+
+static void output_done(void *data, struct wl_output *wl_output) {
+}
+
+static void output_scale(void *data, struct wl_output *wl_output, int32_t factor) {
+}
+
+static void output_name(void *data, struct wl_output *wl_output, const char *name) {
+	char *slot = data;
+	snprintf(slot, sizeof(outputs[0].name), "%s", name);
+}
+
+static void output_description(void *data, struct wl_output *wl_output, const char *text) {
+}
+
+static const struct wl_output_listener output_listener = {
+	.geometry = output_geometry,
+	.mode = output_mode,
+	.done = output_done,
+	.scale = output_scale,
+	.name = output_name,
+	.description = output_description,
+};
+
+static void report_output(const char *what, struct wl_output *wl_output) {
+	for (size_t i = 0; i < output_count; i++) {
+		if (outputs[i].output == wl_output) {
+			printf("output %s %s\n", what, outputs[i].name);
+			fflush(stdout);
+		}
+	}
+}
+
+static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *wl_output) {
+	report_output("enter", wl_output);
+}
+
+static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *wl_output) {
+	report_output("leave", wl_output);
+}
+
+static const struct wl_surface_listener surface_listener = {
+	.enter = surface_enter,
+	.leave = surface_leave,
 };
 
 /* --- Setup ------------------------------------------------------------------ */
@@ -379,8 +571,16 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
 		seat = wl_registry_bind(registry, name, &wl_seat_interface, at_most(version, 4));
 		wl_seat_add_listener(seat, &seat_listener, NULL);
-	} else if (strcmp(interface, wl_output_interface.name) == 0 && output == NULL) {
-		output = wl_registry_bind(registry, name, &wl_output_interface, 1);
+	} else if (strcmp(interface, wl_output_interface.name) == 0 &&
+			output_count < sizeof(outputs) / sizeof(outputs[0])) {
+		/* Version 4 is the first that names the output. */
+		struct wl_output *wl_output = wl_registry_bind(registry, name, &wl_output_interface,
+			at_most(version, 4));
+		wl_output_add_listener(wl_output, &output_listener, outputs[output_count].name);
+		outputs[output_count++].output = wl_output;
+		if (output == NULL) {
+			output = wl_output;
+		}
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		/* Version 6 is the first with the `suspended` state. */
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, at_most(version, 6));
@@ -397,6 +597,11 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 			&zwp_idle_inhibit_manager_v1_interface, 1);
 	} else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
 		activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
+	} else if (strcmp(interface, zwp_pointer_constraints_v1_interface.name) == 0) {
+		constraints = wl_registry_bind(registry, name, &zwp_pointer_constraints_v1_interface, 1);
+	} else if (strcmp(interface, zwp_relative_pointer_manager_v1_interface.name) == 0) {
+		relative_manager = wl_registry_bind(registry, name,
+			&zwp_relative_pointer_manager_v1_interface, 1);
 	}
 }
 
@@ -489,6 +694,8 @@ int main(int argc, char *argv[]) {
 	issue_token = strcmp(mode, "--token") == 0;
 	use_token = strcmp(mode, "--activate") == 0;
 	forge_token = strcmp(mode, "--activate-forged") == 0;
+	lock_pointer = strcmp(mode, "--lock-pointer") == 0;
+	confine_pointer = strcmp(mode, "--confine-pointer") == 0;
 
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -503,12 +710,13 @@ int main(int argc, char *argv[]) {
 	wl_display_roundtrip(display);
 	if (compositor == NULL || shm == NULL || wm_base == NULL || layer_shell == NULL ||
 			lock_manager == NULL || inhibit_manager == NULL || activation == NULL ||
-			output == NULL) {
+			constraints == NULL || relative_manager == NULL || output == NULL) {
 		fprintf(stderr, "compositor is missing a required global\n");
 		return 1;
 	}
 
 	surface = wl_compositor_create_surface(compositor);
+	wl_surface_add_listener(surface, &surface_listener, NULL);
 	if (strcmp(mode, "--layer") == 0) {
 		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
 			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "tw-test");

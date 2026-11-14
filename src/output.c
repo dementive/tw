@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <wlr/backend.h>
 #include <wlr/types/wlr_output.h>
@@ -9,10 +10,20 @@
 #include "tw.h"
 #include "config.h"
 
-struct tw_output *output_primary(struct tw_server *server) {
+/*
+ * Several outputs. There are TW_WORKSPACES workspaces in all, and each output
+ * shows one of them; the rest are hidden. The output showing the active
+ * workspace has the focus. Unplugging an output only hides its workspace, so
+ * no window ever has to be moved because a monitor went away.
+ */
+
+struct tw_output *output_showing(struct tw_server *server, size_t workspace) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		struct wlr_box box;
+		if (output->workspace != workspace) {
+			continue;
+		}
 		wlr_output_layout_get_box(server->output_layout, output->wlr_output, &box);
 		if (!wlr_box_empty(&box)) {
 			return output;
@@ -21,13 +32,47 @@ struct tw_output *output_primary(struct tw_server *server) {
 	return NULL;
 }
 
-bool output_primary_box(struct tw_server *server, struct wlr_box *box) {
-	struct tw_output *output = output_primary(server);
+struct tw_output *output_focused(struct tw_server *server) {
+	return output_showing(server, server->active);
+}
+
+struct tw_output *output_at(struct tw_server *server, double lx, double ly) {
+	struct wlr_output *wlr_output = wlr_output_layout_output_at(server->output_layout, lx, ly);
+	return wlr_output != NULL ? wlr_output->data : NULL;
+}
+
+struct tw_output *output_adjacent(struct tw_output *output, int direction) {
+	if (output == NULL) {
+		return NULL;
+	}
+	struct wlr_box box;
+	struct wlr_output_layout *layout = output->server->output_layout;
+	wlr_output_layout_get_box(layout, output->wlr_output, &box);
+	struct wlr_output *next = wlr_output_layout_adjacent_output(layout, direction,
+		output->wlr_output, box.x + box.width / 2.0, box.y + box.height / 2.0);
+	return next != NULL ? next->data : NULL;
+}
+
+bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full) {
 	if (output == NULL || wlr_box_empty(&output->usable)) {
 		return false;
 	}
-	*box = output->usable;
-	return true;
+	*area = output->usable;
+	wlr_output_layout_get_box(output->server->output_layout, output->wlr_output, full);
+	return !wlr_box_empty(full);
+}
+
+static const struct tw_output_rule *output_rule(const char *name) {
+	static const struct tw_output_rule fallback = {NULL, 1.0f, TW_AUTO, TW_AUTO};
+	const struct tw_output_rule *rest = &fallback;
+	for (size_t i = 0; i < LENGTH(output_rules); i++) {
+		if (output_rules[i].name == NULL) {
+			rest = &output_rules[i];
+		} else if (strcmp(output_rules[i].name, name) == 0) {
+			return &output_rules[i];
+		}
+	}
+	return rest;
 }
 
 static void handle_frame(struct wl_listener *listener, void *data) {
@@ -44,7 +89,7 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 
 	/* A scroll animation moves one step per frame of the output showing the
 	 * strip, and asks for the next frame only while it is still moving. */
-	if (server->animating && output == output_primary(server) && strip_animate(server)) {
+	if (output->animating && strip_animate(output)) {
 		wlr_output_schedule_frame(output->wlr_output);
 	}
 
@@ -65,11 +110,22 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
 
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_output *output = wl_container_of(listener, output, destroy);
-	layers_output_destroyed(output->server, output->wlr_output);
+	struct tw_server *server = output->server;
+	layers_output_destroyed(server, output->wlr_output);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
+
+	/* Its workspace is hidden from here on. If that is where the user was
+	 * working, the oldest remaining output shows it instead of its own, so
+	 * unplugging a monitor never takes the current work out of sight. The
+	 * output layout raises its change event next, which arranges. */
+	if (output->workspace == server->active && !wl_list_empty(&server->outputs)) {
+		struct tw_output *heir = wl_container_of(server->outputs.next, heir, link);
+		heir->workspace = server->active;
+	}
+	output->wlr_output->data = NULL;
 	free(output);
 }
 
@@ -84,13 +140,29 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	}
 	output->server = server;
 	output->wlr_output = wlr_output;
+	wlr_output->data = output;
+	const struct tw_output_rule *rule = output_rule(wlr_output->name);
+
+	/* The first output shows the active workspace; each further one the
+	 * lowest-numbered workspace that is not on screen yet. */
+	output->workspace = TW_WORKSPACES;
+	if (output_focused(server) == NULL) {
+		output->workspace = server->active;
+	} else {
+		for (size_t i = 0; i < TW_WORKSPACES; i++) {
+			if (output_showing(server, i) == NULL) {
+				output->workspace = i;
+				break;
+			}
+		}
+	}
 
 	wlr_output_init_render(wlr_output, server->allocator, server->renderer);
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, true);
-	wlr_output_state_set_scale(&state, output_scale);
+	wlr_output_state_set_scale(&state, rule->scale);
 	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
 	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
@@ -105,13 +177,14 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	output->destroy.notify = handle_destroy;
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 
-	/* Append, so the output that shows the strip does not change when
-	 * another one is plugged in. */
 	wl_list_insert(server->outputs.prev, &output->link);
+	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
+		wlr_output->name, rule->scale, output->workspace + 1);
 
 	/* Adding to the layout raises its change event, which arranges. */
-	struct wlr_output_layout_output *layout_output =
-		wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	struct wlr_output_layout_output *layout_output = rule->x == TW_AUTO || rule->y == TW_AUTO ?
+		wlr_output_layout_add_auto(server->output_layout, wlr_output) :
+		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	wlr_scene_output_layout_add_output(server->scene_layout, layout_output, scene_output);
 }

@@ -47,9 +47,13 @@ wakeups=$((after - before))
 rollup=/proc/"$tw_pid"/smaps_rollup
 pss_kb=$(awk '/^Pss:/ { print $2 }' "$rollup")
 own_kb=$(awk '/^Pss_Anon:|^Pss_File:/ { n += $2 } END { print n }' "$rollup")
+# What tw allocated itself. Unlike the figures above this does not move with
+# what else is running, so it is the one to compare between two builds.
+anon_kb=$(awk '/^RssAnon:/ { print $2 }' /proc/"$tw_pid"/status)
 
 echo "idle wakeups in ${window}s: $wakeups (budget $max_wakeups)"
 echo "own memory: $own_kb kB (budget $max_own_kb kB)"
+echo "of which allocated by tw: $anon_kb kB"
 echo "total PSS including pixel buffers: $pss_kb kB"
 
 [ "$wakeups" -le "$max_wakeups" ] || fail "idle wakeups over budget"

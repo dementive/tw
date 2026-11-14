@@ -1,13 +1,21 @@
 /*
- * Presses key combinations through the virtual-keyboard protocol, so tests
- * exercise the same binding code a real keyboard does.
+ * Presses key combinations through the virtual-keyboard protocol, and moves
+ * and clicks the mouse through the virtual-pointer protocol, so tests
+ * exercise the same input code real devices do.
  *
  *   tw-test-keys super+ctrl+l super+2 x
+ *   tw-test-keys move:100,80:1024,576 click rel:30,-5
  *
- * Each argument is pressed and released in turn. Modifiers are super, alt,
- * ctrl and shift; the key is an XKB keysym name (h, Return, Page_Down, 1).
+ * Each argument is carried out in turn. A key combination is pressed and
+ * released: modifiers are super, alt, ctrl and shift; the key is an XKB
+ * keysym name (h, Return, Page_Down, 1). The mouse actions are:
+ *
+ *   move:X,Y:W,H   put the cursor at X,Y on a screen area W wide and H high
+ *   rel:DX,DY      move the mouse by DX,DY
+ *   click          press and release the left button
  */
 #define _GNU_SOURCE
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,9 +26,13 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
+
+#define BTN_LEFT 0x110 /* evdev code of the left mouse button */
 
 static struct wl_seat *seat;
 static struct zwp_virtual_keyboard_manager_v1 *manager;
+static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version) {
@@ -29,7 +41,44 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name) == 0) {
 		manager = wl_registry_bind(registry, name,
 			&zwp_virtual_keyboard_manager_v1_interface, 1);
+	} else if (strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0) {
+		pointer_manager = wl_registry_bind(registry, name,
+			&zwlr_virtual_pointer_manager_v1_interface, 1);
 	}
+}
+
+/* Carries out a mouse action; false if `action` is not one. */
+static bool mouse_action(struct wl_display *display, const char *action, uint32_t *time) {
+	static struct zwlr_virtual_pointer_v1 *pointer;
+	int x, y, width, height;
+	bool move = sscanf(action, "move:%d,%d:%d,%d", &x, &y, &width, &height) == 4;
+	bool rel = !move && sscanf(action, "rel:%d,%d", &x, &y) == 2;
+	if (!move && !rel && strcmp(action, "click") != 0) {
+		return false;
+	}
+	if (pointer_manager == NULL) {
+		fprintf(stderr, "compositor is missing the virtual pointer protocol\n");
+		exit(1);
+	}
+	if (pointer == NULL) {
+		pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(pointer_manager, seat);
+	}
+	if (move) {
+		zwlr_virtual_pointer_v1_motion_absolute(pointer, (*time)++, (uint32_t)x, (uint32_t)y,
+			(uint32_t)width, (uint32_t)height);
+	} else if (rel) {
+		zwlr_virtual_pointer_v1_motion(pointer, (*time)++,
+			wl_fixed_from_int(x), wl_fixed_from_int(y));
+	} else {
+		zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+			WL_POINTER_BUTTON_STATE_PRESSED);
+		zwlr_virtual_pointer_v1_frame(pointer);
+		zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+			WL_POINTER_BUTTON_STATE_RELEASED);
+	}
+	zwlr_virtual_pointer_v1_frame(pointer);
+	wl_display_roundtrip(display);
+	return true;
 }
 
 static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
@@ -92,6 +141,9 @@ int main(int argc, char *argv[]) {
 
 	uint32_t time = 1;
 	for (int i = 1; i < argc; i++) {
+		if (mouse_action(display, argv[i], &time)) {
+			continue;
+		}
 		uint32_t mods = 0;
 		char *combo = strdup(argv[i]);
 		char *key = combo;

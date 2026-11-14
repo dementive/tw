@@ -9,14 +9,18 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_switch.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
+#include <wlr/util/region.h>
 
 #if WLR_HAS_LIBINPUT_BACKEND
 #include <libinput.h>
@@ -37,6 +41,13 @@ struct tw_keyboard {
 	uint32_t consumed[8];
 	struct wl_listener modifiers;
 	struct wl_listener key;
+	struct wl_listener destroy;
+};
+
+/* A pointer lock or confinement a client has asked for. */
+struct tw_constraint {
+	struct tw_server *server;
+	struct wlr_pointer_constraint_v1 *constraint;
 	struct wl_listener destroy;
 };
 
@@ -204,6 +215,13 @@ static void handle_new_virtual_keyboard(struct wl_listener *listener, void *data
 	new_keyboard(server, &virtual_keyboard->keyboard, true);
 }
 
+static void handle_new_virtual_pointer(struct wl_listener *listener, void *data) {
+	/* Remote-control tools and the tests move the same cursor a mouse does. */
+	struct tw_server *server = wl_container_of(listener, server, new_virtual_pointer);
+	struct wlr_virtual_pointer_v1_new_pointer_event *event = data;
+	wlr_cursor_attach_input_device(server->cursor, &event->new_pointer->pointer.base);
+}
+
 /* --- Pointer ---------------------------------------------------------------- */
 
 static void new_pointer(struct tw_server *server, struct wlr_input_device *device) {
@@ -302,19 +320,125 @@ static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
 }
 
+/*
+ * Pointer lock and confinement. A game or a 3D editor locks the pointer in
+ * place and steers by raw mouse movement instead; other programs confine it
+ * to a region. A constraint is in force only while its window has both the
+ * pointer and the keyboard, so any focus binding gets the user out.
+ */
+
+/* A client that held the pointer locked may say where it should reappear. */
+static void constraint_apply_hint(struct tw_server *server,
+		struct wlr_pointer_constraint_v1 *constraint) {
+	struct wlr_seat *seat = server->seat;
+	if (constraint->type != WLR_POINTER_CONSTRAINT_V1_LOCKED ||
+			!constraint->current.cursor_hint.enabled ||
+			seat->pointer_state.focused_surface != constraint->surface) {
+		return;
+	}
+	/* The locked pointer has not moved, so where it is on the surface tells
+	 * us where the surface is on screen. */
+	double sx = constraint->current.cursor_hint.x, sy = constraint->current.cursor_hint.y;
+	wlr_cursor_warp(server->cursor, NULL,
+		server->cursor->x - seat->pointer_state.sx + sx,
+		server->cursor->y - seat->pointer_state.sy + sy);
+	wlr_seat_pointer_warp(seat, sx, sy);
+}
+
+void pointer_constraint_update(struct tw_server *server) {
+	struct wlr_seat *seat = server->seat;
+	struct wlr_surface *pointed = seat->pointer_state.focused_surface;
+	struct wlr_surface *typed = seat->keyboard_state.focused_surface;
+	struct wlr_pointer_constraint_v1 *constraint = NULL;
+	if (pointed != NULL && typed != NULL &&
+			wlr_surface_get_root_surface(pointed) == wlr_surface_get_root_surface(typed)) {
+		constraint = wlr_pointer_constraints_v1_constraint_for_surface(
+			server->pointer_constraints, pointed, seat);
+		/* One we could not attach a destroy listener to is never used. */
+		if (constraint != NULL && constraint->data == NULL) {
+			constraint = NULL;
+		}
+	}
+	struct wlr_pointer_constraint_v1 *old = server->active_constraint;
+	if (constraint == old) {
+		return;
+	}
+	server->active_constraint = constraint;
+	if (old != NULL) {
+		constraint_apply_hint(server, old);
+		/* Destroys a one-shot constraint; handle_constraint_destroy() copes. */
+		wlr_pointer_constraint_v1_send_deactivated(old);
+	}
+	if (constraint != NULL) {
+		wlr_pointer_constraint_v1_send_activated(constraint);
+	}
+}
+
+static void handle_constraint_destroy(struct wl_listener *listener, void *data) {
+	struct tw_constraint *constraint = wl_container_of(listener, constraint, destroy);
+	struct tw_server *server = constraint->server;
+	if (server->active_constraint == constraint->constraint) {
+		/* How a client lets go of the pointer: by destroying its lock. */
+		server->active_constraint = NULL;
+		constraint_apply_hint(server, constraint->constraint);
+	}
+	constraint->constraint->data = NULL;
+	wl_list_remove(&constraint->destroy.link);
+	free(constraint);
+}
+
+static void handle_new_constraint(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, new_constraint);
+	struct wlr_pointer_constraint_v1 *wlr_constraint = data;
+	struct tw_constraint *constraint = calloc(1, sizeof(*constraint));
+	if (constraint == NULL) {
+		return;
+	}
+	constraint->server = server;
+	constraint->constraint = wlr_constraint;
+	constraint->destroy.notify = handle_constraint_destroy;
+	wl_signal_add(&wlr_constraint->events.destroy, &constraint->destroy);
+	wlr_constraint->data = constraint;
+	pointer_constraint_update(server);
+}
+
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
+	struct wlr_seat *seat = server->seat;
+	double dx = event->delta_x, dy = event->delta_y;
 	idle_activity(server);
-	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+
+	/* Raw movement, for clients that asked for it: the mouse as a device
+	 * rather than as a cursor position. */
+	wlr_relative_pointer_manager_v1_send_relative_motion(server->relative_pointer_manager,
+		seat, (uint64_t)event->time_msec * 1000, dx, dy, event->unaccel_dx, event->unaccel_dy);
+
+	struct wlr_pointer_constraint_v1 *constraint = server->active_constraint;
+	if (constraint != NULL) {
+		if (constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
+			return; /* the cursor stays where it is */
+		}
+		double sx = seat->pointer_state.sx, sy = seat->pointer_state.sy, cx, cy;
+		if (seat->pointer_state.focused_surface == constraint->surface &&
+				wlr_region_confine(&constraint->region, sx, sy, sx + dx, sy + dy, &cx, &cy)) {
+			dx = cx - sx;
+			dy = cy - sy;
+		}
+	}
+	wlr_cursor_move(server->cursor, &event->pointer->base, dx, dy);
 	pointer_update(server, event->time_msec);
 }
 
 static void handle_cursor_motion_absolute(struct wl_listener *listener, void *data) {
-	/* What the nested backend sends: a position in 0..1 inside its window. */
+	/* What the nested backend and virtual pointers send: a position in 0..1
+	 * across the screen. */
 	struct tw_server *server = wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
 	idle_activity(server);
+	if (server->active_constraint != NULL) {
+		return; /* a position cannot be confined or turned into movement */
+	}
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
 	pointer_update(server, event->time_msec);
 }
@@ -334,6 +458,13 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 		if (window != NULL) {
 			window_focus(server, window);
 			strip_arrange(server);
+		} else if (!server->locked) {
+			/* A click on an empty part of another screen moves the focus
+			 * there, so that the next window opens on it. */
+			struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
+			if (output != NULL) {
+				strip_focus_output(server, output);
+			}
 		}
 	}
 }
@@ -476,6 +607,7 @@ static void handle_pointer_focus_change(struct wl_listener *listener, void *data
 	if (event->new_surface == NULL) {
 		wlr_cursor_set_xcursor(server->cursor, server->cursor_manager, "default");
 	}
+	pointer_constraint_update(server);
 }
 
 static void handle_request_set_selection(struct wl_listener *listener, void *data) {
@@ -569,11 +701,24 @@ void input_init(struct tw_server *server) {
 	server->new_virtual_keyboard.notify = handle_new_virtual_keyboard;
 	wl_signal_add(&server->virtual_keyboard_manager->events.new_virtual_keyboard,
 		&server->new_virtual_keyboard);
+	server->virtual_pointer_manager = wlr_virtual_pointer_manager_v1_create(server->display);
+	server->new_virtual_pointer.notify = handle_new_virtual_pointer;
+	wl_signal_add(&server->virtual_pointer_manager->events.new_virtual_pointer,
+		&server->new_virtual_pointer);
+
+	/* Mouse-look in games and 3D editors (Godot, Blender), also for X11
+	 * programs, whose pointer grabs Xwayland turns into these. */
+	server->relative_pointer_manager = wlr_relative_pointer_manager_v1_create(server->display);
+	server->pointer_constraints = wlr_pointer_constraints_v1_create(server->display);
+	server->new_constraint.notify = handle_new_constraint;
+	wl_signal_add(&server->pointer_constraints->events.new_constraint, &server->new_constraint);
 }
 
 void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_input.link);
 	wl_list_remove(&server->new_virtual_keyboard.link);
+	wl_list_remove(&server->new_virtual_pointer.link);
+	wl_list_remove(&server->new_constraint.link);
 	wl_list_remove(&server->cursor_motion.link);
 	wl_list_remove(&server->cursor_motion_absolute.link);
 	wl_list_remove(&server->cursor_button.link);
