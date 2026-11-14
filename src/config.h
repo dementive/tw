@@ -88,7 +88,8 @@ static const bool lock_on_lid_close = true;
 static const bool lock_on_idle = true;
 
 /* Programs. The launcher is any layer-shell client; fuzzel is small and fast. */
-static const char terminal[] = "alacritty";
+/* foot takes about 8 MB a window, measured under tw; alacritty takes 42. */
+static const char terminal[] = "foot";
 static const char launcher[] = "fuzzel";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";

@@ -22,9 +22,10 @@ autostarted() {
 		grep -qx "wl-clip-persist --clipboard regular" "$run_dir/autostart.log"
 }
 
-# A stand-in for the launcher, to see the launcher keys start it.
+# Stand-ins for the launcher and the terminal, to see their keys start them.
 fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
 launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log")" = "$1" ]; }
+fake_program foot "echo opened >>'$run_dir/terminal.log'"
 
 start_tw
 wait_until "the autostart programs to be started" autostarted
@@ -35,6 +36,8 @@ press super+space
 wait_until "Mod+Space to start the launcher" launched 1
 press super+d
 wait_until "Mod+D to start the launcher" launched 2
+press super+t
+wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
 
 # --- Columns -------------------------------------------------------------------
 start_client a

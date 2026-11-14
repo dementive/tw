@@ -18,7 +18,7 @@ meson setup build-release --buildtype=release -Db_lto=true
 meson test -C build-release --suite tw
 
 # Run in a window inside the current session (Mod is Alt when nested).
-./build/tw -d -s alacritty
+./build/tw -d -s foot
 
 # Install the binary and the login-screen entry (tw, tw-session, tw.desktop).
 # --skip-subprojects keeps wlroots' headers and library out of /usr/local.
