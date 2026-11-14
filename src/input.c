@@ -1,14 +1,21 @@
 #include <stdlib.h>
 #include <wlr/backend.h>
 #include <wlr/backend/session.h>
+#include <wlr/config.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
+
+#if WLR_HAS_LIBINPUT_BACKEND
+#include <libinput.h>
+#include <wlr/backend/libinput.h>
+#endif
 
 #include "tw.h"
 #include "config.h"
@@ -33,6 +40,11 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 	struct tw_server *server = keyboard->server;
 	struct wlr_keyboard *wlr_keyboard = keyboard->wlr_keyboard;
 	const xkb_keysym_t *syms;
+
+	/* A virtual keyboard has no keymap until its client uploads one. */
+	if (wlr_keyboard->xkb_state == NULL) {
+		return false;
+	}
 
 	/* Ctrl+Alt+Fn arrives as XF86Switch_VT_n: the way out of a stuck session. */
 	int nsyms = xkb_state_key_get_syms(wlr_keyboard->xkb_state, keycode, &syms);
@@ -124,38 +136,74 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data) {
 	free(keyboard);
 }
 
-static void new_keyboard(struct tw_server *server, struct wlr_input_device *device) {
-	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
-
+/*
+ * `is_virtual` keyboards come from the virtual-keyboard protocol (wtype, the
+ * tests): their client supplies the keymap, so ours must not replace it.
+ */
+static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyboard,
+		bool is_virtual) {
 	struct tw_keyboard *keyboard = calloc(1, sizeof(*keyboard));
 	if (keyboard == NULL) {
-		wlr_log(WLR_ERROR, "out of memory, ignoring keyboard %s", device->name);
+		wlr_log(WLR_ERROR, "out of memory, ignoring keyboard %s", wlr_keyboard->base.name);
 		return;
 	}
 	keyboard->server = server;
 	keyboard->wlr_keyboard = wlr_keyboard;
 
-	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	struct xkb_keymap *keymap = context == NULL ? NULL :
-		xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-	if (keymap != NULL) {
-		wlr_keyboard_set_keymap(wlr_keyboard, keymap);
-	} else {
-		wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*");
+	if (!is_virtual) {
+		struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+		struct xkb_keymap *keymap = context == NULL ? NULL :
+			xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+		if (keymap != NULL) {
+			wlr_keyboard_set_keymap(wlr_keyboard, keymap);
+		} else {
+			wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*");
+		}
+		xkb_keymap_unref(keymap);
+		xkb_context_unref(context);
+		wlr_keyboard_set_repeat_info(wlr_keyboard, repeat_rate, repeat_delay);
+		wlr_seat_set_keyboard(server->seat, wlr_keyboard);
 	}
-	xkb_keymap_unref(keymap);
-	xkb_context_unref(context);
-	wlr_keyboard_set_repeat_info(wlr_keyboard, repeat_rate, repeat_delay);
 
 	keyboard->modifiers.notify = handle_modifiers;
 	wl_signal_add(&wlr_keyboard->events.modifiers, &keyboard->modifiers);
 	keyboard->key.notify = handle_key;
 	wl_signal_add(&wlr_keyboard->events.key, &keyboard->key);
 	keyboard->destroy.notify = handle_keyboard_destroy;
-	wl_signal_add(&device->events.destroy, &keyboard->destroy);
+	wl_signal_add(&wlr_keyboard->base.events.destroy, &keyboard->destroy);
 
-	wlr_seat_set_keyboard(server->seat, wlr_keyboard);
 	wl_list_insert(&server->keyboards, &keyboard->link);
+}
+
+static void handle_new_virtual_keyboard(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, new_virtual_keyboard);
+	struct wlr_virtual_keyboard_v1 *virtual_keyboard = data;
+	new_keyboard(server, &virtual_keyboard->keyboard, true);
+}
+
+/* --- Pointer ---------------------------------------------------------------- */
+
+static void new_pointer(struct tw_server *server, struct wlr_input_device *device) {
+#if WLR_HAS_LIBINPUT_BACKEND
+	if (wlr_input_device_is_libinput(device)) {
+		struct libinput_device *libinput = wlr_libinput_get_device_handle(device);
+		/* Only touchpads can tap; mice keep libinput's defaults. */
+		if (libinput_device_config_tap_get_finger_count(libinput) > 0) {
+			libinput_device_config_tap_set_enabled(libinput, touchpad_tap ?
+				LIBINPUT_CONFIG_TAP_ENABLED : LIBINPUT_CONFIG_TAP_DISABLED);
+			if (libinput_device_config_scroll_has_natural_scroll(libinput)) {
+				libinput_device_config_scroll_set_natural_scroll_enabled(libinput,
+					touchpad_natural_scroll);
+			}
+			if (libinput_device_config_dwt_is_available(libinput)) {
+				libinput_device_config_dwt_set_enabled(libinput,
+					touchpad_disable_while_typing ?
+					LIBINPUT_CONFIG_DWT_ENABLED : LIBINPUT_CONFIG_DWT_DISABLED);
+			}
+		}
+	}
+#endif
+	wlr_cursor_attach_input_device(server->cursor, device);
 }
 
 static void handle_new_input(struct wl_listener *listener, void *data) {
@@ -164,23 +212,15 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
-		new_keyboard(server, device);
+		new_keyboard(server, wlr_keyboard_from_input_device(device), false);
 		break;
 	case WLR_INPUT_DEVICE_POINTER:
-		wlr_cursor_attach_input_device(server->cursor, device);
+		new_pointer(server, device);
 		break;
 	default:
 		break;
 	}
-
-	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
-	if (!wl_list_empty(&server->keyboards)) {
-		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
-	}
-	wlr_seat_set_capabilities(server->seat, caps);
 }
-
-/* --- Pointer ---------------------------------------------------------------- */
 
 static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 	double sx, sy;
@@ -286,6 +326,10 @@ void input_init(struct tw_server *server) {
 	wl_signal_add(&server->cursor->events.frame, &server->cursor_frame);
 
 	server->seat = wlr_seat_create(server->display, "seat0");
+	/* Always advertise both: a laptop always has them, and virtual keyboards
+	 * come and go without making every client rebind its keyboard. */
+	wlr_seat_set_capabilities(server->seat,
+		WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 	server->request_set_cursor.notify = handle_request_set_cursor;
 	wl_signal_add(&server->seat->events.request_set_cursor, &server->request_set_cursor);
 	server->pointer_focus_change.notify = handle_pointer_focus_change;
@@ -295,10 +339,16 @@ void input_init(struct tw_server *server) {
 
 	server->new_input.notify = handle_new_input;
 	wl_signal_add(&server->backend->events.new_input, &server->new_input);
+
+	server->virtual_keyboard_manager = wlr_virtual_keyboard_manager_v1_create(server->display);
+	server->new_virtual_keyboard.notify = handle_new_virtual_keyboard;
+	wl_signal_add(&server->virtual_keyboard_manager->events.new_virtual_keyboard,
+		&server->new_virtual_keyboard);
 }
 
 void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_input.link);
+	wl_list_remove(&server->new_virtual_keyboard.link);
 	wl_list_remove(&server->cursor_motion.link);
 	wl_list_remove(&server->cursor_motion_absolute.link);
 	wl_list_remove(&server->cursor_button.link);

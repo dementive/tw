@@ -19,6 +19,10 @@ meson test -C build-release --suite tw
 
 # Run in a window inside the current session (Mod is Alt when nested).
 ./build/tw -d -s alacritty
+
+# Install the binary and the login-screen entry (tw, tw-session, tw.desktop).
+# --skip-subprojects keeps wlroots' headers and library out of /usr/local.
+sudo meson install -C build-release --no-rebuild --skip-subprojects
 ```
 
 Always pass `--suite tw`; without it Meson also runs the vendored
@@ -26,24 +30,42 @@ subprojects' own tests.
 
 `-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per window.
 
+Never run `data/tw-session` from inside a desktop session to try it out: it
+publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
+
 ## Code map
 
 | File | Role |
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: gaps, colours, column widths, key bindings |
 | `src/layout.c` | Scrolling-strip maths. Pure functions, no wlroots, unit tested |
-| `src/window.c` | xdg-shell windows, popups, decorations, focus, `strip_arrange()` |
-| `src/output.c` | Outputs and the frame handler |
-| `src/input.c` | Keyboard, bindings, pointer, seat |
+| `src/window.c` | xdg-shell windows, popups, decorations, workspaces, focus, `strip_arrange()` |
+| `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
+| `src/output.c` | Outputs, scene layers, the frame handler |
+| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings, seat |
 | `src/main.c` | Startup, teardown, `spawn()` |
-| `tests/client.c` | Minimal Wayland client that prints the state the compositor gives it |
+| `data/` | `tw-session` (session start script) and the login-screen entry |
+| `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
+| `tests/client.c` | Minimal Wayland client (window or `--layer` surface) that prints what the compositor tells it |
+| `tests/keys.c` | Presses key combinations through the virtual-keyboard protocol |
 | `tests/smoke.sh` | End-to-end behaviour on the headless backend |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 
-The strip is one list of windows, left to right, one window per column, shown
-on the first output. `strip_arrange()` is the only place that positions
-windows; call it after anything that changes the list, the focus, a column
-width or the output.
+There are `TW_WORKSPACES` workspaces, each a strip: a list of windows, left to
+right, one window per column. Only the active workspace is on screen, on the
+first output. `strip_arrange()` is the only place that positions windows; call
+it after anything that changes a strip, the focus, a column width, the active
+workspace or the output.
+
+Focus has two parts, both derived by `focus_update()`: the active window (the
+focused window of the active workspace, drawn with the focused border), and
+the keyboard, which goes to that window unless a layer surface asked for
+exclusive focus. Change `workspace->focused`, `server->active` or
+`server->keyboard_layer`, then call `focus_update()`; do not send focus events
+anywhere else.
+
+Bindings follow niri's defaults. A new binding gets a `press` line and an
+expectation in `tests/smoke.sh`.
 
 ## Rules
 

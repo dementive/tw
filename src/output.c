@@ -9,24 +9,25 @@
 #include "tw.h"
 #include "config.h"
 
-struct tw_output {
-	struct wl_list link; /* tw_server.outputs */
-	struct tw_server *server;
-	struct wlr_output *wlr_output;
-	struct wl_listener frame;
-	struct wl_listener request_state;
-	struct wl_listener destroy;
-};
-
-bool output_primary_box(struct tw_server *server, struct wlr_box *box) {
+struct tw_output *output_primary(struct tw_server *server) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		wlr_output_layout_get_box(server->output_layout, output->wlr_output, box);
-		if (!wlr_box_empty(box)) {
-			return true;
+		struct wlr_box box;
+		wlr_output_layout_get_box(server->output_layout, output->wlr_output, &box);
+		if (!wlr_box_empty(&box)) {
+			return output;
 		}
 	}
-	return false;
+	return NULL;
+}
+
+bool output_primary_box(struct tw_server *server, struct wlr_box *box) {
+	struct tw_output *output = output_primary(server);
+	if (output == NULL || wlr_box_empty(&output->usable)) {
+		return false;
+	}
+	*box = output->usable;
+	return true;
 }
 
 static void handle_frame(struct wl_listener *listener, void *data) {
@@ -49,7 +50,7 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 
 static void handle_request_state(struct wl_listener *listener, void *data) {
 	/* The backend wants a new mode, e.g. the nested window was resized. The
-	 * output layout notices the change and re-arranges the strip. */
+	 * output layout notices the change and everything is re-arranged. */
 	struct tw_output *output = wl_container_of(listener, output, request_state);
 	const struct wlr_output_event_request_state *event = data;
 	wlr_output_commit_state(output->wlr_output, event->state);
@@ -57,6 +58,7 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
 
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_output *output = wl_container_of(listener, output, destroy);
+	layers_output_destroyed(output->server, output->wlr_output);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
@@ -100,6 +102,7 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	 * another one is plugged in. */
 	wl_list_insert(server->outputs.prev, &output->link);
 
+	/* Adding to the layout raises its change event, which arranges. */
 	struct wlr_output_layout_output *layout_output =
 		wlr_output_layout_add_auto(server->output_layout, wlr_output);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
@@ -107,7 +110,9 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 }
 
 static void handle_layout_change(struct wl_listener *listener, void *data) {
+	/* Layer surfaces first: they decide how much of the output is left. */
 	struct tw_server *server = wl_container_of(listener, server, layout_change);
+	layers_arrange(server);
 	strip_arrange(server);
 }
 
@@ -116,6 +121,15 @@ void output_init(struct tw_server *server) {
 	server->output_layout = wlr_output_layout_create(server->display);
 	server->scene = wlr_scene_create();
 	server->scene_layout = wlr_scene_attach_output_layout(server->scene, server->output_layout);
+
+	/* Children stack in creation order. The layer indices are the values of
+	 * zwlr_layer_shell_v1_layer: background, bottom, top, overlay. */
+	struct wlr_scene_tree *root = &server->scene->tree;
+	server->layer_trees[0] = wlr_scene_tree_create(root);
+	server->layer_trees[1] = wlr_scene_tree_create(root);
+	server->window_tree = wlr_scene_tree_create(root);
+	server->layer_trees[2] = wlr_scene_tree_create(root);
+	server->layer_trees[3] = wlr_scene_tree_create(root);
 
 	server->new_output.notify = handle_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);

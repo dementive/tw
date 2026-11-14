@@ -125,6 +125,7 @@ int main(int argc, char *argv[]) {
 	wlr_fractional_scale_manager_v1_create(server.display, 1);
 
 	output_init(&server);
+	layer_init(&server);
 	window_init(&server);
 	input_init(&server);
 
@@ -156,6 +157,7 @@ teardown:
 	wl_display_destroy_clients(server.display);
 	input_finish(&server);
 	window_finish(&server);
+	layer_finish(&server);
 	output_finish(&server);
 	wl_event_source_remove(server.sigint);
 	wl_event_source_remove(server.sigterm);

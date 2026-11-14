@@ -1,0 +1,67 @@
+#!/bin/sh
+# Starts tw as a login session. The login screen runs this through
+# tw.desktop; it also works when typed on a text console.
+#
+# Environment you can set beforehand:
+#   WLR_DRM_DEVICES   which GPUs to use (default: only the integrated one)
+#   TW_ALL_GPUS=1     use every GPU; needed for monitor ports wired to a
+#                     second GPU, at the cost of keeping that GPU awake
+#
+# Programs to start with the session go in ~/.config/tw/autostart, an
+# executable script (for example: swaybg, mako, swayidle).
+
+# This script starts tw as the whole session, on the real screen. Drop any
+# host display from the environment, or tw would try to open a window on it.
+# (To run tw in a window inside another session, run `tw` itself.)
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
+
+export XDG_CURRENT_DESKTOP=tw
+export XDG_SESSION_DESKTOP=tw
+export XDG_SESSION_TYPE=wayland
+# There is no X11 support yet, so ask toolkits that default to X11 for Wayland.
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+export MOZ_ENABLE_WAYLAND=1
+
+# On a laptop with two GPUs, drive only the one wired to the built-in panel
+# (the "boot VGA" device). wlroots would otherwise open both, which loads the
+# second GPU's driver and stops that GPU from powering down.
+if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
+	cards=0
+	primary=
+	for card in /sys/class/drm/card[0-9]*; do
+		[ -e "$card/device/boot_vga" ] || continue # skips connectors
+		cards=$((cards + 1))
+		if [ "$(cat "$card/device/boot_vga")" = 1 ]; then
+			primary=${card##*/}
+		fi
+	done
+	if [ "$cards" -gt 1 ] && [ -n "$primary" ]; then
+		export WLR_DRM_DEVICES="/dev/dri/$primary"
+		# Likewise keep other vendors' EGL libraries out of the session when
+		# the chosen GPU uses Mesa. Programs started from tw inherit this and
+		# render on the same GPU; unset it for one that should use the other:
+		#   env -u __EGL_VENDOR_LIBRARY_FILENAMES <program>
+		driver=$(basename "$(readlink "/sys/class/drm/$primary/device/driver")")
+		mesa_egl=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+		if [ "$driver" != nvidia ] && [ -f "$mesa_egl" ]; then
+			export __EGL_VENDOR_LIBRARY_FILENAMES="$mesa_egl"
+		fi
+	fi
+fi
+
+# Once tw is up: tell D-Bus and systemd about the session so portals and
+# services can find it, then run the user's autostart script.
+startup='
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+	dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+fi
+autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
+if [ -x "$autostart" ]; then
+	exec "$autostart"
+fi
+'
+
+# Prefer the tw installed next to this script.
+tw=$(dirname "$0")/tw
+[ -x "$tw" ] || tw=tw
+exec "$tw" -s "$startup"

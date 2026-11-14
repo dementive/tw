@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=tw
+Comment=Scrolling-tiling Wayland compositor
+Exec=@bindir@/tw-session
+Type=Application
+DesktopNames=tw

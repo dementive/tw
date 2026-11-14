@@ -1,9 +1,16 @@
 /*
- * Minimal xdg-shell client for the headless tests.
+ * Minimal Wayland client for the headless tests. It reports what the
+ * compositor tells it, one line per event:
  *
- * Maps one window with a wl_shm buffer and prints every configure it gets:
+ *   configure <w>x<h> activated=<0|1> suspended=<0|1>   window state
+ *   layer configure <w>x<h>                             with --layer
+ *   keyboard enter | keyboard leave                     keyboard focus
+ *   key <code> <pressed|released>                       keys it received
+ *   closed                                              asked to close; it exits
  *
- *   configure <width>x<height> activated=<0|1> suspended=<0|1>
+ * Without arguments it maps one ordinary window. With --layer it maps a
+ * 400x200 layer surface on the overlay layer that asks for exclusive keyboard
+ * focus, which is what a launcher does.
  *
  * It draws once per configure and never asks for frame callbacks, so an idle
  * compositor with these clients mapped should not wake up at all.
@@ -18,11 +25,15 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
+static struct wl_seat *seat;
+static struct wl_keyboard *keyboard;
 static struct xdg_wm_base *wm_base;
+static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_surface *surface;
 static struct wl_buffer *buffer;
 
@@ -30,7 +41,7 @@ static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended;
 static bool running = true;
 
-static struct wl_buffer *create_buffer(int32_t width, int32_t height) {
+static void draw(int32_t width, int32_t height) {
 	int32_t stride = width * 4;
 	size_t size = (size_t)stride * (size_t)height;
 
@@ -50,31 +61,28 @@ static struct wl_buffer *create_buffer(int32_t width, int32_t height) {
 	munmap(pixels, size);
 
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
-	struct wl_buffer *result = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
-		WL_SHM_FORMAT_XRGB8888);
+	struct wl_buffer *old = buffer;
+	buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_XRGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
-	return result;
-}
 
-static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
-	xdg_surface_ack_configure(xdg_surface, serial);
-
-	/* 0x0 means "pick your own size". */
-	int32_t width = pending_width > 0 ? pending_width : 640;
-	int32_t height = pending_height > 0 ? pending_height : 480;
-	printf("configure %dx%d activated=%d suspended=%d\n",
-		pending_width, pending_height, pending_activated, pending_suspended);
-	fflush(stdout);
-
-	struct wl_buffer *old = buffer;
-	buffer = create_buffer(width, height);
 	wl_surface_attach(surface, buffer, 0, 0);
 	wl_surface_damage_buffer(surface, 0, 0, width, height);
 	wl_surface_commit(surface);
 	if (old != NULL) {
 		wl_buffer_destroy(old);
 	}
+}
+
+/* --- Window ----------------------------------------------------------------- */
+
+static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
+	xdg_surface_ack_configure(xdg_surface, serial);
+	printf("configure %dx%d activated=%d suspended=%d\n",
+		pending_width, pending_height, pending_activated, pending_suspended);
+	fflush(stdout);
+	/* 0x0 means "pick your own size". */
+	draw(pending_width > 0 ? pending_width : 640, pending_height > 0 ? pending_height : 480);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -97,6 +105,8 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 }
 
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
+	printf("closed\n");
+	fflush(stdout);
 	running = false;
 }
 
@@ -123,17 +133,105 @@ static const struct xdg_wm_base_listener wm_base_listener = {
 	.ping = wm_base_ping,
 };
 
+/* --- Layer surface ---------------------------------------------------------- */
+
+static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface,
+		uint32_t serial, uint32_t width, uint32_t height) {
+	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
+	printf("layer configure %ux%u\n", width, height);
+	fflush(stdout);
+	draw((int32_t)width, (int32_t)height);
+}
+
+static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer_surface) {
+	running = false;
+}
+
+static const struct zwlr_layer_surface_v1_listener layer_listener = {
+	.configure = layer_configure,
+	.closed = layer_closed,
+};
+
+/* --- Keyboard --------------------------------------------------------------- */
+
+static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format,
+		int32_t fd, uint32_t size) {
+	close(fd);
+}
+
+static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
+		struct wl_surface *wl_surface, struct wl_array *keys) {
+	printf("keyboard enter\n");
+	fflush(stdout);
+}
+
+static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
+		struct wl_surface *wl_surface) {
+	printf("keyboard leave\n");
+	fflush(stdout);
+}
+
+static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
+		uint32_t time, uint32_t key, uint32_t state) {
+	printf("key %u %s\n", key, state == WL_KEYBOARD_KEY_STATE_PRESSED ? "pressed" : "released");
+	fflush(stdout);
+}
+
+static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
+		uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+}
+
+static void keyboard_repeat_info(void *data, struct wl_keyboard *wl_keyboard,
+		int32_t rate, int32_t delay) {
+}
+
+static const struct wl_keyboard_listener keyboard_listener = {
+	.keymap = keyboard_keymap,
+	.enter = keyboard_enter,
+	.leave = keyboard_leave,
+	.key = keyboard_key,
+	.modifiers = keyboard_modifiers,
+	.repeat_info = keyboard_repeat_info,
+};
+
+static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+	if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && keyboard == NULL) {
+		keyboard = wl_seat_get_keyboard(wl_seat);
+		wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
+	}
+}
+
+static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
+}
+
+static const struct wl_seat_listener seat_listener = {
+	.capabilities = seat_capabilities,
+	.name = seat_name,
+};
+
+/* --- Setup ------------------------------------------------------------------ */
+
+static uint32_t at_most(uint32_t version, uint32_t max) {
+	return version < max ? version : max;
+}
+
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version) {
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
+		seat = wl_registry_bind(registry, name, &wl_seat_interface, at_most(version, 4));
+		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		/* Version 6 is the first with the `suspended` state. */
-		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface,
-			version < 6 ? version : 6);
+		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, at_most(version, 6));
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
+		/* Version 4 is the first with named keyboard interactivity modes. */
+		layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface,
+			at_most(version, 4));
 	}
 }
 
@@ -145,7 +243,9 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = registry_global_remove,
 };
 
-int main(void) {
+int main(int argc, char *argv[]) {
+	bool layer = argc > 1 && strcmp(argv[1], "--layer") == 0;
+
 	struct wl_display *display = wl_display_connect(NULL);
 	if (display == NULL) {
 		fprintf(stderr, "cannot connect to a Wayland display\n");
@@ -153,18 +253,30 @@ int main(void) {
 	}
 	struct wl_registry *registry = wl_display_get_registry(display);
 	wl_registry_add_listener(registry, &registry_listener, NULL);
+	/* Twice: the second round delivers the seat's capabilities, so the
+	 * keyboard is bound before the surface can be focused. */
 	wl_display_roundtrip(display);
-	if (compositor == NULL || shm == NULL || wm_base == NULL) {
-		fprintf(stderr, "compositor is missing wl_compositor, wl_shm or xdg_wm_base\n");
+	wl_display_roundtrip(display);
+	if (compositor == NULL || shm == NULL || wm_base == NULL || layer_shell == NULL) {
+		fprintf(stderr, "compositor is missing a required global\n");
 		return 1;
 	}
 
 	surface = wl_compositor_create_surface(compositor);
-	struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, surface);
-	xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
-	struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg_surface);
-	xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
-	xdg_toplevel_set_title(toplevel, "tw-test-client");
+	if (layer) {
+		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "tw-test");
+		zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
+		zwlr_layer_surface_v1_set_size(layer_surface, 400, 200);
+		zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surface,
+			ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
+	} else {
+		struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, surface);
+		xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
+		struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg_surface);
+		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
+		xdg_toplevel_set_title(toplevel, "tw-test-client");
+	}
 	wl_surface_commit(surface);
 
 	while (running && wl_display_dispatch(display) != -1) {

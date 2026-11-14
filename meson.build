@@ -54,30 +54,13 @@ else
 endif
 
 wayland_server = dependency('wayland-server')
+wayland_client = dependency('wayland-client')
 xkbcommon = dependency('xkbcommon')
+libinput = dependency('libinput') # touchpad settings
 
-tw = executable(
-	'tw',
-	'src/main.c',
-	'src/output.c',
-	'src/input.c',
-	'src/window.c',
-	'src/layout.c',
-	dependencies: [wlroots, wayland_server, xkbcommon],
-	install: true,
-)
+# --- Protocols ---------------------------------------------------------------
 
-# --- Tests -----------------------------------------------------------------
-
-# Pure layout maths: no compositor needed.
-test('layout', executable(
-	'layout-test',
-	'tests/layout_test.c',
-	'src/layout.c',
-	include_directories: 'src',
-))
-
-# A minimal xdg-shell client that reports the state the compositor gives it.
+# Declared after wlroots, which can supply wayland-protocols as a subproject.
 wayland_protos = dependency(
 	'wayland-protocols',
 	version: '>=1.32',
@@ -88,25 +71,96 @@ wayland_scanner = find_program(
 	dependency('wayland-scanner', native: true).get_variable('wayland_scanner'),
 	native: true,
 )
-xdg_shell_xml = wayland_protos.get_variable('pkgdatadir') / 'stable/xdg-shell/xdg-shell.xml'
-xdg_shell_client_h = custom_target(
-	'xdg-shell-client-protocol.h',
-	input: xdg_shell_xml,
-	output: 'xdg-shell-client-protocol.h',
-	command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+
+# The wlr and virtual-keyboard protocols are not part of wayland-protocols, so
+# their XML is kept in protocols/ (copied from the pinned wlroots).
+protocols = {
+	'xdg-shell': wayland_protos.get_variable('pkgdatadir') / 'stable/xdg-shell/xdg-shell.xml',
+	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
+	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
+}
+server_header = {}
+client_header = {}
+protocol_code = {}
+foreach name, xml : protocols
+	server_header += {name: custom_target(
+		name + '-protocol.h',
+		input: xml,
+		output: name + '-protocol.h',
+		command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+	)}
+	client_header += {name: custom_target(
+		name + '-client-protocol.h',
+		input: xml,
+		output: name + '-client-protocol.h',
+		command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+	)}
+	protocol_code += {name: custom_target(
+		name + '-protocol.c',
+		input: xml,
+		output: name + '-protocol.c',
+		command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+	)}
+endforeach
+
+# --- The compositor ----------------------------------------------------------
+
+tw = executable(
+	'tw',
+	'src/main.c',
+	'src/output.c',
+	'src/input.c',
+	'src/window.c',
+	'src/layer.c',
+	'src/layout.c',
+	# wlroots' layer-shell header includes this generated one.
+	server_header['wlr-layer-shell-unstable-v1'],
+	dependencies: [wlroots, wayland_server, xkbcommon, libinput],
+	install: true,
 )
-xdg_shell_c = custom_target(
-	'xdg-shell-protocol.c',
-	input: xdg_shell_xml,
-	output: 'xdg-shell-protocol.c',
-	command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+
+# Login-screen entry: `sudo meson install` makes "tw" selectable next to the
+# other sessions.
+install_data(
+	'data/tw-session',
+	install_dir: get_option('bindir'),
+	install_mode: 'rwxr-xr-x',
 )
+configure_file(
+	input: 'data/tw.desktop.in',
+	output: 'tw.desktop',
+	configuration: {'bindir': get_option('prefix') / get_option('bindir')},
+	install: true,
+	install_dir: get_option('datadir') / 'wayland-sessions',
+)
+
+# --- Tests -------------------------------------------------------------------
+
+# Pure layout maths: no compositor needed.
+test('layout', executable(
+	'layout-test',
+	'tests/layout_test.c',
+	'src/layout.c',
+	include_directories: 'src',
+))
+
+# A minimal client that reports the state the compositor gives it, and a tool
+# that presses keys through the virtual-keyboard protocol.
 test_client = executable(
 	'tw-test-client',
 	'tests/client.c',
-	xdg_shell_client_h,
-	xdg_shell_c,
-	dependencies: dependency('wayland-client'),
+	client_header['xdg-shell'],
+	protocol_code['xdg-shell'],
+	client_header['wlr-layer-shell-unstable-v1'],
+	protocol_code['wlr-layer-shell-unstable-v1'],
+	dependencies: wayland_client,
+)
+test_keys = executable(
+	'tw-test-keys',
+	'tests/keys.c',
+	client_header['virtual-keyboard-unstable-v1'],
+	protocol_code['virtual-keyboard-unstable-v1'],
+	dependencies: [wayland_client, xkbcommon],
 )
 
 # End-to-end on the headless backend. In a sanitizer build this is also the
@@ -114,9 +168,9 @@ test_client = executable(
 test(
 	'smoke',
 	find_program('tests/smoke.sh'),
-	args: [tw, test_client],
+	args: [tw, test_client, test_keys],
 	is_parallel: false,
-	timeout: 60,
+	timeout: 120,
 )
 
 # Budgets only mean something for an optimized build. Ratchet these down as
