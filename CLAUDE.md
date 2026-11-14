@@ -353,8 +353,10 @@ At a real login tw's private memory is 15 to 20 MB, not the budget test's
 renderer never loads: 14 MB the moment the GLES2 renderer exists on Intel, in
 two driver instances, because wlroots opens one for the allocator and one for
 the renderer. Turning off Mesa's shader cache makes it larger, not smaller.
-tw also holds the screen's buffers, three at the panel's size (about 50 MB at
-2560x1600), which show up as shared memory and not in any process.
+tw also holds the screen's buffers, three at the panel's size (8 MB each on
+the owner's 1920x1080 panel), which show up as shared memory (`Shmem`,
+`Unevictable`) and not in any process. A client's window buffers are counted
+there too, once, however many processes have them open.
 
 When the owner asks where the machine's memory goes, account for the whole
 machine before looking at tw: `/proc/meminfo`, `smaps_rollup` per process,
@@ -368,3 +370,22 @@ loaded the GPU was also awake about 40% of the time with nothing using it
 (`power/runtime_active_time` of its PCI device). Of what remains, about 100 MB is free pages
 parked per CPU (`count:` lines in `/proc/zoneinfo`) and about 100 MB is
 vmalloc.
+
+The "used" figure of `btop` and `free` is MemTotal minus MemAvailable, and
+on this machine about 290 MB of it is in use by nothing. The kernel leaves
+out of MemAvailable its own reserve (the zones' high watermarks and
+low-memory reserves, 172 MB; large because transparent huge pages raise
+`min_free_kbytes` to 66 MB), 82 MB of page cache, and half of the
+reclaimable slab. Say so when the owner quotes that figure. Their reading
+right after login, before any application, was about 900 MB (2026-11-14).
+Taking the Claude app out of a reading made with it open gives roughly:
+290 MB of that reserve, 340 MB of kernel memory outside every counter,
+130 MB of slab, kernel stacks and page tables, 45 MB of system daemons,
+35 MB of session helpers, 45 MB of tw with its screen buffers, and the
+terminal showing the figure. What only root can read (`/proc/slabinfo`,
+`/proc/vmallocinfo`) has not been looked at; the sizes suggest that the
+swap device's table is 64 MB of the vmalloc part (zram, as large as the RAM).
+
+The session helpers (the portals, PipeWire, the accessibility bus) all
+start at login although tw starts none of them: the KDE wallet daemon
+registers with the portal as it starts, and the portal starts the rest.
