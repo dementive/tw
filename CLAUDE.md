@@ -397,6 +397,25 @@ and the page cache's tree nodes lead). So the one thing found that can be
 shrunk is the swap device, with a drop-in in
 `/etc/systemd/zram-generator.conf.d/`: 8 GB instead of 16 frees 30 MB.
 
+The owner found that too little ("saving 61 mb on that isn't much") and
+expects the figure well below 900. What moves it most is the reserve:
+`vm.min_free_kbytes` at 16384, which is what the kernel picks by itself when
+huge pages are off, takes 105 MB out of what MemAvailable leaves out (288 to
+183 MB by the kernel's formula) and should shrink the per-CPU parked pages
+with it, since their limit follows the low watermark. Nothing on this
+machine writes that setting or the huge-page `enabled` file after boot
+(writing `enabled` makes the kernel raise the reserve again). Computed, not
+yet applied. The rest is small: `ananicy-cpp`, `avahi-daemon`,
+`switcheroo-control` and `bolt` are about 12 MB together, the `xe` module
+5 MB.
+
+Two ideas for tw's own share were tried in a headless tw drawing with the
+Intel GPU, and dropped. Keeping huge pages out of tw (`PR_SET_THP_DISABLE`):
+the real tw has 8 MB of its 13 MB heap in huge pages, but that heap is
+memory tw and Mesa really touch (in the probe 8.5 MB resident of 9.4 MB of
+address space, with no huge pages at all), so at most 1 MB would come back.
+A `malloc_trim()` after startup gave back 170 kB.
+
 The session helpers (the portals, PipeWire, the accessibility bus) all
 start at login although tw starts none of them: the KDE wallet daemon
 registers with the portal as it starts, and the portal starts the rest.
