@@ -62,8 +62,14 @@ expect_state a "$on" "Mod+Home to focus the first column"
 expect_state e "activated=0" "the last column to lose focus"
 press super+l
 expect_state b "$on" "Mod+L to focus the next column"
-press super+End super+h
-expect_state d "$on" "Mod+End then Mod+H to focus the fourth column"
+press super+j
+expect_state a "$on" "Mod+J to focus the previous column"
+press super+Right super+Right
+expect_state c "$on" "Mod+Right to work like Mod+L"
+press super+Left
+expect_state b "$on" "Mod+Left to work like Mod+J"
+press super+End super+j
+expect_state d "$on" "Mod+End then Mod+J to focus the fourth column"
 
 # Moving a column keeps it focused: d goes first, so Mod+L then reaches a.
 press super+ctrl+Home super+l
@@ -108,6 +114,27 @@ press super+Page_Up
 expect_state b "$on" "Mod+Page_Up to go to the workspace above"
 press super+Page_Down
 expect_state d "$on" "Mod+Page_Down to go back down"
+
+# Shift with a direction goes through the workspaces: up and left to the
+# previous one, down and right to the next. (With a monitor on that side it
+# goes there instead; see outputs.sh.)
+for keys in "i k" "j l" "Up Down" "Left Right"; do
+	back=${keys% *}
+	forth=${keys#* }
+	press "super+shift+$back"
+	expect_state b "$on" "Mod+Shift+$back to go to the previous workspace"
+	expect_state d "$off_screen" "the workspace left behind to be hidden"
+	press "super+shift+$forth"
+	expect_state d "$on" "Mod+Shift+$forth to go to the next workspace"
+done
+# With Ctrl as well, the focused column comes along.
+press super+shift+ctrl+i
+expect_state d "$on" "Mod+Shift+Ctrl+I to take the column to the previous workspace"
+expect_state b "activated=0 suspended=0" "that workspace to be the one on screen"
+expect_state f "$off_screen" "the workspace the column left to be hidden"
+press super+shift+ctrl+Down
+expect_state d "$on" "Mod+Shift+Ctrl+Down to take the column to the next workspace"
+expect_state f "activated=0 suspended=0" "workspace 2 to be shown again"
 
 # --- Focus requests: workspace 5 -----------------------------------------------
 # A window may ask for the focus with a token that another program made from

@@ -36,12 +36,16 @@ expect_state a "activated=0 suspended=0" "two columns to fit on screen"
 # strip: a | b,[c]
 
 # --- Focus and order within a column -------------------------------------------
+press super+i
+expect_state b "$on" "Mod+I to focus the window above"
 press super+k
-expect_state b "$on" "Mod+K to focus the window above"
-press super+j
-expect_state c "$on" "Mod+J to focus the window below"
-press super+ctrl+k super+j # c moves above b, so the window below it is now b
-expect_state b "$on" "Mod+Ctrl+K to move the window up within its column"
+expect_state c "$on" "Mod+K to focus the window below"
+press super+Up
+expect_state b "$on" "Mod+Up to focus the window above"
+press super+Down
+expect_state c "$on" "Mod+Down to focus the window below"
+press super+ctrl+i super+k # c moves above b, so the window below it is now b
+expect_state b "$on" "Mod+Ctrl+I to move the window up within its column"
 # strip: a | c,[b]
 
 # --- Leaving a column ----------------------------------------------------------
@@ -54,7 +58,7 @@ expect_state a "suspended=1" "three columns not to fit again"
 
 # Mod+Comma pulls the window on the right in; Mod+Period pushes the focused
 # window out. Neither moves the focus.
-press super+h super+comma
+press super+j super+comma
 wait_until "Mod+Comma to pull the neighbour into the focused column" halved b
 expect_state c "$on" "focus to stay put when pulling a window in"
 # strip: a | [c],b
@@ -94,8 +98,8 @@ expect_state d "activated=0 suspended=0" "the window behind a dialog to stay vis
 [ "$(current_size d)" = "$size_d" ] || fail "a dialog resized a tiled window"
 
 # Focus keys act on the strip and leave the dialog, which stays open.
-press super+h
-expect_state b "$on" "Mod+H to move along the strip from behind a dialog"
+press super+j
+expect_state b "$on" "Mod+J to move along the strip from behind a dialog"
 expect_state dialog "activated=0 suspended=0" "the dialog to stay on screen without focus"
 
 # Closing a dialog passes focus to another dialog, then back to the strip.

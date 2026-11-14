@@ -39,7 +39,7 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 
 | File | Role |
 | --- | --- |
-| `src/config.h` | All configuration, compile-time: gaps, colours, column widths, outputs, autostart, timeouts, key bindings |
+| `src/config.h` | All configuration, compile-time: gaps, column widths, outputs, autostart, timeouts, key bindings |
 | `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Pure functions, no wlroots, unit tested |
 | `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, focus requests, `strip_arrange()`, scroll animation and swipes |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
@@ -97,7 +97,8 @@ Each workspace has `focused` (tiled or floating; gets the keyboard) and `tiled`
 dialog is focused.
 
 Focus has two parts, both derived by `focus_update()`: the active window (the
-focused window of the active workspace, drawn with the focused border), and
+focused window of the active workspace; its client is told it is activated,
+and tw draws nothing to mark it), and
 the keyboard, which goes to the lock screen if locked, else to a layer surface
 that asked for exclusive focus, else to the active window. Change
 `workspace->focused`, `server->active`, `server->keyboard_layer` or the lock
@@ -130,8 +131,13 @@ sockets; when it exits (a pidfd tells us) tw watches them again.
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
 
-Bindings follow niri's defaults. A new binding gets a `press` line and an
-expectation in `tests/smoke.sh`.
+Direction keys follow the owner's scheme: I, J, K, L are up, left, down,
+right, and the arrow keys do the same. Alone they move the focus; with Shift
+they go to the monitor on that side or, with none there, to the previous or
+next workspace; with Ctrl the focused window or column is taken along. The
+`DIRECTION` macro in `config.h` binds all four meanings of a key at once. The
+other bindings follow niri's defaults. A new binding gets a `press` line and
+an expectation in `tests/smoke.sh`.
 
 ## Rules
 
@@ -178,9 +184,9 @@ Any new input path or binding mechanism must respect this, with a test. tw
 never locks by itself unless the locker is installed (`program_find()`): a
 lock nobody can open is worse than none.
 
-**Stay out of the pixel business.** Solid-colour borders only; no blur,
-shadows, rounded corners or text rendering in the compositor. They need custom
-shaders or a font stack, and they defeat direct scanout.
+**Stay out of the pixel business.** tw draws nothing around windows: no
+borders (the owner uses none), blur, shadows, rounded corners or text. The
+latter need custom shaders or a font stack, and they defeat direct scanout.
 
 **Keep everything else out of process.** X11 apps go through
 xwayland-satellite, bars and launchers are layer-shell clients, configuration

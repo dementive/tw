@@ -40,12 +40,17 @@ expect_state b "$on" "the window on the second monitor to be focused"
 never_on b $left
 [ "$(current_size b)" = "$(current_size a)" ] || fail "windows on equal monitors differ in size"
 
-press super+shift+h
-expect_state a "$on" "Mod+Shift+H to move the focus to the monitor on the left"
+press super+shift+j
+expect_state a "$on" "Mod+Shift+J to move the focus to the monitor on the left"
 expect_state b "$visible" "the other monitor to keep showing its window"
-press super+shift+h
+# Nothing further left: no monitor, and no workspace before the first.
+press super+shift+j
 sleep 0.3
-last_line_matches a configure "$on" || fail "Mod+Shift+H did something with no monitor further left"
+last_line_matches a configure "$on" || fail "Mod+Shift+J did something with nothing further left"
+press super+shift+Right
+expect_state b "$on" "Mod+Shift+Right to move the focus to the monitor on the right"
+press super+shift+Left
+expect_state a "$on" "Mod+Shift+Left to move the focus back"
 
 # --- Moving a column to the other monitor ---------------------------------------
 press super+shift+ctrl+l
@@ -72,6 +77,14 @@ last_line_matches c configure "$visible" || fail "switching workspace on one mon
 start_client d
 expect_line d "output enter $right" "a window on workspace 3 to appear on the second monitor"
 
+# With no monitor on that side, Shift and a direction step through the
+# workspaces of this monitor instead.
+press super+shift+l
+expect_state d "$hidden" "Mod+Shift+L, with no monitor further right, to go to the next workspace"
+last_line_matches c configure "$visible" || fail "Mod+Shift+L disturbed the other monitor"
+press super+shift+i
+expect_state d "$on" "Mod+Shift+I, with no monitor above, to go to the previous workspace"
+
 # Stepping through workspaces skips the one the other monitor shows.
 press super+Page_Up
 expect_state a "$on" "Mod+Page_Up to go from workspace 3 to workspace 2"
@@ -91,7 +104,7 @@ expect_state a "$visible" "the window that lost the focus to stay visible"
 # A click on an empty monitor moves the focus there.
 press super+shift+l super+4
 expect_state a "$hidden" "Mod+4 to show an empty workspace on the second monitor"
-press super+shift+h
+press super+shift+j
 expect_state c "$on" "the focus to be back on the first monitor"
 pointer_to 2000 300
 click
@@ -117,11 +130,11 @@ press super+shift+f
 # --- A column sticking out of its monitor is not drawn on the next --------------
 # On the left monitor c is widened to two thirds, so the column after it hangs
 # over the right edge, where the other monitor begins.
-press super+shift+h super+r
+press super+shift+j super+r
 start_client f
 expect_state f "$on" "the new column to be focused"
-press super+h
-expect_state c "$on" "Mod+H to scroll back to the first column"
+press super+j
+expect_state c "$on" "Mod+J to scroll back to the first column"
 expect_state f "$visible" "the second column to stay partly in view"
 sleep 0.6 # let the scroll animation finish
 never_on f $right

@@ -286,10 +286,11 @@ void action_workspace(struct tw_server *server, const union tw_arg *arg);
 void action_workspace_relative(struct tw_server *server, const union tw_arg *arg);
 void action_move_to_workspace(struct tw_server *server, const union tw_arg *arg);
 void action_move_to_workspace_relative(struct tw_server *server, const union tw_arg *arg);
-/* Monitors. arg.i is an enum wlr_direction. Moving a column to another
- * monitor puts it on the workspace shown there and takes the focus along. */
-void action_focus_output(struct tw_server *server, const union tw_arg *arg);
-void action_move_to_output(struct tw_server *server, const union tw_arg *arg);
+/* The same by direction (arg.i is an enum wlr_direction): to the workspace
+ * on the monitor on that side, or with no monitor there, to the previous
+ * (up, left) or next (down, right) workspace. */
+void action_workspace_toward(struct tw_server *server, const union tw_arg *arg);
+void action_move_to_workspace_toward(struct tw_server *server, const union tw_arg *arg);
 
 /* layer.c */
 void layer_init(struct tw_server *server);

@@ -35,7 +35,6 @@ struct tw_column {
  * or fullscreen_tree while fullscreen, or float_tree while floating.
  *
  *   scene_tree          positioned at the window; node.data = window
- *   ├── border[0..3]    solid rectangles
  *   ├── surface_tree    the client's surfaces, clipped to the window's box
  *   └── popup_tree      the client's popups, unclipped; node.data = window
  *
@@ -54,15 +53,14 @@ struct tw_window {
 	struct wlr_scene_tree *scene_tree;
 	struct wlr_scene_tree *surface_tree;
 	struct wlr_scene_tree *popup_tree;
-	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 
 	bool mapped;
 	bool floating;   /* a dialog: centred, sized by the client, not in the strip */
-	bool fullscreen; /* covers the whole output, no borders; alone in its column */
+	bool fullscreen; /* covers the whole output; alone in its column */
 
 	/* The last state sent to the client or the scene, so that re-arranging
 	 * an unchanged strip sends no configure and causes no damage. */
-	int width, height; /* content size, borders excluded */
+	int width, height;
 	bool suspended;
 	bool fullscreen_applied;
 	struct wlr_box clip;
@@ -253,29 +251,8 @@ static int column_width(const struct tw_column *column, const struct wlr_box *ar
 		column->maximized ? full : column_widths[column->width_idx]);
 }
 
-static int content_size(int outer) {
-	int inner = outer - 2 * border_width;
-	return inner > 1 ? inner : 1;
-}
-
 static int at_least_zero(int value) {
 	return value > 0 ? value : 0;
-}
-
-/* Four rectangles around the content, minus what is cut off the sides. */
-static void window_update_borders(struct tw_window *window) {
-	int bw = border_width, w = window->width, h = window->height;
-	int left = window->cut_left, right = window->cut_right;
-	int span = at_least_zero(w + 2 * bw - left - right);
-	int left_width = at_least_zero(bw - left), right_width = at_least_zero(bw - right);
-	wlr_scene_rect_set_size(window->border[0], span, bw);
-	wlr_scene_rect_set_size(window->border[1], span, bw);
-	wlr_scene_rect_set_size(window->border[2], left_width, h);
-	wlr_scene_rect_set_size(window->border[3], right_width, h);
-	wlr_scene_node_set_position(&window->border[0]->node, left, 0);
-	wlr_scene_node_set_position(&window->border[1]->node, left, h + bw);
-	wlr_scene_node_set_position(&window->border[2]->node, bw - left_width, bw);
-	wlr_scene_node_set_position(&window->border[3]->node, w + bw, bw);
 }
 
 /* A client may ignore the size it was given; never let it draw outside its
@@ -283,9 +260,7 @@ static void window_update_borders(struct tw_window *window) {
  * geometry offset. */
 static void window_update_clip(struct tw_window *window) {
 	const struct wlr_box *geometry = &window->xdg_toplevel->base->geometry;
-	int inset = window->fullscreen_applied ? 0 : border_width;
-	int left = at_least_zero(window->cut_left - inset);
-	int right = at_least_zero(window->cut_right - inset);
+	int left = window->cut_left, right = window->cut_right;
 	struct wlr_box clip = {
 		.x = geometry->x + left,
 		.y = geometry->y,
@@ -303,19 +278,15 @@ static void window_update_clip(struct tw_window *window) {
 	}
 }
 
-/* Cuts this much off the window's sides; see tw_window.cut_left. */
+/* Cuts this much off the window's sides; see tw_window.cut_left. Takes
+ * effect with the next window_update_clip(). */
 static void window_trim(struct tw_window *window, int left, int right) {
-	left = at_least_zero(left);
-	right = at_least_zero(right);
-	if (window->cut_left != left || window->cut_right != right) {
-		window->cut_left = left;
-		window->cut_right = right;
-		window_update_borders(window);
-	}
+	window->cut_left = at_least_zero(left);
+	window->cut_right = at_least_zero(right);
 }
 
-/* Records the content size and fits the borders to it. With `configure` the
- * client is also asked for that size; a floating window picks its own. */
+/* Records the window's size. With `configure` the client is also asked for
+ * that size; a floating window picks its own. */
 static void window_resize(struct tw_window *window, int width, int height, bool configure) {
 	if (window->width == width && window->height == height) {
 		return;
@@ -325,7 +296,6 @@ static void window_resize(struct tw_window *window, int width, int height, bool 
 	if (configure) {
 		wlr_xdg_toplevel_set_size(window->xdg_toplevel, width, height);
 	}
-	window_update_borders(window);
 }
 
 /*
@@ -345,18 +315,12 @@ static void window_show(struct tw_window *window, bool on_screen, bool wanted) {
 }
 
 /*
- * The scene half of fullscreen: no borders, and a place above the bars. With
- * nothing else left to draw, wlroots hands the client's buffer straight to
- * the display instead of compositing it (direct scanout).
+ * The scene half of fullscreen: a place above the bars. With nothing else
+ * left to draw, wlroots hands the client's buffer straight to the display
+ * instead of compositing it (direct scanout).
  */
 static void window_apply_fullscreen_scene(struct tw_window *window, bool fullscreen) {
 	struct tw_server *server = window->server;
-	int inset = fullscreen ? 0 : border_width;
-	for (size_t i = 0; i < LENGTH(window->border); i++) {
-		wlr_scene_node_set_enabled(&window->border[i]->node, !fullscreen);
-	}
-	wlr_scene_node_set_position(&window->surface_tree->node, inset, inset);
-	wlr_scene_node_set_position(&window->popup_tree->node, inset, inset);
 	wlr_scene_node_reparent(&window->scene_tree->node,
 		fullscreen ? server->fullscreen_tree : server->window_tree);
 }
@@ -377,8 +341,8 @@ static void float_place(struct tw_window *window, const struct wlr_box *area) {
 	window_resize(window, width, height, false);
 	window_update_clip(window);
 
-	int x = area->x + (area->width - width) / 2 - border_width;
-	int y = area->y + (area->height - height) / 2 - border_width;
+	int x = area->x + (area->width - width) / 2;
+	int y = area->y + (area->height - height) / 2;
 	wlr_scene_node_set_position(&window->scene_tree->node,
 		x > area->x ? x : area->x, y > area->y ? y : area->y);
 }
@@ -436,7 +400,7 @@ static void workspace_place(struct tw_server *server, struct tw_workspace *works
 				left = area->x + x - view;
 				outer = width;
 				wlr_scene_node_set_position(&window->scene_tree->node, left, y);
-				window_resize(window, content_size(width), content_size(height), true);
+				window_resize(window, width, height, true);
 				y += height + gap;
 			}
 			window_trim(window, trim ? edge_left - left : 0,
@@ -660,11 +624,9 @@ void strip_swipe_end(struct tw_server *server, bool cancelled) {
 
 /* --- Focus ------------------------------------------------------------------ */
 
+/* Nothing is drawn around the active window; its client is told, and shows
+ * it in its own way (a text cursor, a brighter title). */
 static void window_set_active(struct tw_window *window, bool active) {
-	const float *color = active ? border_focused : border_unfocused;
-	for (size_t i = 0; i < LENGTH(window->border); i++) {
-		wlr_scene_rect_set_color(window->border[i], color);
-	}
 	wlr_xdg_toplevel_set_activated(window->xdg_toplevel, active);
 }
 
@@ -766,8 +728,9 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
 /* --- Toplevel lifecycle ----------------------------------------------------- */
 
 static void decoration_apply(struct tw_window *window) {
-	/* We draw the borders, so ask clients not to draw title bars. A mode can
-	 * only be sent once the surface has made its initial commit. */
+	/* Windows are tiled and moved by key, so ask clients not to draw title
+	 * bars. A mode can only be sent once the surface has made its initial
+	 * commit. */
 	if (window->decoration != NULL && window->xdg_toplevel->base->initialized) {
 		wlr_xdg_toplevel_decoration_v1_set_mode(window->decoration,
 			WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
@@ -918,8 +881,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 		} else {
 			/* It will get a column of its own, at the default width. */
 			int width = tw_column_width(area.width, gap, column_widths[default_column_width]);
-			window_resize(window, content_size(width),
-				content_size(area.height - 2 * gap), true);
+			window_resize(window, width, tw_stack_height(area.height - 2 * gap, gap, 1, 0), true);
 		}
 		return;
 	}
@@ -995,10 +957,6 @@ static void handle_new_toplevel(struct wl_listener *listener, void *data) {
 	window->xdg_toplevel = toplevel;
 
 	bool ok = (window->scene_tree = wlr_scene_tree_create(server->window_tree)) != NULL;
-	for (size_t i = 0; ok && i < LENGTH(window->border); i++) {
-		ok = (window->border[i] =
-			wlr_scene_rect_create(window->scene_tree, 0, 0, border_unfocused)) != NULL;
-	}
 	ok = ok && (window->surface_tree =
 		wlr_scene_xdg_surface_create(window->scene_tree, toplevel->base)) != NULL;
 	ok = ok && (window->popup_tree = wlr_scene_tree_create(window->scene_tree)) != NULL;
@@ -1013,8 +971,6 @@ static void handle_new_toplevel(struct wl_listener *listener, void *data) {
 
 	/* Hidden until mapped and arranged. */
 	wlr_scene_node_set_enabled(&window->scene_tree->node, false);
-	wlr_scene_node_set_position(&window->surface_tree->node, border_width, border_width);
-	wlr_scene_node_set_position(&window->popup_tree->node, border_width, border_width);
 	window->scene_tree->node.data = window;
 	window->popup_tree->node.data = window;
 	toplevel->base->data = window->popup_tree;
@@ -1357,18 +1313,24 @@ static size_t workspace_relative(struct tw_server *server, int direction) {
 	return TW_WORKSPACES;
 }
 
-/* Workspace on the next output in a direction, or TW_WORKSPACES. */
-static size_t workspace_on_adjacent_output(struct tw_server *server, int direction) {
+/* The workspace in a direction (enum wlr_direction): the one on the monitor
+ * on that side if there is such a monitor, otherwise the previous (up, left)
+ * or next (down, right) workspace. TW_WORKSPACES if there is none. */
+static size_t workspace_toward(struct tw_server *server, int direction) {
 	struct tw_output *output = output_adjacent(output_focused(server), direction);
-	return output != NULL ? output->workspace : TW_WORKSPACES;
+	if (output != NULL) {
+		return output->workspace;
+	}
+	bool back = direction == WLR_DIRECTION_UP || direction == WLR_DIRECTION_LEFT;
+	return workspace_relative(server, back ? -1 : +1);
 }
 
-void action_focus_output(struct tw_server *server, const union tw_arg *arg) {
-	workspace_show(server, workspace_on_adjacent_output(server, arg->i));
+void action_workspace_toward(struct tw_server *server, const union tw_arg *arg) {
+	workspace_show(server, workspace_toward(server, arg->i));
 }
 
-void action_move_to_output(struct tw_server *server, const union tw_arg *arg) {
-	workspace_take_column(server, workspace_on_adjacent_output(server, arg->i));
+void action_move_to_workspace_toward(struct tw_server *server, const union tw_arg *arg) {
+	workspace_take_column(server, workspace_toward(server, arg->i));
 }
 
 void action_workspace(struct tw_server *server, const union tw_arg *arg) {

@@ -4,8 +4,8 @@
 # mouse-look), confinement, and no pointer input to windows while locked.
 # $3 = tw-test-keys.
 #
-# The screen is 1280x720. With the stock gaps and borders the first column's
-# surface starts at 10,10 and the second column's at 646,10.
+# The screen is 1280x720. With the stock gap the first column starts at 8,8
+# and the second column at 644,8.
 set -eu
 . "$(dirname "$0")/lib.sh"
 keys_bin=$3
@@ -22,9 +22,9 @@ expect_state game "$on" "the second window to be focused"
 
 # --- Pointer focus and click to focus ------------------------------------------
 pointer_to 100 100
-expect_line a "pointer enter 90 90" "the pointer to enter the window under it"
+expect_line a "pointer enter 92 92" "the pointer to enter the window under it"
 pointer_by 5 3
-expect_line a "pointer motion 95 93" "movement to be reported in window coordinates"
+expect_line a "pointer motion 97 95" "movement to be reported in window coordinates"
 last_line_matches a configure "activated=0" || fail "pointing at a window focused it"
 click
 expect_state a "$on" "a click to focus the window under the pointer"
@@ -37,7 +37,7 @@ wait_until "keys to follow the click" grep -q '^key ' "$run_dir/a.log"
 # once it also has the keyboard.
 pointer_to 800 100
 expect_line a "pointer leave" "the pointer to leave the first window"
-expect_line game "pointer enter 154 90" "the pointer to enter the game"
+expect_line game "pointer enter 156 92" "the pointer to enter the game"
 sleep 0.3
 has game '^pointer locked' 0 || fail "a window without the keyboard locked the pointer"
 click
@@ -56,11 +56,11 @@ has game '^pointer motion' "$motions" || fail "the cursor moved while the pointe
 has game '^pointer leave' 0 || fail "the cursor left the game while the pointer was locked"
 
 # A focus binding always gets the user out; the cursor is free again.
-press super+h
+press super+j
 expect_line game "pointer unlocked" "moving the focus away to release the lock"
-expect_state a "$on" "Mod+H to focus the first window"
+expect_state a "$on" "Mod+J to focus the first window"
 pointer_by 4 0
-expect_line game "pointer motion 158 90" "the cursor to move again once unlocked"
+expect_line game "pointer motion 160 92" "the cursor to move again once unlocked"
 
 # Back in the game the lock returns. When the game lets go of it itself, the
 # cursor reappears where the game said.
@@ -76,7 +76,7 @@ press super+q
 wait_until "the game to close" grep -q '^closed' "$run_dir/game.log"
 start_client box --confine-pointer
 pointer_to 700 60
-expect_line box "pointer enter 54 50" "the pointer to enter the confining window"
+expect_line box "pointer enter 56 52" "the pointer to enter the confining window"
 expect_line box "pointer confined" "the focused window under the pointer to confine it"
 pointer_by 500 0
 pointer_by 0 500
@@ -86,7 +86,7 @@ if grep '^pointer motion' "$run_dir/box.log" | awk '$3 > 99 || $4 > 99 { bad = 1
 fi
 grep -q '^pointer motion 99 ' "$run_dir/box.log" || fail "the pointer did not reach the region's edge"
 has box '^pointer leave' 0 || fail "the pointer left the window it is confined to"
-press super+h
+press super+j
 expect_line box "pointer unconfined" "moving the focus away to end the confinement"
 
 # --- Locked session: the pointer reaches only the lock screen -------------------

@@ -13,11 +13,9 @@
 
 #include "tw.h"
 
-/* Layout, in logical pixels. */
+/* Space between windows and around them, in logical pixels. Windows have no
+ * borders. */
 static const int gap = 8;
-static const int border_width = 2;
-static const float border_focused[4] = {0.40f, 0.62f, 0.90f, 1.0f};
-static const float border_unfocused[4] = {0.22f, 0.22f, 0.25f, 1.0f};
 
 /* Column widths as fractions of the output, cycled with Mod+R. */
 static const struct tw_fraction column_widths[] = {{1, 3}, {1, 2}, {2, 3}};
@@ -131,6 +129,23 @@ static const char brightness_down[] = "brightnessctl --class=backlight set 5%-";
 #define CTRL WLR_MODIFIER_CTRL
 #define ALT WLR_MODIFIER_ALT
 
+/*
+ * One direction key, four meanings:
+ *   Mod+key             focus: left and right along the strip, up and down
+ *                       within a column
+ *   Mod+Shift+key       workspaces: go to the monitor on that side; with no
+ *                       monitor there, the previous (up, left) or next (down,
+ *                       right) workspace
+ *   Mod+Ctrl+key        move the focused column (left, right) or window (up,
+ *                       down) that way
+ *   Mod+Shift+Ctrl+key  take the focused column along to where Mod+Shift goes
+ */
+#define DIRECTION(key, focus, focus_arg, move, move_arg, direction) \
+	{MOD,                key, focus,                           {.i = focus_arg}}, \
+	{MOD | CTRL,         key, move,                            {.i = move_arg}}, \
+	{MOD | SHIFT,        key, action_workspace_toward,         {.i = direction}}, \
+	{MOD | SHIFT | CTRL, key, action_move_to_workspace_toward, {.i = direction}}
+
 /* Mod+N shows workspace N, Mod+Ctrl+N takes the focused column there. */
 #define WORKSPACE(key, index) \
 	{MOD,        key, action_workspace,         {.i = index}}, \
@@ -150,31 +165,22 @@ static const struct tw_binding bindings[] = {
 	{0,             XKB_KEY_Print,      action_spawn,                       {.s = screenshot}},
 	{SHIFT,         XKB_KEY_Print,      action_spawn,                       {.s = screenshot_region}},
 
-	/* Focus along the strip. */
-	{MOD,           XKB_KEY_h,          action_focus,                       {.i = -1}},
-	{MOD,           XKB_KEY_l,          action_focus,                       {.i = +1}},
-	{MOD,           XKB_KEY_Left,       action_focus,                       {.i = -1}},
-	{MOD,           XKB_KEY_Right,      action_focus,                       {.i = +1}},
+	/* Directions: I up, J left, K down, L right, or the arrow keys. */
+	DIRECTION(XKB_KEY_j,     action_focus,        -1, action_move,        -1, WLR_DIRECTION_LEFT),
+	DIRECTION(XKB_KEY_l,     action_focus,        +1, action_move,        +1, WLR_DIRECTION_RIGHT),
+	DIRECTION(XKB_KEY_i,     action_focus_window, -1, action_move_window, -1, WLR_DIRECTION_UP),
+	DIRECTION(XKB_KEY_k,     action_focus_window, +1, action_move_window, +1, WLR_DIRECTION_DOWN),
+	DIRECTION(XKB_KEY_Left,  action_focus,        -1, action_move,        -1, WLR_DIRECTION_LEFT),
+	DIRECTION(XKB_KEY_Right, action_focus,        +1, action_move,        +1, WLR_DIRECTION_RIGHT),
+	DIRECTION(XKB_KEY_Up,    action_focus_window, -1, action_move_window, -1, WLR_DIRECTION_UP),
+	DIRECTION(XKB_KEY_Down,  action_focus_window, +1, action_move_window, +1, WLR_DIRECTION_DOWN),
+
+	/* The ends of the strip. */
 	{MOD,           XKB_KEY_Home,       action_focus_edge,                  {.i = -1}},
 	{MOD,           XKB_KEY_End,        action_focus_edge,                  {.i = +1}},
-
-	/* Move the focused column. */
-	{MOD | CTRL,    XKB_KEY_h,          action_move,                        {.i = -1}},
-	{MOD | CTRL,    XKB_KEY_l,          action_move,                        {.i = +1}},
-	{MOD | CTRL,    XKB_KEY_Left,       action_move,                        {.i = -1}},
-	{MOD | CTRL,    XKB_KEY_Right,      action_move,                        {.i = +1}},
 	{MOD | CTRL,    XKB_KEY_Home,       action_move_edge,                   {.i = -1}},
 	{MOD | CTRL,    XKB_KEY_End,        action_move_edge,                   {.i = +1}},
 
-	/* Windows within a column. */
-	{MOD,           XKB_KEY_j,          action_focus_window,                {.i = +1}},
-	{MOD,           XKB_KEY_k,          action_focus_window,                {.i = -1}},
-	{MOD,           XKB_KEY_Down,       action_focus_window,                {.i = +1}},
-	{MOD,           XKB_KEY_Up,         action_focus_window,                {.i = -1}},
-	{MOD | CTRL,    XKB_KEY_j,          action_move_window,                 {.i = +1}},
-	{MOD | CTRL,    XKB_KEY_k,          action_move_window,                 {.i = -1}},
-	{MOD | CTRL,    XKB_KEY_Down,       action_move_window,                 {.i = +1}},
-	{MOD | CTRL,    XKB_KEY_Up,         action_move_window,                 {.i = -1}},
 	/* Into and out of columns: a lone window joins the column on that side,
 	 * a window sharing a column leaves it. */
 	{MOD,           XKB_KEY_bracketleft,  action_consume_or_expel,          {.i = -1}},
@@ -187,34 +193,11 @@ static const struct tw_binding bindings[] = {
 	{MOD,           XKB_KEY_f,          action_maximize,                    {0}},
 	{MOD | SHIFT,   XKB_KEY_f,          action_fullscreen,                  {0}},
 
-	/* Workspaces are stacked vertically: up is the previous one. */
-	{MOD,           XKB_KEY_u,          action_workspace_relative,          {.i = +1}},
-	{MOD,           XKB_KEY_i,          action_workspace_relative,          {.i = -1}},
+	/* Workspaces by Page_Up and Page_Down too, and by number. */
 	{MOD,           XKB_KEY_Page_Down,  action_workspace_relative,          {.i = +1}},
 	{MOD,           XKB_KEY_Page_Up,    action_workspace_relative,          {.i = -1}},
-	{MOD | CTRL,    XKB_KEY_u,          action_move_to_workspace_relative,  {.i = +1}},
-	{MOD | CTRL,    XKB_KEY_i,          action_move_to_workspace_relative,  {.i = -1}},
 	{MOD | CTRL,    XKB_KEY_Page_Down,  action_move_to_workspace_relative,  {.i = +1}},
 	{MOD | CTRL,    XKB_KEY_Page_Up,    action_move_to_workspace_relative,  {.i = -1}},
-	/* Monitors: Mod+Shift moves the focus to the next one in that direction,
-	 * Mod+Shift+Ctrl takes the focused column along. */
-	{MOD | SHIFT,        XKB_KEY_h,     action_focus_output,   {.i = WLR_DIRECTION_LEFT}},
-	{MOD | SHIFT,        XKB_KEY_l,     action_focus_output,   {.i = WLR_DIRECTION_RIGHT}},
-	{MOD | SHIFT,        XKB_KEY_k,     action_focus_output,   {.i = WLR_DIRECTION_UP}},
-	{MOD | SHIFT,        XKB_KEY_j,     action_focus_output,   {.i = WLR_DIRECTION_DOWN}},
-	{MOD | SHIFT,        XKB_KEY_Left,  action_focus_output,   {.i = WLR_DIRECTION_LEFT}},
-	{MOD | SHIFT,        XKB_KEY_Right, action_focus_output,   {.i = WLR_DIRECTION_RIGHT}},
-	{MOD | SHIFT,        XKB_KEY_Up,    action_focus_output,   {.i = WLR_DIRECTION_UP}},
-	{MOD | SHIFT,        XKB_KEY_Down,  action_focus_output,   {.i = WLR_DIRECTION_DOWN}},
-	{MOD | SHIFT | CTRL, XKB_KEY_h,     action_move_to_output, {.i = WLR_DIRECTION_LEFT}},
-	{MOD | SHIFT | CTRL, XKB_KEY_l,     action_move_to_output, {.i = WLR_DIRECTION_RIGHT}},
-	{MOD | SHIFT | CTRL, XKB_KEY_k,     action_move_to_output, {.i = WLR_DIRECTION_UP}},
-	{MOD | SHIFT | CTRL, XKB_KEY_j,     action_move_to_output, {.i = WLR_DIRECTION_DOWN}},
-	{MOD | SHIFT | CTRL, XKB_KEY_Left,  action_move_to_output, {.i = WLR_DIRECTION_LEFT}},
-	{MOD | SHIFT | CTRL, XKB_KEY_Right, action_move_to_output, {.i = WLR_DIRECTION_RIGHT}},
-	{MOD | SHIFT | CTRL, XKB_KEY_Up,    action_move_to_output, {.i = WLR_DIRECTION_UP}},
-	{MOD | SHIFT | CTRL, XKB_KEY_Down,  action_move_to_output, {.i = WLR_DIRECTION_DOWN}},
-
 	WORKSPACE(XKB_KEY_1, 0),
 	WORKSPACE(XKB_KEY_2, 1),
 	WORKSPACE(XKB_KEY_3, 2),
