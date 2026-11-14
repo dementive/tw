@@ -1,6 +1,5 @@
 #include <math.h>
 #include <stdlib.h>
-#include <time.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -8,6 +7,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/edges.h>
@@ -84,12 +84,6 @@ struct tw_popup {
 	struct wl_listener commit;
 	struct wl_listener destroy;
 };
-
-static int64_t now_ms(void) {
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
 
 static struct tw_window *window_from_toplevel(struct wlr_xdg_toplevel *toplevel) {
 	struct wlr_scene_tree *tree = toplevel->base->data;
@@ -665,6 +659,33 @@ void window_focus(struct tw_server *server, struct tw_window *window) {
 		window->column->active = window;
 	}
 	focus_update(server);
+}
+
+/*
+ * A window asks for the focus (xdg-activation): a link was clicked and the
+ * browser wants to come forward, or a notification was.
+ */
+static void handle_request_activate(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, request_activate);
+	struct wlr_xdg_activation_v1_request_activate_event *event = data;
+
+	/* It gets the focus only with a token made from an input event: proof
+	 * that the user did something in the program that issued it. wlroots
+	 * has checked that the event was real and went to a focused surface. A
+	 * token without one can be made by any client at any time, so honouring
+	 * it would let any window steal the focus. */
+	if (event->token->seat == NULL || server->locked) {
+		return;
+	}
+	struct wlr_xdg_toplevel *toplevel = wlr_xdg_toplevel_try_from_wlr_surface(event->surface);
+	struct tw_window *window = toplevel != NULL ? window_from_toplevel(toplevel) : NULL;
+	/* A window that is not mapped yet takes the focus when it maps anyway. */
+	if (window == NULL || !window->mapped) {
+		return;
+	}
+	server->active = (size_t)(window->workspace - server->workspaces);
+	window_focus(server, window);
+	strip_arrange(server);
 }
 
 /* --- Toplevel lifecycle ----------------------------------------------------- */
@@ -1277,10 +1298,15 @@ void window_init(struct tw_server *server) {
 	server->new_decoration.notify = handle_new_decoration;
 	wl_signal_add(&server->decoration_manager->events.new_toplevel_decoration,
 		&server->new_decoration);
+
+	server->activation = wlr_xdg_activation_v1_create(server->display);
+	server->request_activate.notify = handle_request_activate;
+	wl_signal_add(&server->activation->events.request_activate, &server->request_activate);
 }
 
 void window_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_toplevel.link);
 	wl_list_remove(&server->new_popup.link);
 	wl_list_remove(&server->new_decoration.link);
+	wl_list_remove(&server->request_activate.link);
 }

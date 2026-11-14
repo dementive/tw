@@ -12,25 +12,19 @@
  * machine is in use, and none once the outputs are off or while inhibited.
  */
 #include <stdlib.h>
-#include <time.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 
 #include "tw.h"
+#include "config.h"
 
 struct tw_idle_inhibitor {
 	struct tw_server *server;
 	struct wlr_idle_inhibitor_v1 *inhibitor;
 	struct wl_listener destroy;
 };
-
-static int64_t now_ms(void) {
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
 
 static void blank_timer_arm(struct tw_server *server, int ms) {
 	if (server->blank_after_ms > 0) {
@@ -74,6 +68,11 @@ static int handle_blank_timer(void *data) {
 	}
 	int64_t idle_ms = now_ms() - server->last_activity_ms;
 	if (idle_ms >= server->blank_after_ms) {
+		/* Nobody is here: lock before the screen goes dark, so that whoever
+		 * wakes it finds the lock screen. */
+		if (lock_on_idle) {
+			lock_now(server);
+		}
 		set_blanked(server, true);
 	} else {
 		blank_timer_arm(server, (int)(server->blank_after_ms - idle_ms));

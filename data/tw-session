@@ -18,7 +18,9 @@ unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
 export XDG_CURRENT_DESKTOP=tw
 export XDG_SESSION_DESKTOP=tw
 export XDG_SESSION_TYPE=wayland
-# There is no X11 support yet, so ask toolkits that default to X11 for Wayland.
+# X11 applications work, but the first one starts Xwayland and
+# xwayland-satellite, which then stay in memory for the rest of the session.
+# Ask toolkits that would default to X11 to use Wayland instead.
 export ELECTRON_OZONE_PLATFORM_HINT=auto
 export MOZ_ENABLE_WAYLAND=1
 
@@ -53,7 +55,8 @@ fi
 # services can find it, then run the user's autostart script.
 startup='
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-	dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+	dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP \
+		${DISPLAY:+DISPLAY}
 fi
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
 if [ -x "$autostart" ]; then

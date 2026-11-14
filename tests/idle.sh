@@ -1,7 +1,8 @@
 #!/bin/sh
 # Screen blanking: the outputs power off after a while without input and every
 # window is told to stop drawing; a visible idle inhibitor (a video player)
-# holds that off. $3 = tw-test-keys.
+# holds that off. With a locker installed the session locks as it blanks.
+# $3 = tw-test-keys.
 #
 # "Blanked" is observed through the window state: a visible window is
 # suspended only when the screen is off.
@@ -17,8 +18,13 @@ start_client a
 expect_state a "$on" "the window to start visible"
 expect_state a "suspended=1" "the screen to turn off after two seconds without input"
 
+# No locker is installed here, so the session did not lock: locking without
+# one would leave no way back in.
 press x
 expect_state a "$on" "a key press to turn the screen back on"
+press super+alt+l
+sleep 0.3
+last_line_matches a configure "$on" || fail "Mod+Alt+L locked the session with no locker installed"
 
 # A visible window that inhibits idling keeps the screen on.
 start_client video --inhibit
@@ -60,4 +66,44 @@ press x
 expect_state c "$on" "the next key press to turn the screen back on"
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off"
+
+# --- Locking -------------------------------------------------------------------
+# With a locker installed, tw locks by itself as the screen blanks and starts
+# the locker, which takes the lock over. The stand-in is the test client.
+fake_program swaylock "
+echo \$\$ >'$run_dir/locker.pid'
+exec '$client_bin' --lock >>'$run_dir/locker.log' 2>&1"
+locks() { [ "$(grep -c '^locked' "$run_dir/locker.log")" = "$1" ]; }
+
+start_tw -b 2
+start_client d
+expect_state d "$on" "the window to start visible"
+expect_state d "suspended=1" "the screen to turn off after two seconds without input"
+expect_line locker locked "the locker to be started as the screen blanks"
+
+# Waking the screen shows the lock screen, not the window.
+press x
+wait_until "the key to go to the lock screen" grep -q '^key ' "$run_dir/locker.log"
+if grep -q '^key ' "$run_dir/d.log" || ! last_line_matches d configure "suspended=1"; then
+	fail "the window was reachable after waking a locked session"
+fi
+
+# The locker dies: the session stays locked, and a key press gets a new one.
+# tw starts at most one a second, hence the wait.
+kill "$(cat "$run_dir/locker.pid")"
+sleep 1.2
+last_line_matches d configure "suspended=1" || fail "the session unlocked when the locker died"
+press x
+wait_until "a key press to start a new locker" locks 2
+press Return
+expect_state d "$on" "the new locker to unlock the session"
+
+# Mod+Alt+L locks at once.
+press super+alt+l
+wait_until "Mod+Alt+L to lock" locks 3
+expect_state d "suspended=1" "windows to be hidden while locked"
+press Return
+expect_state d "$on" "the locker to unlock again"
+
+stop_tw
+echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart"

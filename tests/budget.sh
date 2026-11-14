@@ -22,7 +22,19 @@ switches() {
 		awk '/^voluntary_ctxt_switches/ { n += $2 } END { print n }'
 }
 
+# X11 support is on and waiting for its first client during the measurement:
+# a feature nobody is using has to fit in the same budget of zero wakeups.
+# The stand-in helper is never started.
+fake_program xwayland-satellite 'exit 1'
+x11_waiting() {
+	for lock in /tmp/.X*-lock; do
+		[ "$(tr -d ' \n' <"$lock" 2>/dev/null)" = "$tw_pid" ] && return 0
+	done
+	return 1
+}
+
 start_tw
+x11_waiting || fail "X11 support was not active during the measurement"
 for name in a b c; do
 	start_client "$name"
 done

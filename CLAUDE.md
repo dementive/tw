@@ -40,21 +40,24 @@ publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: gaps, colours, column widths, key bindings |
 | `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Pure functions, no wlroots, unit tested |
-| `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, `strip_arrange()`, scroll animation and swipes |
+| `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, focus requests, `strip_arrange()`, scroll animation and swipes |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
 | `src/idle.c` | Screen blanking after inactivity, idle inhibitors |
-| `src/lock.c` | Session lock, for `swaylock` |
+| `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
+| `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects |
 | `src/output.c` | Outputs, scene layers, the frame handler |
-| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings and gestures, seat |
-| `src/main.c` | Startup, teardown, `spawn()` |
+| `src/input.c` | Keyboards (real and virtual), bindings, pointer, touchpad settings and gestures, lid switch, seat |
+| `src/main.c` | Startup, teardown, `spawn()`, `program_find()` |
 | `data/` | `tw-session` (session start script) and the login-screen entry |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
 | `tests/keys.c` | Presses key combinations through the virtual-keyboard protocol |
 | `tests/smoke.sh` | End-to-end behaviour on the headless backend |
 | `tests/columns.sh` | Windows sharing a column, floating dialogs |
-| `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout |
+| `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle |
+| `tests/x11.sh` | X11 sockets and starting the helper on demand, with a stand-in helper |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
+| `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
 right. A column (`struct tw_column`) is a stack of windows, top to bottom,
@@ -90,6 +93,22 @@ state, then call `focus_update()`; do not send focus events anywhere else.
 A window is on screen only if its column is in view, its workspace is active,
 the outputs are on (`!server->blanked`) and the session is unlocked. In every
 other case `strip_arrange()` disables its scene node and suspends it.
+
+tw locks in two ways. A lock client (swaylock) asks for the lock, or tw takes
+it by itself with `lock_now()`: on Mod+Alt+L, when the lid closes, and when
+the screen blanks from inactivity. `lock_now()` sets `server->locked` at once
+and then starts the locker, which takes the lock over. So `locked` with
+`server->lock == NULL` is a normal state: the locker has not arrived yet, or
+it died. A key press in that state starts the locker again.
+
+X11 applications are not tw's business beyond `x11.c`: it creates the X11
+display sockets, sets `DISPLAY` for the programs tw starts, and on the first
+connection hands the sockets to xwayland-satellite, whose windows then arrive
+as ordinary xdg-shell windows. While the helper runs tw does not watch the
+sockets; when it exits (a pidfd tells us) tw watches them again.
+
+A window can ask for the focus (xdg-activation). It gets it, and its
+workspace is shown, only if its token was made from an input event.
 
 Bindings follow niri's defaults. A new binding gets a `press` line and an
 expectation in `tests/smoke.sh`.
@@ -132,7 +151,9 @@ Keep both when changing the layout code.
 **A locked session stays locked.** While `server->locked`, no binding runs
 (only VT switching), only lock surfaces get input, and windows stay hidden. If
 the lock client dies the session remains locked until a new one unlocks it.
-Any new input path or binding mechanism must respect this, with a test.
+Any new input path or binding mechanism must respect this, with a test. tw
+never locks by itself unless the locker is installed (`program_find()`): a
+lock nobody can open is worse than none.
 
 **Stay out of the pixel business.** Solid-colour borders only; no blur,
 shadows, rounded corners or text rendering in the compositor. They need custom
@@ -141,11 +162,16 @@ shaders or a font stack, and they defeat direct scanout.
 **Keep everything else out of process.** X11 apps go through
 xwayland-satellite, bars and launchers are layer-shell clients, configuration
 is `config.h`. No in-process Xwayland, scripting runtime or config parser.
+A helper is started when it is first needed, never at startup, and tw checks
+that it is installed (`program_find()`) instead of running it to find out.
 
 **A behaviour change comes with a test.** Layout maths goes in
 `tests/layout_test.c`; anything a client can observe goes in `tests/smoke.sh`,
 extending `tests/client.c` if needed. Run the dev-build tests before calling
-something done: a sanitizer report or a leak fails the smoke test.
+something done: a sanitizer report or a leak fails the smoke test. In the
+tests tw's PATH is a private, empty directory, so it never starts a program
+installed on the machine; a test that needs a locker or an X11 helper puts a
+stand-in there with `fake_program` (see `tests/lib.sh`).
 
 **Budgets ratchet down.** They are the two numbers at the bottom of
 `meson.build`. Raising one needs a stated reason.
@@ -157,8 +183,20 @@ gesture handlers in `input.c` and the swipe functions in `window.c`
 (`strip_swipe_*`, `workspace_snap()`) are untested glue. Keep them thin, and
 put anything with logic in `layout.c` where it can be unit tested.
 
+It has no lid switch either, so the switch handler in `input.c` is untested;
+what it calls (`lock_now()`) is tested through locking on idle.
+
+`tests/x11.sh` uses a stand-in for xwayland-satellite. It proves tw's half of
+the hand-over (display, arguments, sockets, restart, cleanup), not that the
+real helper works with tw.
+
 ## Known noise
 
 With a GPU renderer, LeakSanitizer reports small leaks at exit from inside the
 GPU driver (seen with the NVIDIA driver and the libdbus it loads). They are not
 ours. The tests use the software renderer, where the report must be empty.
+
+The memory figure of the budget test moves by 100 to 200 kB with what else is
+running on the machine, because shared library pages are divided among the
+processes that map them. To tell what a change costs, build the previous
+commit too and run both budget tests back to back.

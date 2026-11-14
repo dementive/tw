@@ -22,6 +22,7 @@ struct tw_layer_surface;
 struct tw_lock;
 struct tw_server;
 struct tw_window;
+struct tw_x11;
 struct wlr_output;
 struct wlr_surface;
 
@@ -83,9 +84,11 @@ struct tw_server {
 	/* window.c */
 	struct wlr_xdg_shell *xdg_shell;
 	struct wlr_xdg_decoration_manager_v1 *decoration_manager;
+	struct wlr_xdg_activation_v1 *activation;
 	struct wl_listener new_toplevel;
 	struct wl_listener new_popup;
 	struct wl_listener new_decoration;
+	struct wl_listener request_activate;
 	struct tw_workspace workspaces[TW_WORKSPACES];
 	size_t active; /* index of the workspace on screen */
 	struct tw_window *focused; /* the window currently drawn as active */
@@ -115,7 +118,13 @@ struct tw_server {
 	struct wlr_scene_rect *lock_background;
 	struct wl_listener new_lock;
 	bool locked;
-	struct tw_lock *lock; /* the client holding the lock; NULL if it died */
+	/* The client holding the lock. NULL while locked means there is none:
+	 * it died, or tw locked by itself and the locker has not arrived yet. */
+	struct tw_lock *lock;
+	int64_t locker_started_ms; /* when tw last started the locker; 0 if never */
+
+	/* x11.c */
+	struct tw_x11 *x11; /* NULL when X11 support is off */
 
 	/* input.c */
 	struct wlr_seat *seat;
@@ -167,7 +176,14 @@ struct tw_binding {
 };
 
 /* main.c */
+/* Monotonic clock in milliseconds. */
+int64_t now_ms(void);
 void spawn(const char *cmd);
+/*
+ * Looks up the program a shell command starts (its first word) on PATH,
+ * without running anything. On success `path` holds where it is.
+ */
+bool program_find(const char *command, char *path, size_t size);
 void action_spawn(struct tw_server *server, const union tw_arg *arg);
 void action_quit(struct tw_server *server, const union tw_arg *arg);
 
@@ -261,6 +277,21 @@ void lock_finish(struct tw_server *server);
 void lock_arrange(struct tw_server *server);
 /* Surface that gets the keyboard while locked, or NULL. */
 struct wlr_surface *lock_keyboard_surface(struct tw_server *server);
+/*
+ * Locks the session right now and starts the locker (config.h) to draw the
+ * lock screen and take the password. Does nothing if the locker is not
+ * installed: a lock nobody can open would be worse than none.
+ */
+void lock_now(struct tw_server *server);
+void action_lock(struct tw_server *server, const union tw_arg *arg);
+/* A key was pressed. If the session is locked and has no lock screen (the
+ * locker crashed), this starts one. */
+void lock_key_pressed(struct tw_server *server);
+
+/* x11.c */
+/* Sets DISPLAY for the programs tw starts, or removes it. Call before any. */
+void x11_init(struct tw_server *server);
+void x11_finish(struct tw_server *server);
 
 /* input.c */
 void input_init(struct tw_server *server);

@@ -5,6 +5,12 @@
  * an opaque curtain, gives input only to the lock client's surfaces, and runs
  * no key bindings. If the lock client dies the session stays locked behind
  * the curtain; a new lock client can then take over and unlock.
+ *
+ * tw can also lock by itself (lock_now()): the curtain comes down at once and
+ * the locker is started to take over the lock, exactly as it would take over
+ * from a locker that died. That is what makes locking on lid close safe: the
+ * session is locked before the machine can suspend, however long the locker
+ * takes to start.
  */
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
@@ -15,6 +21,7 @@
 #include <wlr/util/log.h>
 
 #include "tw.h"
+#include "config.h"
 
 struct tw_lock {
 	struct tw_server *server;
@@ -148,6 +155,54 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	strip_arrange(server);
 }
 
+/* Brings the curtain down: windows lose the keyboard, are hidden and are told
+ * to stop drawing. */
+static void lock_enter(struct tw_server *server) {
+	if (server->locked) {
+		return;
+	}
+	server->locked = true;
+	lock_arrange(server);
+	wlr_scene_node_set_enabled(&server->lock_tree->node, true);
+	focus_update(server);
+	strip_arrange(server);
+}
+
+static void locker_start(struct tw_server *server) {
+	server->locker_started_ms = now_ms();
+	spawn(locker);
+}
+
+void lock_now(struct tw_server *server) {
+	char path[4096];
+	if (server->locked) {
+		return;
+	}
+	if (!program_find(locker, path, sizeof(path))) {
+		wlr_log(WLR_ERROR, "not locking: the locker (%s) is not installed", locker);
+		return;
+	}
+	lock_enter(server);
+	locker_start(server);
+	wlr_log(WLR_DEBUG, "session locked, waiting for the locker");
+}
+
+void action_lock(struct tw_server *server, const union tw_arg *arg) {
+	lock_now(server);
+}
+
+void lock_key_pressed(struct tw_server *server) {
+	if (!server->locked || server->lock != NULL) {
+		return;
+	}
+	/* At most one a second: the locker needs a moment to arrive, and the
+	 * user may well be typing a password at the black screen meanwhile. */
+	if (server->locker_started_ms != 0 && now_ms() - server->locker_started_ms < 1000) {
+		return;
+	}
+	locker_start(server);
+}
+
 static void handle_new_lock(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, new_lock);
 	struct wlr_session_lock_v1 *session_lock = data;
@@ -178,12 +233,7 @@ static void handle_new_lock(struct wl_listener *listener, void *data) {
 	wl_signal_add(&session_lock->events.destroy, &lock->destroy);
 
 	server->lock = lock;
-	server->locked = true;
-	lock_arrange(server);
-	wlr_scene_node_set_enabled(&server->lock_tree->node, true);
-	/* Takes the keyboard from the windows, then hides and suspends them. */
-	focus_update(server);
-	strip_arrange(server);
+	lock_enter(server);
 	wlr_session_lock_v1_send_locked(session_lock);
 	wlr_log(WLR_DEBUG, "session locked");
 }

@@ -13,6 +13,7 @@
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_switch.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
@@ -36,6 +37,13 @@ struct tw_keyboard {
 	uint32_t consumed[8];
 	struct wl_listener modifiers;
 	struct wl_listener key;
+	struct wl_listener destroy;
+};
+
+/* A laptop lid. */
+struct tw_switch {
+	struct tw_server *server;
+	struct wl_listener toggle;
 	struct wl_listener destroy;
 };
 
@@ -117,6 +125,8 @@ static void handle_key(struct wl_listener *listener, void *data) {
 		/* Only presses count as activity. Otherwise letting go of the keys
 		 * that blanked the screen would wake it again at once. */
 		idle_activity(keyboard->server);
+		/* A locked session whose lock screen died gets a new one. */
+		lock_key_pressed(keyboard->server);
 		/* libinput keycode -> xkbcommon keycode */
 		handled = run_bindings(keyboard, event->keycode + 8);
 		if (handled) {
@@ -219,6 +229,45 @@ static void new_pointer(struct tw_server *server, struct wlr_input_device *devic
 	wlr_cursor_attach_input_device(server->cursor, device);
 }
 
+/* --- Lid switch ------------------------------------------------------------- */
+
+static void handle_switch_toggle(struct wl_listener *listener, void *data) {
+	struct tw_switch *lid = wl_container_of(listener, lid, toggle);
+	struct wlr_switch_toggle_event *event = data;
+	if (event->switch_type != WLR_SWITCH_TYPE_LID) {
+		return;
+	}
+	if (event->switch_state == WLR_SWITCH_STATE_ON) {
+		/* Closed. logind suspends the machine by itself; the session has to
+		 * be locked before it does. */
+		if (lock_on_lid_close) {
+			lock_now(lid->server);
+		}
+	} else {
+		/* Opened: turn the screen back on if it was off. */
+		idle_activity(lid->server);
+	}
+}
+
+static void handle_switch_destroy(struct wl_listener *listener, void *data) {
+	struct tw_switch *lid = wl_container_of(listener, lid, destroy);
+	wl_list_remove(&lid->toggle.link);
+	wl_list_remove(&lid->destroy.link);
+	free(lid);
+}
+
+static void new_switch(struct tw_server *server, struct wlr_switch *wlr_switch) {
+	struct tw_switch *lid = calloc(1, sizeof(*lid));
+	if (lid == NULL) {
+		return;
+	}
+	lid->server = server;
+	lid->toggle.notify = handle_switch_toggle;
+	wl_signal_add(&wlr_switch->events.toggle, &lid->toggle);
+	lid->destroy.notify = handle_switch_destroy;
+	wl_signal_add(&wlr_switch->base.events.destroy, &lid->destroy);
+}
+
 static void handle_new_input(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, new_input);
 	struct wlr_input_device *device = data;
@@ -229,6 +278,9 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 		break;
 	case WLR_INPUT_DEVICE_POINTER:
 		new_pointer(server, device);
+		break;
+	case WLR_INPUT_DEVICE_SWITCH:
+		new_switch(server, wlr_switch_from_input_device(device));
 		break;
 	default:
 		break;

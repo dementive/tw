@@ -8,6 +8,8 @@
  *   keyboard enter | keyboard leave                     keyboard focus
  *   key <code> <pressed|released>                       keys it received
  *   closed                                              asked to close; it exits
+ *   token, activate, activate forged                    see the focus modes below
+ *   x11 connected, x11 served, x11 closed               with --x11
  *
  * Modes:
  *   (none)        one ordinary window
@@ -18,22 +20,46 @@
  *                 exclusive keyboard focus, like a launcher
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
  *
+ * Asking for the focus (xdg-activation):
+ *   --token <file>     a window that, when it gets the keyboard, turns that
+ *                      event into an activation token and writes it to <file>
+ *   --activate <file>  a window that, the first time it loses the focus, asks
+ *                      for it back with the token in <file>
+ *   --activate-forged  the same, but with a token it made up without any
+ *                      input event, which must not work
+ *
+ * Without a Wayland connection, for the X11 socket tests:
+ *   --x11 <path|abstract> <:N>   connects to X11 display N the way an X11
+ *                      client would, by socket file or by abstract name, and
+ *                      reports when the server answers and when it hangs up
+ *   --x11-serve <arguments>      stands in for xwayland-satellite: prints its
+ *                      pid and arguments, then answers on the sockets it was
+ *                      handed with -listenfd
+ *
  * It draws once per configure and never asks for frame callbacks, so an idle
  * compositor with these clients mapped should not wake up at all.
  */
 #define _GNU_SOURCE
+#include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
 #include "ext-session-lock-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define KEY_RETURN 28 /* evdev code of the Return key */
@@ -48,6 +74,7 @@ static struct xdg_wm_base *wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct ext_session_lock_manager_v1 *lock_manager;
 static struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
+static struct xdg_activation_v1 *activation;
 static struct ext_session_lock_v1 *session_lock;
 static struct wl_surface *surface;
 static struct wl_buffer *buffer;
@@ -56,6 +83,11 @@ static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen;
 static bool fixed_size;
 static bool running = true;
+
+/* Focus modes. */
+static const char *token_path;
+static bool issue_token, use_token, forge_token;
+static bool token_requested, was_activated, activation_sent;
 
 static void say(const char *line) {
 	puts(line);
@@ -95,6 +127,58 @@ static void draw(int32_t width, int32_t height) {
 	}
 }
 
+/* --- Asking for the focus --------------------------------------------------- */
+
+static void token_done(void *data, struct xdg_activation_token_v1 *token, const char *string) {
+	xdg_activation_token_v1_destroy(token);
+	if (forge_token) {
+		xdg_activation_v1_activate(activation, string, surface);
+		say("activate forged");
+		return;
+	}
+	/* Under another name first, so that a reader never finds half a token. */
+	char partial[512];
+	snprintf(partial, sizeof(partial), "%s.partial", token_path);
+	FILE *file = fopen(partial, "w");
+	if (file == NULL || fputs(string, file) < 0 || fclose(file) != 0 ||
+			rename(partial, token_path) != 0) {
+		perror("token file");
+		exit(1);
+	}
+	say("token");
+}
+
+static const struct xdg_activation_token_v1_listener token_listener = {
+	.done = token_done,
+};
+
+/* `serial` is the input event the token stands for; 0 asks for one without. */
+static void request_token(uint32_t serial) {
+	struct xdg_activation_token_v1 *token = xdg_activation_v1_get_activation_token(activation);
+	xdg_activation_token_v1_add_listener(token, &token_listener, NULL);
+	if (serial != 0) {
+		xdg_activation_token_v1_set_serial(token, serial, seat);
+		xdg_activation_token_v1_set_surface(token, surface);
+	}
+	xdg_activation_token_v1_commit(token);
+}
+
+static void ask_for_focus(void) {
+	if (forge_token) {
+		request_token(0);
+		return;
+	}
+	char token[256] = "";
+	FILE *file = fopen(token_path, "r");
+	if (file == NULL || fgets(token, sizeof(token), file) == NULL) {
+		perror("token file");
+		exit(1);
+	}
+	fclose(file);
+	xdg_activation_v1_activate(activation, token, surface);
+	say("activate");
+}
+
 /* --- Window ----------------------------------------------------------------- */
 
 static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
@@ -102,6 +186,13 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 	printf("configure %dx%d activated=%d suspended=%d fullscreen=%d\n", pending_width,
 		pending_height, pending_activated, pending_suspended, pending_fullscreen);
 	fflush(stdout);
+	if (pending_activated) {
+		was_activated = true;
+	} else if (was_activated && !activation_sent && (use_token || forge_token)) {
+		/* Just lost the focus: ask for it back, once. */
+		activation_sent = true;
+		ask_for_focus();
+	}
 	/* 0x0 means "pick your own size". */
 	int32_t own_width = fixed_size ? 300 : 640, own_height = fixed_size ? 200 : 480;
 	draw(pending_width > 0 ? pending_width : own_width,
@@ -215,6 +306,10 @@ static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_
 static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
 		struct wl_surface *wl_surface, struct wl_array *keys) {
 	say("keyboard enter");
+	if (issue_token && !token_requested) {
+		token_requested = true;
+		request_token(serial);
+	}
 }
 
 static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
@@ -300,6 +395,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, zwp_idle_inhibit_manager_v1_interface.name) == 0) {
 		inhibit_manager = wl_registry_bind(registry, name,
 			&zwp_idle_inhibit_manager_v1_interface, 1);
+	} else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
+		activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
 	}
 }
 
@@ -311,8 +408,87 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = registry_global_remove,
 };
 
+/* --- X11 sockets ------------------------------------------------------------ */
+
+static int x11_client(const char *kind, const char *display_name) {
+	int number = atoi(display_name + 1);
+	struct sockaddr_un addr = {.sun_family = AF_UNIX};
+	socklen_t length = offsetof(struct sockaddr_un, sun_path);
+	if (strcmp(kind, "abstract") == 0) {
+		length += 1 + (socklen_t)snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1,
+			"/tmp/.X11-unix/X%d", number);
+	} else {
+		length += 1 + (socklen_t)snprintf(addr.sun_path, sizeof(addr.sun_path),
+			"/tmp/.X11-unix/X%d", number);
+	}
+	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0 || connect(fd, (struct sockaddr *)&addr, length) < 0) {
+		say("x11 refused");
+		return 0;
+	}
+	say("x11 connected");
+	char byte;
+	if (read(fd, &byte, 1) == 1) {
+		say("x11 served");
+		/* Stay connected, like an application, until the server goes away. */
+		while (read(fd, &byte, 1) > 0) {
+		}
+	}
+	say("x11 closed");
+	return 0;
+}
+
+static int x11_serve(int argc, char *argv[]) {
+	/* Never outlive the compositor that started us. */
+	prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+	struct pollfd sockets[2];
+	nfds_t count = 0;
+	printf("serve pid=%d", (int)getpid());
+	for (int i = 0; i < argc; i++) {
+		printf(" %s", argv[i]);
+		if (strcmp(argv[i], "-listenfd") == 0 && i + 1 < argc && count < 2) {
+			sockets[count++] = (struct pollfd){.fd = atoi(argv[i + 1]), .events = POLLIN};
+		}
+	}
+	say("");
+
+	/* Xwayland takes a while to come up. A compositor that kept watching the
+	 * sockets meanwhile would start a second helper for the same client. */
+	nanosleep(&(struct timespec){.tv_nsec = 300000000}, NULL);
+
+	while (poll(sockets, count, -1) > 0) {
+		for (nfds_t i = 0; i < count; i++) {
+			if (!(sockets[i].revents & POLLIN)) {
+				continue;
+			}
+			/* Kept open: the client stays connected until we exit. */
+			int client = accept(sockets[i].fd, NULL, NULL);
+			if (client < 0 || write(client, "x", 1) != 1) {
+				say("serve error");
+				return 1;
+			}
+			say("accepted");
+		}
+	}
+	return 1;
+}
+
 int main(int argc, char *argv[]) {
 	const char *mode = argc > 1 ? argv[1] : "";
+
+	if (strcmp(mode, "--x11") == 0 && argc == 4) {
+		return x11_client(argv[2], argv[3]);
+	}
+	if (strcmp(mode, "--x11-serve") == 0) {
+		return x11_serve(argc - 2, argv + 2);
+	}
+	if (argc > 2) {
+		token_path = argv[2];
+	}
+	issue_token = strcmp(mode, "--token") == 0;
+	use_token = strcmp(mode, "--activate") == 0;
+	forge_token = strcmp(mode, "--activate-forged") == 0;
 
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -326,7 +502,8 @@ int main(int argc, char *argv[]) {
 	wl_display_roundtrip(display);
 	wl_display_roundtrip(display);
 	if (compositor == NULL || shm == NULL || wm_base == NULL || layer_shell == NULL ||
-			lock_manager == NULL || inhibit_manager == NULL || output == NULL) {
+			lock_manager == NULL || inhibit_manager == NULL || activation == NULL ||
+			output == NULL) {
 		fprintf(stderr, "compositor is missing a required global\n");
 		return 1;
 	}

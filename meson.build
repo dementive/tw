@@ -81,6 +81,7 @@ protocols = {
 	'xdg-shell': wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
 	'ext-session-lock-v1': wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 	'idle-inhibit-unstable-v1': wl_protocol_dir / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
+	'xdg-activation-v1': wl_protocol_dir / 'staging/xdg-activation/xdg-activation-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
 }
@@ -119,6 +120,7 @@ tw = executable(
 	'src/layer.c',
 	'src/idle.c',
 	'src/lock.c',
+	'src/x11.c',
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
@@ -165,6 +167,8 @@ test_client = executable(
 	protocol_code['ext-session-lock-v1'],
 	client_header['idle-inhibit-unstable-v1'],
 	protocol_code['idle-inhibit-unstable-v1'],
+	client_header['xdg-activation-v1'],
+	protocol_code['xdg-activation-v1'],
 	dependencies: wayland_client,
 )
 test_keys = executable(
@@ -194,11 +198,21 @@ test(
 	timeout: 120,
 )
 
-# Screen blanking, with a one-second timeout so the test does not take minutes.
+# Screen blanking and locking, with a two-second timeout so the test does not
+# take minutes.
 test(
 	'idle',
 	find_program('tests/idle.sh'),
 	args: [tw, test_client, test_keys],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# X11 sockets and starting the helper on demand, with a stand-in helper.
+test(
+	'x11',
+	find_program('tests/x11.sh'),
+	args: [tw, test_client],
 	is_parallel: false,
 	timeout: 120,
 )

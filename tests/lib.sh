@@ -5,14 +5,28 @@
 # private XDG_RUNTIME_DIR. The tests therefore need no GPU and no seat, and
 # can never touch the session they are launched from. With no host session in
 # the environment, tw uses Super as its modifier.
+#
+# tw's PATH is $bin_dir and nothing else, so it finds none of the programs
+# installed on this machine: no locker, no xwayland-satellite, no terminal.
+# A test that needs one puts a stand-in there with fake_program.
 
 tw_bin=$1
-client_bin=$2
+# Absolute, because the stand-ins run it from wherever tw starts them.
+client_bin=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 keys_bin=
 # XDG_RUNTIME_DIR must be absolute; Meson passes the binaries as ./tw.
 run_dir=$(mktemp -d "$(cd "$(dirname "$tw_bin")" && pwd)/test.XXXXXX")
+bin_dir=$run_dir/bin
+mkdir "$bin_dir"
 tw_pid=
 client_pids=
+
+# fake_program <name> <shell script>: what tw runs when it starts <name>.
+# The script has no PATH to speak of: builtins and absolute paths only.
+fake_program() {
+	printf '#!/bin/sh\n%s\n' "$2" >"$bin_dir/$1"
+	chmod +x "$bin_dir/$1"
+}
 
 cleanup() {
 	for pid in $client_pids $tw_pid; do
@@ -46,6 +60,7 @@ wait_until() {
 # start_tw [tw arguments]
 start_tw() {
 	env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY \
+		PATH="$bin_dir" \
 		XDG_RUNTIME_DIR="$run_dir" \
 		WLR_BACKENDS=headless \
 		WLR_RENDERER=pixman \

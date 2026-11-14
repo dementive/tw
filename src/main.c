@@ -2,7 +2,10 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -29,6 +32,12 @@
 #include "tw.h"
 #include "config.h"
 
+int64_t now_ms(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
 void spawn(const char *cmd) {
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -51,6 +60,35 @@ void spawn(const char *cmd) {
 		_exit(0);
 	}
 	waitpid(pid, NULL, 0);
+}
+
+bool program_find(const char *command, char *path, size_t size) {
+	size_t length = strcspn(command, " \t");
+	const char *dirs = getenv("PATH");
+	if (length == 0 || length >= size) {
+		return false;
+	}
+	if (memchr(command, '/', length) != NULL || dirs == NULL) {
+		/* A path is used as it is. */
+		memcpy(path, command, length);
+		path[length] = '\0';
+		return access(path, X_OK) == 0;
+	}
+	while (*dirs != '\0') {
+		size_t dir_length = strcspn(dirs, ":");
+		struct stat st;
+		if (dir_length > 0 && dir_length + 1 + length < size) {
+			snprintf(path, size, "%.*s/%.*s", (int)dir_length, dirs, (int)length, command);
+			if (access(path, X_OK) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+				return true;
+			}
+		}
+		dirs += dir_length;
+		if (*dirs == ':') {
+			dirs++;
+		}
+	}
+	return false;
 }
 
 void action_spawn(struct tw_server *server, const union tw_arg *arg) {
@@ -188,6 +226,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	setenv("WAYLAND_DISPLAY", socket, true);
+	x11_init(&server);
 	if (startup_cmd != NULL) {
 		spawn(startup_cmd);
 	}
@@ -200,6 +239,7 @@ teardown:
 	/* wlroots asserts that every listener was removed before the object it
 	 * listens on is destroyed, so the order here matters. */
 	wl_display_destroy_clients(server.display);
+	x11_finish(&server);
 	lock_finish(&server);
 	idle_finish(&server);
 	input_finish(&server);

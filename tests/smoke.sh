@@ -87,6 +87,30 @@ expect_state b "$on" "Mod+Page_Up to go to the workspace above"
 press super+Page_Down
 expect_state d "$on" "Mod+Page_Down to go back down"
 
+# --- Focus requests: workspace 5 -----------------------------------------------
+# A window may ask for the focus with a token that another program made from
+# an input event (a clicked link, a clicked notification). Here `giver` turns
+# its keyboard focus into a token; `asker` uses it when it loses the focus.
+press super+5
+start_client giver --token "$run_dir/token"
+expect_line giver token "a focused window to be given an activation token"
+start_client asker --activate "$run_dir/token"
+expect_state asker "$on" "the asking window to start focused"
+press super+6
+expect_line asker activate "the window to ask for the focus when it loses it"
+expect_state asker "$on" "a focus request to bring the window and its workspace back"
+expect_keyboard asker enter "the window that asked to get the keyboard"
+
+# A token made without any input event proves nothing and moves nothing.
+start_client thief --activate-forged
+expect_state thief "$on" "the third window to start focused"
+press super+6
+expect_line thief "activate forged" "the window to ask with a made-up token"
+sleep 0.3
+last_line_matches thief configure "$off_screen" || fail "a made-up token stole the focus"
+press super+2
+expect_state d "$on" "Mod+2 to return to workspace 2"
+
 # --- Layer shell: a launcher borrows the keyboard and gives it back ------------
 start_client launcher --layer
 grep -q '^layer configure 400x200$' "$run_dir/launcher.log" ||

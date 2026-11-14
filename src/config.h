@@ -56,12 +56,29 @@ static const int scroll_stiffness = 800;
  */
 static const int blank_after_seconds = 300;
 
+/*
+ * Lock the session when the laptop lid closes, and when the screen turns off
+ * after blank_after_seconds. tw locks at once and by itself, so nothing is
+ * visible or reachable even if the machine suspends before the locker is up;
+ * the locker then draws the lock screen. Neither does anything unless the
+ * locker below is installed.
+ */
+static const bool lock_on_lid_close = true;
+static const bool lock_on_idle = true;
+
 /* Programs. The launcher is any layer-shell client; fuzzel is small and fast. */
 static const char terminal[] = "alacritty";
 static const char launcher[] = "fuzzel";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";
+
+/*
+ * X11 applications run through this helper, which starts Xwayland. tw starts
+ * it when the first X11 application connects and not before; from then on
+ * the two stay in memory. "" turns X11 support off.
+ */
+static const char x11_helper[] = "xwayland-satellite";
 
 static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
 static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
@@ -93,7 +110,7 @@ static const struct tw_binding bindings[] = {
 	{MOD | SHIFT,   XKB_KEY_e,          action_quit,                        {0}},
 
 	/* Screen: lock, power off until the next input, screenshots. */
-	{MOD | ALT,     XKB_KEY_l,          action_spawn,                       {.s = locker}},
+	{MOD | ALT,     XKB_KEY_l,          action_lock,                        {0}},
 	{MOD | SHIFT,   XKB_KEY_p,          action_blank,                       {0}},
 	{0,             XKB_KEY_Print,      action_spawn,                       {.s = screenshot}},
 	{SHIFT,         XKB_KEY_Print,      action_spawn,                       {.s = screenshot_region}},
