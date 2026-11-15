@@ -452,9 +452,27 @@ huge pages are off, takes 105 MB out of what MemAvailable leaves out (288 to
 with it, since their limit follows the low watermark. Nothing on this
 machine writes that setting or the huge-page `enabled` file after boot
 (writing `enabled` makes the kernel raise the reserve again). Computed,
-never applied: the owner wants CachyOS's huge pages left as they are for
-performance, and the kernel raises this reserve precisely to keep huge
-pages available, so do not propose it again.
+never applied: the owner first wanted CachyOS's huge pages left as they are
+for performance, and the kernel raises this reserve precisely to keep huge
+pages available.
+
+After the measured split the owner asked which kernel settings would lower
+the figure, "ideally things that won't negatively effect performance or
+battery life", compromises allowed. What was put to them, sized against the
+893 MB reading. Settings that only change what is counted, since the memory
+is free either way: `vm.min_free_kbytes=16384` (105 MB by the formula,
+probably more through the per-CPU parked pages; the cost shows once the
+file cache has filled the RAM, when a new program more often gets small
+pages first, and `thp_fault_fallback` in `/proc/vmstat`, 0 so far, is where
+that would be seen) and `vm.lowmem_reserve_ratio = 1024 1024 32 0 0` (43 MB;
+the reserve for devices that need memory below 4 GB, 58 MB by default).
+Settings that free memory really in use: the swap device at 8 GB (30 MB) or
+4 GB (46 MB); `nvme.io_queue_depth=128` (9 MB: 20 queues of 1023 requests
+of 512 bytes are allocated up front); and blacklisting `xe` (5 MB). `kvm`
+stays, qemu is installed. Not worth it: `transparent_hugepage=never` (what
+the owner wants to keep), `cgroup_disable=memory` (5 to 10 MB estimated, and
+the per-service memory accounting goes). The rest of the kernel's share
+(slab, per-CPU data, modules in use, the drivers' own pages) has no setting.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
