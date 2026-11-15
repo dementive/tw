@@ -529,8 +529,8 @@ that. With the condition installed, the same day: `off` stopped the
 service, the bus asked for it twice within 18 ms and systemd skipped both
 ("unmet condition check ConditionPathExists=/run/tw-bluetooth"), and the
 core was out of the kernel 46 ms after the stop, in the first pass; all of
-`off` took 0.13 s, and nothing of Bluetooth was back a quarter of an hour
-later. `on` took 1.25 s: the core and `btusb` loaded, systemd started
+`off` took 0.13 s, and nothing of Bluetooth was back twelve seconds later,
+when it was looked at. `on` took 1.25 s: the core and `btusb` loaded, systemd started
 `bluetoothd` for the new adapter by itself 17 ms after the driver had
 registered, the radio came up unblocked and powered although systemd had
 it down as blocked, the timer was set for ten minutes on, and WirePlumber
