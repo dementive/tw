@@ -430,6 +430,44 @@ this same file, so test it at once, with your session still open:
 `sh tools/keyring.sh` says which keyring is running and whether it is open.
 To go back: `sudo sh tools/keyring.sh kwallet`, then log out and in.
 
+### 16. Without KDE
+
+With steps 10, 14 and 15 done, nothing of KDE runs in a tw session.
+Removing it frees 1.1 GB of disk and no memory. Reboot once first and see
+that the login, the Wi-Fi and your sign-ins are all there: with KDE gone,
+so are the ways back of steps 14 and 15.
+
+```sh
+sudo pacman -D --asexplicit bolt vulkan-tools mpv ttf-hack ttf-fira-sans
+sudo pacman -Rns $(pacman -Qgq plasma) ark dolphin ffmpegthumbs filelight gwenview kate kcalc kdegraphics-thumbnailers kdialog kio-admin kio-extras konsole kwalletmanager partitionmanager signon-kwallet-extension haruna kde-gtk-config cachyos-kde-settings phonon-qt6-vlc kwallet-pam breeze-gtk cachyos-emerald-kde-theme-git cachyos-nord-kde-theme-git networkmanager networkmanager-openvpn wpa_supplicant
+```
+
+The first line keeps five packages that came in with KDE and are of use
+without it: `bolt` (lets Thunderbolt devices in), `vulkan-tools` (step 6),
+`mpv`, and two fonts. The second shows what it will remove, about 200
+packages, and asks before it does.
+
+| Goes | In its place |
+| --- | --- |
+| Dolphin | Thunar (`sudo pacman -S thunar`) |
+| Konsole, Kate | foot, your editor |
+| Gwenview | nothing installed; `imv` is a small one |
+| Spectacle | Print and Shift+Print (grim) |
+| Haruna | mpv |
+| Ark, KCalc, Filelight, the partition manager | nothing |
+| NetworkManager, wpa_supplicant, OpenVPN | iwd (step 14); no VPN |
+
+KDE Connect stays, with the KDE libraries it needs; add
+`kdeconnect modemmanager modemmanager-qt` to the second line to remove it
+too. `heaptrack`, if installed, keeps a few more of those libraries.
+
+Left behind, for you to delete: NetworkManager's copies of your Wi-Fi
+passwords (`sudo rm -r /etc/NetworkManager`), and the old wallet
+(`rm -r ~/.local/share/kwalletd ~/.local/share/kwalletd.before-oo7`).
+Programs drawn with GTK were told to use KDE's mouse pointer, which is
+gone: `gsettings set org.gnome.desktop.interface cursor-theme Adwaita`
+gives them the one tw itself shows.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
