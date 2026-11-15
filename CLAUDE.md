@@ -588,8 +588,11 @@ that is what the condition is for. Tried in the owner's session
 (2026-11-15) with the same line as a drop-in under `/run/user`, removed
 again afterwards: the launcher was stopped, a call for the bus's address
 was answered in 9 ms ("Could not activate remote peer 'org.a11y.Bus':
-unit failed"), and the launcher stayed away. Not seen yet: the installed
-file at a login, and the Claude app starting without the bus.
+unit failed"), and the launcher stayed away. Then with the file installed,
+at the next boot and login: three seconds after the Claude app started
+the user's systemd logged "Accessibility services bus skipped, unmet
+condition check ConditionEnvironment=!NO_AT_BRIDGE", the app came up as
+usual, and no launcher was running eight minutes later.
 
 `tests/profile.sh` runs `tw-power` against a made-up `/sys`. Breaking it
 and the helper 21 ways, one at a time, each made it fail (and five ways
@@ -601,9 +604,15 @@ balanced is `balanced`, `balance_performance`, 6; performance is
 `performance`, `performance`, 0; nothing else in cpufreq or intel_pstate
 moved, and ASUS's `throttle_thermal_policy` follows the platform's profile
 by itself. `tw-power` alone read the real machine as "saver (platform:
-quiet, CPUs: power)" on battery. Not seen yet: the helper writing to the
-real `/sys`, its polkit rule, and tw running it at a login and when the
-cable moves.
+quiet, CPUs: power)" on battery. The owner removed power-profiles-daemon
+right after installing and rebooted. At that login, on mains, tw ran
+`tw-power balanced` five seconds after it started: systemd ran
+`tw-power@balanced.service` for 86 ms with nobody asked for a password,
+so the polkit rule works, and nothing failed. A machine boots on the
+balanced profile, though, so the helper most likely found all three
+settings as it wanted them and wrote nothing. Not seen yet: the helper writing to the
+real `/sys`, which the first login or cable pull on battery will show
+(`tw-power` then says saver), and tw running it when the cable moves.
 
 The keyring is not tw's business: oo7 is started by the user's systemd as
 they log in and unlocked by its PAM module (README step 15). What
@@ -1316,6 +1325,47 @@ step 7. Asked whether to build the two that tw can take over, the
 accessibility launcher and power-profiles-daemon, they answered "Yes,
 build both": `tw-a11y.conf` and `tw-power` (see above). `bolt`, avahi,
 timesyncd and resolved were left as they are.
+
+Their next question: "do I really need boltd and wl-clip-persist? what do
+they even do?" Measured for the answer (2026-11-15, the first boot with
+`tw-power`, eight minutes in).
+
+`boltd` lets Thunderbolt devices in. The laptop has one Thunderbolt 4
+port, and its controller only knows the security level `user`: the PCIe
+side of a device plugged in there (a dock's network and disks, an external
+GPU) stays off until something writes 1 to the device's `authorized` file.
+udev starts `bolt.service` at every boot because the controller itself
+counts as a Thunderbolt device (`90-bolt.rules`), and it stays: 10.0 MB
+resident, 0.72 MB its own, and it wakes about every eleven seconds (8
+times in 90 s) with nothing plugged in. Nothing has ever been enrolled:
+`/var/lib/boltd` holds one file, from the day of the install. And with the
+kernel's DMA protection on, which it is here (`iommu_dma_protection` reads
+1), boltd lets every new device in without asking anybody (its man page).
+The kernel's own guide has one udev rule that does the same with no
+daemon: `ACTION=="add", SUBSYSTEM=="thunderbolt",
+ATTRS{iommu_dma_protection}=="1", ATTR{authorized}=="0",
+ATTR{authorized}="1"`. Never tried here: there is no Thunderbolt device to
+try it with. USB-C devices, chargers and a monitor on USB-C are not
+Thunderbolt and never went through boltd. bolt was kept on purpose when
+KDE went ("a dock needs it"); that was this file's advice, not something
+the owner asked for.
+
+`wl-clip-persist` is tw's one autostart. On Wayland what was copied stays
+with the program it was copied from and is gone when that program exits.
+Tried in a headless tw with `wl-copy --foreground` as the program: without
+the helper `wl-paste` says "Nothing is copied" once the program has
+exited, with it the text is still there. It does that by taking every
+copy over at once (the program that copied loses the clipboard the moment
+it has been read; `wl-copy` exited by itself). In the session it is 4.6 MB
+resident and 0.52 MB its own, and it did not wake once in 90 s with
+nothing being copied. What it holds grows with what was copied, once for
+each format the program offered: a text of 20 MB, which `wl-copy` offers
+in five formats, made it 98 MB of its own until the next copy, when it
+was back at 0.56. So a large picture copied in a browser sits there
+several times over until something else is copied. Doing the same inside
+tw would move that memory and work into the compositor, against "keep
+everything else out of process", and nothing can start such a helper on
+demand: it has to have read the copy before the program exits.
 
 ## Battery
 
