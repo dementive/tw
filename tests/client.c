@@ -4,6 +4,8 @@
  *
  *   configure <w>x<h> activated=<0|1> suspended=<0|1> fullscreen=<0|1>
  *   layer configure <w>x<h>                             with --layer
+ *   scale <n>                                           with --layer: the
+ *                      screen's scale in 120ths, as soon as it is told
  *   lock configure <w>x<h>, locked, lock denied         with --lock
  *   keyboard enter | keyboard leave                     keyboard focus
  *   key <code> <pressed|released>                       keys it received
@@ -69,6 +71,7 @@
 #include <wayland-client.h>
 
 #include "ext-session-lock-v1-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
@@ -91,6 +94,7 @@ static struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
 static struct xdg_activation_v1 *activation;
 static struct zwp_pointer_constraints_v1 *constraints;
 static struct zwp_relative_pointer_manager_v1 *relative_manager;
+static struct wp_fractional_scale_manager_v1 *scale_manager;
 static struct wl_pointer *pointer;
 static struct zwp_locked_pointer_v1 *locked_pointer;
 static struct ext_session_lock_v1 *session_lock;
@@ -289,6 +293,16 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer_surf
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer_surface) {
 	running = false;
 }
+
+static void scale_preferred(void *data, struct wp_fractional_scale_v1 *fractional,
+		uint32_t scale) {
+	printf("scale %u\n", scale);
+	fflush(stdout);
+}
+
+static const struct wp_fractional_scale_v1_listener scale_listener = {
+	.preferred_scale = scale_preferred,
+};
 
 static const struct zwlr_layer_surface_v1_listener layer_listener = {
 	.configure = layer_configure,
@@ -602,6 +616,9 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, zwp_relative_pointer_manager_v1_interface.name) == 0) {
 		relative_manager = wl_registry_bind(registry, name,
 			&zwp_relative_pointer_manager_v1_interface, 1);
+	} else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
+		scale_manager = wl_registry_bind(registry, name,
+			&wp_fractional_scale_manager_v1_interface, 1);
 	}
 }
 
@@ -761,6 +778,11 @@ int main(int argc, char *argv[]) {
 		zwlr_layer_surface_v1_set_size(layer_surface, 400, 200);
 		zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surface,
 			ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
+		if (scale_manager != NULL) {
+			wp_fractional_scale_v1_add_listener(
+				wp_fractional_scale_manager_v1_get_fractional_scale(scale_manager, surface),
+				&scale_listener, NULL);
+		}
 		wl_surface_commit(surface);
 	} else if (strcmp(mode, "--lock") == 0) {
 		/* A lock surface gets its role without an initial commit. */

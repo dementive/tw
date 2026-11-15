@@ -167,6 +167,11 @@ expect_state d "$on" "Mod+2 to return to workspace 2"
 start_client launcher --layer
 grep -q '^layer configure 400x200$' "$run_dir/launcher.log" ||
 	fail "layer surface was not given the size it asked for"
+# It hears the screen's scale before it is asked to draw. If it heard only
+# once its first picture is on screen, it would have drawn that for scale 1
+# and would draw again: twice for every launcher on a screen at 1.25.
+[ "$(grep '^scale \|^layer configure' "$run_dir/launcher.log" | head -n 1)" = "scale 120" ] ||
+	fail "a layer surface was asked to draw before it was told the scale"
 launcher_pid=$last_client_pid
 expect_keyboard launcher enter "the launcher to take the keyboard"
 expect_keyboard d leave "the window to lose the keyboard"

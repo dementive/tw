@@ -83,6 +83,7 @@ protocols = {
 	'ext-session-lock-v1': wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 	'idle-inhibit-unstable-v1': wl_protocol_dir / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
 	'xdg-activation-v1': wl_protocol_dir / 'staging/xdg-activation/xdg-activation-v1.xml',
+	'fractional-scale-v1': wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	'pointer-constraints-unstable-v1': wl_protocol_dir / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
@@ -216,6 +217,8 @@ test_client = executable(
 	protocol_code['pointer-constraints-unstable-v1'],
 	client_header['relative-pointer-unstable-v1'],
 	protocol_code['relative-pointer-unstable-v1'],
+	client_header['fractional-scale-v1'],
+	protocol_code['fractional-scale-v1'],
 	dependencies: wayland_client,
 )
 test_keys = executable(

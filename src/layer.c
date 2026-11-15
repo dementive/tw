@@ -3,8 +3,10 @@
  * popups, wallpapers and bars. tw draws none of these itself; this is what
  * lets ordinary programs provide them.
  */
+#include <math.h>
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -192,6 +194,13 @@ static void handle_new_layer_surface(struct wl_listener *listener, void *data) {
 		}
 		layer_surface->output = output->wlr_output;
 	}
+	/* Tell the client the screen's scale now, before it draws. Left to the
+	 * scene it would hear of it once its first picture is on screen, drawn
+	 * for scale 1, and would draw again: every launcher and notification
+	 * twice as it opens on a screen at 1.25. */
+	float scale = layer_surface->output->scale;
+	wlr_fractional_scale_v1_notify_scale(layer_surface->surface, scale);
+	wlr_surface_set_preferred_buffer_scale(layer_surface->surface, (int32_t)ceilf(scale));
 
 	struct tw_layer_surface *surface = calloc(1, sizeof(*surface));
 	if (surface == NULL) {
