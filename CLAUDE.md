@@ -444,11 +444,13 @@ the charge stayed at 5%, suspended again at 4%, did nothing at 3% on the
 charger, warned again but did not suspend when the charger went at 3%, and
 suspended at 2%. The announcements came 55 to 110 seconds apart that time,
 so how soon tw notices varies. In the real session `notify-send` with the
-warning's urgency was accepted by fnott. Not seen yet: the panel changing
-mode (the first time the cable is pulled after an install), whether the
-screen blinks as it does, what the machine draws at 60 Hz, whether a USB-C
-charger shows up as a supply that is online, a real suspend from a low
-battery, and a wake-up being told from the clocks.
+warning's urgency was accepted by fnott. Then at a real login on battery
+(2026-11-15): the panel came up at 60 Hz from its first modeset
+(`i915_display_info`: 60 Hz, 142270 kHz) and the profile was power-saver.
+Not seen yet: the panel changing mode while tw runs (the cable pulled or
+plugged in), whether the screen blinks as it does, whether a USB-C charger
+shows up as a supply that is online, a real suspend from a low battery,
+and a wake-up being told from the clocks.
 
 ## Known noise
 
@@ -858,3 +860,45 @@ shows the draw next to the frame rate, to set against 16.5 W animating and
 11.4 W still. Asked next whether to build the warning and the suspend on a
 low battery, the owner again answered "Yes, build it", and that is in too
 (10% and 5%; `battery_warn_percent`, `battery_suspend_percent`).
+
+Measured on that build the next morning (2026-11-15), on battery, at 60 Hz
+and on the power-saver profile, with `tools/power.sh`. While the Claude app
+animates tw shows 60 frames a second and the machine draws 11.5 to 12.3 W
+where it drew 16.5; the app uses 0.32 of a core (0.81 before) and tw 0.03,
+with 120 wakeups a second (0.11 and 600). So the two changes save about
+4.6 W while something animates, a little more than the estimate.
+
+The owner ran `tools/power-root.sh` 113 seconds after that boot. The
+machine was not idle in its window (0.29 of a core busy and 800 TLB
+shootdowns a second: the Claude app was starting), so what it says about
+sleep is a lower bound. This much stands. The battery read 10.1 W, against
+11.4 W for a still screen the day before. The CPU package took 2.76 W of
+it, the cores 0.29 W and the GPU nothing, so more than 7 W goes to what is
+outside the processor: panel and backlight, the USB system disk, memory,
+chipset, radios. `psys` read 0.23 W and means nothing on this machine. The
+package was in C2 or C3 for 0.03% of the time and never deeper, although
+the cores were in C10 for 96.6%; whether that was the activity or
+something holding the package awake takes a quiet window to tell. The
+panel does self refresh (PSR1, in self refresh when read), the display
+engine reaches DC5 and never DC6, and frame buffer compression is off
+because PSR1 is on (an Intel workaround). Link power saving (ASPM): the
+Realtek Ethernet controller's link can do L0s and L1 and has neither on,
+and the controller itself stays in D0 with no cable plugged in
+(`power/control` is `on`, zero ms suspended); the unused NVMe disk's link
+has L1 and L1.2 on; the Thunderbolt port has L1. The firmware handed the
+kernel control of the PCIe features (`_OSC`), so the kernel may change
+those. The laptop's own sound chip does power down on battery (24 s on,
+52 s off in that boot), so the reading of the day before was the mains
+setting or a stream held open.
+
+`lspci -vv` wakes the devices that sleep. That first report therefore
+listed the port of the NVIDIA GPU and the Thunderbolt controller as awake;
+both were in D3cold when read without it. The script now notes who is
+awake before it lists anything, says whether the machine was idle and who
+was busy, and reads the deepest package sleep the firmware allows (MSR
+0xE2 through `/dev/cpu/0/msr`, which this kernel has built in).
+
+Asked of the owner next: the report again in a quiet window, and once more
+after `echo auto` into the Ethernet controller's `power/control` (it lasts
+until a reboot), to see whether the package then sleeps deeper and what
+that is worth in watts.

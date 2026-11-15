@@ -11,8 +11,10 @@
 #
 # What it reports, and why:
 #   - watts by part of the machine (the CPU's own energy counters, RAPL)
-#   - how deep the whole processor package sleeps; shallow sleep with nothing
-#     to do is where a high idle draw usually comes from
+#   - how deep the whole processor package sleeps, and how deep the firmware
+#     lets it; shallow sleep with nothing to do is where a high idle draw
+#     usually comes from
+#   - whether the machine really was idle meanwhile, and who was not
 #   - the display: panel self refresh, the refresh rate in use, frame buffer
 #     compression, the display engine's own sleep states
 #   - whether each PCIe link saves power while idle (ASPM)
@@ -76,6 +78,16 @@ snapshot() { # snapshot <a|b>
 	for file in "$debug"/dri/*/i915_dmc_info; do
 		[ -r "$file" ] && grep -E 'count' "$file"
 	done 2>/dev/null | sort -u >"$tmp/dmc.$1"
+	# CPU time of every process: pid, ticks, name.
+	awk '{ n = split($0, part, ") "); split(part[n], field, " "); name = $2
+		sub(/^\(/, "", name); sub(/\)$/, "", name); print $1, field[12] + field[13], name }' \
+		/proc/[0-9]*/stat 2>/dev/null >"$tmp/proc.$1"
+	# How long each PCI device has been awake. Read here and not later:
+	# listing devices with lspci wakes the ones that sleep.
+	for dir in /sys/bus/pci/devices/*; do
+		echo "${dir##*/} $(cat "$dir/power/runtime_active_time" 2>/dev/null)" \
+			"$(cat "$dir/power/runtime_status" 2>/dev/null) $(cat "$dir/power/control" 2>/dev/null)"
+	done >"$tmp/pci.$1"
 }
 snapshot a
 sleep "$seconds"
@@ -90,8 +102,19 @@ if [ -n "$battery" ]; then
 	echo "battery: $(cat "$battery/status"), power_now $(cat "$battery/power_now" 2>/dev/null) uW," \
 		"energy $(cat "$tmp/energy.a" 2>/dev/null) -> $(cat "$tmp/energy.b" 2>/dev/null) uWh"
 fi
-awk 'NR == FNR { busy = $1; all = $2; next } { printf "cpu busy: %.2f%% of all cpus\n", 100 * ($1 - busy) / ($2 - all) }' \
+
+section "was the machine idle? (it has to be, for the rest to mean much)"
+ticks=$(getconf CLK_TCK)
+awk -v s="$elapsed" -v ticks="$ticks" 'NR == FNR { busy = $1; next }
+	{ cores = ($1 - busy) / ticks / s
+	  printf "%.2f of one cpu core busy: %s\n", cores, cores < 0.08 ? "idle" : "NOT IDLE, something was working" }' \
 	"$tmp/stat.a" "$tmp/stat.b"
+awk 'NR == FNR { before += $2; next } { after += $2 } END { printf "%.0f interrupts per second in all\n", (after - before) / s }' \
+	s="$elapsed" "$tmp/irq.a" "$tmp/irq.b"
+echo "busiest programs, in ms of cpu per second:"
+awk -v s="$elapsed" -v ticks="$ticks" 'NR == FNR { before[$1] = $2; next }
+	($1 in before) && $2 > before[$1] { printf "%8.1f  %s (%s)\n", 1000 * ($2 - before[$1]) / ticks / s, $3, $1 }' \
+	"$tmp/proc.a" "$tmp/proc.b" | sort -rn | head -n 6
 
 section "how deep the processor package slept (raw counter steps, in ticks of the TSC)"
 # Each counter advances at the TSC's rate while the package is in that
@@ -107,6 +130,21 @@ paste -d'|' "$tmp/package.a" "$tmp/package.b" 2>/dev/null | awk -F'|' -v s="$ela
 if [ -s "$tmp/s0.a" ]; then
 	echo "deepest platform state (S0ix): $(awk -v a="$(cat "$tmp/s0.a")" -v b="$(cat "$tmp/s0.b")" -v s="$elapsed" \
 		'BEGIN { printf "%.2f%%", 100 * (b - a) / (s * 1e6) }') of the interval"
+fi
+
+section "the deepest package sleep the firmware allows (register 0xE2 of the CPU)"
+if [ -r /dev/cpu/0/msr ]; then
+	raw=$(dd if=/dev/cpu/0/msr bs=8 count=1 skip=$((0xe2)) iflag=skip_bytes 2>/dev/null | od -A n -t x8 | tr -d ' ')
+	echo "raw 0x$raw"
+	if [ -n "$raw" ]; then
+		# The table of this CPU family, as turbostat has it.
+		set -- C0 C2 C3 C6 C7 C7s C8 C9 "no limit (C10)"
+		limit=$((0x$raw & 0xf))
+		shift "$((limit < 8 ? limit : 8))"
+		echo "limit: $limit, package $1; locked by the firmware: $(((0x$raw >> 15) & 1))"
+	fi
+else
+	echo "cannot read /dev/cpu/0/msr"
 fi
 
 section "how deep the cores slept (share of all cpu time)"
@@ -158,12 +196,13 @@ lspci -vv 2>/dev/null | awk '
 		printf "%s\n    can: %s   now: %s\n", device, can, now; can = "" }
 	/L1SubCtl1:/ { sub(/^[ \t]+/, ""); printf "    %s\n", $0 }'
 
-section "PCI devices that are awake now (runtime power management)"
-for dir in /sys/bus/pci/devices/*; do
-	status=$(cat "$dir/power/runtime_status" 2>/dev/null)
-	[ "$status" = suspended ] && continue
-	echo "$(lspci -s "${dir##*/}" 2>/dev/null) [$status, control=$(cat "$dir/power/control" 2>/dev/null)]"
-done
+section "PCI devices that were awake during the measurement, and for how much of it"
+lspci -D >"$tmp/names" 2>/dev/null
+awk -v s="$elapsed" 'FILENAME == ARGV[1] { name[$1] = substr($0, length($1) + 2); next }
+	FILENAME == ARGV[2] { before[$1] = $2; next }
+	{ share = 100 * ($2 - before[$1]) / (s * 1000)
+	  if (share >= 1) printf "%5.0f%%  %s %s [control=%s]\n", share, $1, name[$1], $4 }' \
+	"$tmp/names" "$tmp/pci.a" "$tmp/pci.b"
 
 section "USB devices"
 for dir in /sys/bus/usb/devices/*; do
@@ -194,8 +233,6 @@ done
 
 section "what each part of the chipset asks for (latency it tolerates; pmc_core ltr_show)"
 grep -vE 'RAW: 0x0[[:space:]]' "$debug/pmc_core/ltr_show" 2>&1 | head -n 40
-section "what keeps the platform from its deepest state (pmc_core substate_requirements)"
-head -n 60 "$debug/pmc_core/substate_requirements" 2>&1
 section "chipset parts not powered down (pmc_core pch_ip_power_gating_status)"
 grep -E 'State: On' "$debug/pmc_core/pch_ip_power_gating_status" 2>&1 | head -n 60
 echo "pmc_core has: $(ls "$debug/pmc_core" 2>&1 | tr '\n' ' ')"
