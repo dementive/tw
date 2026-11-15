@@ -32,7 +32,7 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | foot | terminal (Mod+T) |
 | fuzzel | launcher (Mod+Space, Mod+D) |
 | swaylock | lock screen (Mod+Alt+L, lid close, idle) |
-| fnott | notifications, started with the session |
+| fnott | notifications; D-Bus starts it when the first one arrives |
 | wl-clip-persist | keeps what you copied when its program exits, started with the session |
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |

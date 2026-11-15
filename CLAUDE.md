@@ -589,3 +589,28 @@ A `malloc_trim()` after startup gave back 170 kB.
 The session helpers (the portals, PipeWire, the accessibility bus) all
 start at login although tw starts none of them: the KDE wallet daemon
 registers with the portal as it starts, and the portal starts the rest.
+
+The owner reads memory per program off `btop`, whose figure is resident
+memory: what the program holds for itself plus every library page it has
+mapped, most of which other programs share and which is file cache, not
+part of the "used" total. Asked about five programs by those figures
+(2026-11-14): NetworkManager 27.8 MB there, 3.7 its own (wpa_supplicant
+12.7 and 1.8); ksecretd 51.1 and 5.1; plasmalogin and its helper 54.4 and
+6.4; wireplumber 36.4 and 8.8; fnott 10.2 and 1.7. All five hold 27.5 MB
+for themselves. Library pages only that one program has mapped, which
+would leave the cache with it: ksecretd 16.4, wireplumber 8.6, fnott 1.0.
+`tools/mem.sh` lists the "for itself" figure, so point them at that.
+Alternatives on this machine: iwd is installed and could replace
+NetworkManager and wpa_supplicant; gnome-keyring and greetd are not
+installed; nothing maintained replaces WirePlumber, which sound and OBS's
+screen capture need.
+
+fnott is no longer in `autostart[]`: its package ships a D-Bus service
+file, so the bus starts it when a program sends the first notification
+(tried on a private bus with a headless tw: started by `notify-send`,
+drew on the output, and served the second notification too). KDE's
+`org.kde.plasma.Notifications.service` claims the same name and loses:
+dbus-broker logs it as a duplicate at every login. The owner called this a
+"hack" that does not fix what they see ("i don't like fnott. why is it so
+much memory"), which is fair as far as it goes: once a notification has
+come, the daemon stays, with the 1.7 MB.

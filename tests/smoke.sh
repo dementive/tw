@@ -14,12 +14,12 @@ off_screen='activated=0 suspended=1'
 
 # --- Autostart -----------------------------------------------------------------
 # Stand-ins for the programs in config.h's autostart list: each must be
-# started once, with its arguments.
+# started once, with its arguments. The notification daemon is installed too
+# and must not be started: D-Bus does that when a notification arrives.
 fake_program fnott "echo fnott >>'$run_dir/autostart.log'"
 fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart.log'"
 autostarted() {
-	grep -qx fnott "$run_dir/autostart.log" &&
-		grep -qx "wl-clip-persist --clipboard regular" "$run_dir/autostart.log"
+	grep -qx "wl-clip-persist --clipboard regular" "$run_dir/autostart.log"
 }
 
 # Stand-ins for the launcher and the terminal, to see their keys start them.
@@ -29,8 +29,8 @@ fake_program foot "echo opened >>'$run_dir/terminal.log'"
 
 start_tw
 wait_until "the autostart programs to be started" autostarted
-[ "$(grep -c . "$run_dir/autostart.log")" = 2 ] ||
-	fail "autostart ran something twice: $(cat "$run_dir/autostart.log")"
+[ "$(grep -c . "$run_dir/autostart.log")" = 1 ] ||
+	fail "autostart ran something twice, or something it should not: $(cat "$run_dir/autostart.log")"
 
 press super+space
 wait_until "Mod+Space to start the launcher" launched 1

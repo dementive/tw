@@ -101,10 +101,13 @@ static const char screenshot_region[] = "grim -g \"$(slurp)\"";
 /*
  * Programs started with the session, as shell commands; the list ends with
  * NULL. Each is a process that stays in memory until you log out, so keep it
- * short. One that is not installed is skipped.
+ * short, and leave out what can start by itself when it is needed. One that
+ * is not installed is skipped.
+ *
+ * The notification daemon (fnott) is not here for that reason: D-Bus starts
+ * it when a program sends the first notification.
  */
 static const char *const autostart[] = {
-	"fnott",                               /* shows notifications */
 	"wl-clip-persist --clipboard regular", /* keeps a copy when its program exits */
 	NULL,
 };
