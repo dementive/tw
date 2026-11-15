@@ -57,7 +57,7 @@ which GPUs it would use and starts nothing.
 | `notify/bus.c` | D-Bus messages taken apart and put together, with no library. Pure functions on bytes, unit tested |
 | `notify/bake.c` | Build tool: draws the characters `tw-notify` can show into `font.h`, with FreeType, so that the program itself needs no font library |
 | `notify/config.h` | `tw-notify`'s settings, compile-time: sizes, colours, how long a notification stays |
-| `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring, keeps the accessibility bus off |
+| `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, points programs at the keyring service, keeps the accessibility bus off |
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
 | `data/` (rest) | The login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify` |
@@ -82,7 +82,7 @@ which GPUs it would use and starts nothing.
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
 | `tools/power-root.sh` | What only root can read about the draw at idle: watts by part (RAPL), how deep the package sleeps, the display's power saving, PCIe link states, what the kernel said. The owner runs it with sudo |
 | `tools/iwd.sh` | Moves Wi-Fi from NetworkManager to iwd for a trial, and back by itself if the internet is not reachable; `keep` and `back` make either permanent. The owner runs it with sudo |
-| `tools/keyring.sh` | Makes the login unlock oo7 in place of the KDE wallet (edits `/etc/pam.d/login`, keeps the old file), switches the running session over and checks it; `kwallet` goes back. The owner runs it |
+| `tools/keyring.sh` | Makes the login unlock oo7, the keyring (edits `/etc/pam.d/login`, keeps the old file), switches the running session over and checks it; `back` restores the file. The owner runs it |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
@@ -464,12 +464,13 @@ login the portal then left the bus alone, as intended. A Chromium or
 Electron program still asks for the bus's address as it starts, which
 starts the launcher but not the registry daemon.
 
-The keyring set-up in `data/tw-session` also only runs at a real login. It
-does two things, both seen to work at a real login: it passes the
-session environment to the KDE wallet daemon that the login screen left
-waiting (after which that daemon owns `org.freedesktop.secrets`), and it sets
-`GNOME_DESKTOP_SESSION_ID`, without which Chromium and Electron programs use
-no keyring at all (their `safeStorage` reports `basic_text`).
+The keyring is not tw's business: oo7 is started by the user's systemd as
+they log in and unlocked by its PAM module (README step 15). What
+`data/tw-session` does for it is set `GNOME_DESKTOP_SESSION_ID`, without
+which Chromium and Electron programs use no keyring at all (their
+`safeStorage` reports `basic_text`); seen to work at a real login. Until
+KDE was removed (2026-11-15) the script also passed the session
+environment to the KDE wallet daemon that the login had left waiting.
 
 `tests/x11.sh` uses a stand-in for xwayland-satellite. It proves tw's half of
 the hand-over (display, arguments, sockets, restart, cleanup, stopping when
@@ -596,6 +597,10 @@ running during the test (a probe) shares the binary too, and the figure
 then reads about 1960. So that budget went from 2500 to
 2650, and the allocated figure got a budget of its own, 850, which is the
 one that means something.
+With KDE's wallet and NetworkManager no longer running (2026-11-15) it read
+2518 to 2613 kB over seven runs, the allocated figure 808 to 812 as ever:
+fewer programs share the C library and GLib with tw. Still inside the
+budget, with 37 kB to spare at the top.
 
 At a real login tw's private memory is 15 to 20 MB, not the budget test's
 0.8. The difference is the GPU driver (Mesa), which the tests' software
@@ -1012,7 +1017,7 @@ before moving the new file into place, and enables the unit for every user
 through, and a login module that crashed would shut the owner out of
 console and lock screen alike, with no login manager left as a way round.
 So the script tells them to log in on a second console at once, with the
-session open, and `kwallet` restores the file. That login also leaves the
+session open, and `back` (then called `kwallet`) restores the file. That login also leaves the
 helper waiting with the password, which `start` (no root) then uses: it
 keeps a copy of `~/.local/share/kwalletd`, stops `ksecretd`, starts the
 unit, and reports whether the keyring is open and whether a secret can be
@@ -1057,11 +1062,28 @@ goes, while tw itself has shown Adwaita's all along (`XCURSOR_THEME` is
 unset and the default theme inherits Adwaita); `breeze-icons` stays,
 `heaptrack` needs it; the GTK theme comes from `GTK_THEME` and the user's
 own `~/.themes`; `QT_STYLE_OVERRIDE=kvantum` in their fish config names a
-style that is not installed. Not removed yet: the owner was asked to
-reboot first, since `tools/iwd.sh back` and `tools/keyring.sh kwallet`
-stop working once NetworkManager and `kwallet-pam` are gone. When it is
-done, `tw-session`'s wallet step, the `kwallet` command and README steps 4
-and 10 can go.
+style that is not installed.
+
+The owner ran both commands the same day, without the reboot that was
+advised first. 197 packages went, as simulated (1393 to 1196 before Thunar
+came in). Checked right after: nothing failed in either systemd, every
+command tw calls is there, tw, iwd, oo7, PipeWire, the portals, polkit,
+bolt and the Claude app still running, the login file still with oo7's
+three lines, and `tw-notify`'s the only notification entry left. With
+`kwallet-pam` and NetworkManager gone, `tools/keyring.sh back` and
+`tools/iwd.sh back` have nothing to go back to on this machine. So the
+wallet step came out of `tw-session`, the script's `kwallet` command
+became `back`, and README steps 4, 10 and 15 no longer assume KDE. Still
+not seen: a boot since iwd and oo7 went in.
+
+Thunar, which they chose for Dolphin's place, was measured in a headless
+tw on a private bus with a scratch home: 52.9 MB resident and 11.2 MB its
+own while a window is open. Closing the window ends it within a second,
+also when the bus started it for another program's "show in folder"
+(`Thunar --gapplication-service`). What stays is `xfconfd`, its settings
+daemon, which the bus starts on first use: 9.0 MB resident, 0.57 MB its
+own, no wake-ups, until logout. Without `gvfs` and `tumbler`, which are
+not installed, it has no trash, mounts no drives and shows no thumbnails.
 
 ## Battery
 

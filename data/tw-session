@@ -129,18 +129,6 @@ if command -v dbus-update-activation-environment >/dev/null 2>&1; then
 	dbus-update-activation-environment --systemd '"$service_env"' \
 		${DISPLAY:+DISPLAY}
 fi
-# The keyring. A login screen set up for KDE unlocks the KDE wallet with the
-# login password and leaves its daemon running, waiting to be told where the
-# session is; KDE does that from its autostart. Do the same, and the daemon
-# serves as the keyring (the Secret Service) without asking for a password.
-if [ -n "${PAM_KWALLET5_LOGIN:-}" ]; then
-	for init in /usr/lib/pam_kwallet_init /usr/libexec/pam_kwallet_init; do
-		if [ -x "$init" ]; then
-			"$init"
-			break
-		fi
-	done
-fi
 '"$gpu_step"'
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
 if [ -x "$autostart" ]; then

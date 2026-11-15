@@ -143,15 +143,15 @@ run oo7 || fail "oo7 a second time failed"
 [ "$(cat "$pam.before-oo7")" = "$(login_file)" ] || fail "a second run overwrote the kept file"
 
 # Back: the file is exactly what it was.
-run kwallet || fail "kwallet failed"
+run back || fail "back failed"
 [ "$(cat "$pam")" = "$(login_file)" ] || fail "going back did not restore the login file"
 [ "$(stat -c %a "$pam")" = 644 ] || fail "going back changed the login file's permissions"
 called 'systemctl --global disable oo7-daemon.service' || fail "oo7 still starts at login after going back"
 
 # Nothing to go back to: refused, file untouched.
 machine open
-run kwallet && fail "going back without a kept file was not refused"
-[ "$(cat "$pam")" = "$(login_file)" ] || fail "a refused 'kwallet' changed the login file"
+run back && fail "going back without a kept file was not refused"
+[ "$(cat "$pam")" = "$(login_file)" ] || fail "a refused 'back' changed the login file"
 
 # A login file with other lines of somebody's own keeps them, in place.
 machine open
@@ -160,6 +160,17 @@ run oo7 || fail "oo7 on a file with extra lines failed"
 grep -q '^# my own$' "$pam" && grep -q 'pam_motd.so' "$pam" || fail "somebody's own lines were dropped"
 grep -q 'pam_kwallet5' "$pam" && fail "the wallet's lines are still there"
 [ "$(grep -c 'pam_oo7\.so' "$pam")" = 3 ] || fail "not exactly three lines for oo7"
+
+# A machine that never had KDE: nothing to take out, three lines to add, and
+# back gives the file as it was.
+machine open
+grep -v 'pam_kwallet5' "$pam" >"$pam.plain" && mv "$pam.plain" "$pam"
+plain=$(cat "$pam")
+run oo7 || fail "oo7 on a login file without the wallet's lines failed"
+[ "$(grep -v 'pam_oo7\.so' "$pam")" = "$plain" ] || fail "more than oo7's lines changed"
+[ "$(grep -c 'pam_oo7\.so' "$pam")" = 3 ] || fail "not exactly three lines for oo7"
+run back || fail "back failed on a machine without KDE"
+[ "$(cat "$pam")" = "$plain" ] || fail "back did not restore a login file without the wallet's lines"
 
 # oo7 not installed: refused, file untouched.
 machine open
@@ -216,6 +227,6 @@ machine broken
 run oo7
 run start && fail "start reported success although oo7 did not start"
 said 'oo7 did not start' || fail "a failed start was not explained"
-said 'sudo sh tools/keyring.sh kwallet' || fail "a failed start does not say how to go back"
+said 'sudo sh tools/keyring.sh back' || fail "a failed start does not say how to go back"
 
 echo "ok: login file changed and restored, refusals, start with the password waiting, locked, forgetful, broken"

@@ -30,7 +30,7 @@ feature does nothing without its program:
 sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
     libnotify iwd iw oo7 libsecret \
-    xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
+    xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr thunar
 ```
 
 | Program | What it is for |
@@ -45,9 +45,9 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | power-profiles-daemon | the power-saver CPU profile while on battery |
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | iwd, iw | Wi-Fi without NetworkManager, see step 14 |
-| oo7, libsecret | the keyring without KDE's wallet, see step 15 |
+| oo7, libsecret | the keyring, see steps 4 and 15 |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
-| socat | hands the session to the KDE wallet, see step 4 |
+| thunar | file manager. Its settings daemon (`xfconfd`, 9 MB in `btop`, 0.6 MB its own) stays after the first use until you log out |
 
 `vulkan-tools` is worth having too: step 6 uses its `vkcube` to check the
 NVIDIA GPU.
@@ -76,18 +76,14 @@ something goes wrong.
 
 ### 4. Keyring
 
-Programs such as the Claude app and VS Code need a keyring to stay signed in.
-`tw-session` sets this up by itself when the login screen unlocks the KDE
-wallet at login, which the Plasma login manager does when `kwallet` and
-`kwallet-pam` are installed. That is the only arrangement that has been tried.
-Without KDE's wallet, another keyring service such as gnome-keyring should
-work, since programs are pointed at the standard keyring service and not at
-KDE's.
+Programs such as the Claude app and VS Code need a keyring to stay signed
+in. Here that is oo7: a small service that your login password unlocks as
+you log in. Step 15 sets it up; do it before relying on a console login
+(step 10). `tw-session` only tells those programs to use the standard
+keyring service, whichever program provides it.
 
-To check: `busctl --user list | grep secrets` should show a line for
-`org.freedesktop.secrets`.
-
-Step 15 replaces the KDE wallet with oo7, which is a sixth of its size.
+To check: `sh tools/keyring.sh` should say that the keyring is oo7-daemon
+and that it is open.
 
 ### 5. Keep the shell from starting Xwayland
 
@@ -256,36 +252,23 @@ stays in memory for the session. The kernel's text consoles do the same job
 and leave nothing behind. Do it in this order: each step is undone with one
 command, and the login manager stays as the way back until the last one.
 
-First let the console unlock the keyring, as the login manager did:
-
-```sh
-sudo cp /etc/pam.d/login /etc/pam.d/login.orig
-printf '%s\n' '-auth       optional     pam_kwallet5.so' \
-    '-session    optional     pam_kwallet5.so auto_start force_run' |
-    sudo tee -a /etc/pam.d/login
-```
-
-The lock screen checks your password through this same file, so test it
-before anything else, with your session still open: press Ctrl+Alt+F3, log
-in, type `exit`, and come back (Ctrl+Alt+F2, or F1). If the login is
-refused, `sudo cp /etc/pam.d/login.orig /etc/pam.d/login` puts the file
-back.
+First let the console login unlock the keyring, as the login manager did:
+that is step 15, which also has you test a login on a second console.
 
 Then try the whole thing once: log out, log in on a text console, and type
 `tw-session`. A program that keeps a login, such as the Claude app, should
 still have it.
 
-Then switch the login manager off:
+Then switch the login manager off (here it was KDE's, `plasmalogin`; `sddm`
+and `gdm` are others):
 
 ```sh
 sudo systemctl disable --now plasmalogin
 ```
 
 From the next boot there is a text prompt: your name, your password, then
-`tw-session`. KDE starts from there with
-`/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland`,
-the command its login-screen entry runs (not tried from a console).
-`sudo systemctl enable --now plasmalogin` brings the login screen back.
+`tw-session`. `sudo systemctl enable --now plasmalogin` brings the login
+screen back for as long as it is installed.
 
 Log out of a console when you are done with it. One left logged in is a
 shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
@@ -397,24 +380,26 @@ iwd does nothing for the wired port, VPNs or mobile broadband. A cable
 plugged in is ignored until something is set up for it (systemd-networkd
 with one small file does it).
 
-### 15. The keyring: oo7 in place of the KDE wallet
+### 15. The keyring: oo7
 
-The KDE wallet (`ksecretd`) is the largest helper in a tw session: 53 MB in
-`btop`, 8 MB of its own, and it keeps 25 MB of Qt and KDE libraries in
-memory that nothing else uses. oo7 does the same job in 8 MB, 1.2 MB of it
-its own. It is unlocked by your login password, like the wallet.
+oo7 keeps what programs store in the keyring, in 8 MB (1.2 MB of its own),
+and your login password unlocks it. On a machine that came with KDE it
+takes the place of the KDE wallet (`ksecretd`), which was the largest
+helper in a tw session: 53 MB in `btop`, 8 MB of its own, and 25 MB of Qt
+and KDE libraries that nothing else used. It takes the wallet's entries
+over by itself.
 
 ```sh
 sudo sh tools/keyring.sh oo7
 ```
 
-That changes `/etc/pam.d/login`: the two lines for the KDE wallet (step 10)
-go out and three for oo7 come in. The old file is kept as
+That changes `/etc/pam.d/login`: three lines for oo7 come in, and the KDE
+wallet's go out if they are there. The old file is kept as
 `/etc/pam.d/login.before-oo7`. The lock screen checks your password through
 this same file, so test it at once, with your session still open:
 
 1. Press Ctrl+Alt+F3, log in, type `exit`, and come back with Ctrl+Alt+F1.
-   If the login is refused, `sudo sh tools/keyring.sh kwallet` puts the file
+   If the login is refused, `sudo sh tools/keyring.sh back` puts the file
    back. Do not log out or reboot before this login has worked.
 2. Switch the running session over, which also checks that oo7 got your
    password from that login and can store a secret:
@@ -424,18 +409,20 @@ this same file, so test it at once, with your session still open:
    ```
 
 3. Lock the screen (Mod+Alt+L) and unlock it.
-4. Quit the Claude app and open it again. It may ask you to sign in once
-   more: its sign-in was kept in the wallet.
+4. Quit the Claude app and open it again. If it asks you to sign in, do: it
+   then keeps that in oo7.
 
 `sh tools/keyring.sh` says which keyring is running and whether it is open.
-To go back: `sudo sh tools/keyring.sh kwallet`, then log out and in.
+To go back: `sudo sh tools/keyring.sh back`, then log out and in. That
+only helps while the keyring you had before is still installed.
 
 ### 16. Without KDE
 
 With steps 10, 14 and 15 done, nothing of KDE runs in a tw session.
 Removing it frees 1.1 GB of disk and no memory. Reboot once first and see
-that the login, the Wi-Fi and your sign-ins are all there: with KDE gone,
-so are the ways back of steps 14 and 15.
+that the login, the Wi-Fi and your sign-ins are all there: with KDE and
+NetworkManager gone, `tools/iwd.sh back` and `tools/keyring.sh back` have
+nothing to go back to.
 
 ```sh
 sudo pacman -D --asexplicit bolt vulkan-tools mpv ttf-hack ttf-fira-sans

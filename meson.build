@@ -407,7 +407,7 @@ test(
 # 2536 kB without one. What tw allocated does not move, so that is the
 # figure that catches a regression.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
-budget_own_kb = 2650      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2572)
+budget_own_kb = 2650      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2613)
 budget_alloc_kb = 850     # of which allocated by tw itself (measured: 808 to 812)
 if get_option('buildtype') == 'release'
 	test(

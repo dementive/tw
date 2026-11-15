@@ -1,24 +1,27 @@
 #!/bin/sh
-# Changes which keyring the login unlocks: oo7 in place of the KDE wallet
-# (ksecretd), which is the largest helper in a tw session. The keyring is
-# what programs such as the Claude app keep their sign-in in.
+# Makes logging in unlock oo7, the keyring: what programs such as the Claude
+# app keep their sign-in in. On a machine that came with KDE it takes the
+# place of the KDE wallet (ksecretd), which was the largest helper in a tw
+# session.
 #
 #   sudo sh tools/keyring.sh oo7      logging in unlocks oo7 from now on
 #   sh tools/keyring.sh start         switch the running session over, and check
-#   sudo sh tools/keyring.sh kwallet  put the login back as it was
+#   sudo sh tools/keyring.sh back     put the login file back as it was
 #   sh tools/keyring.sh               say which keyring is running
 #
 # `oo7` edits /etc/pam.d/login, the file that decides what happens when you
 # log in on a console, and that the lock screen checks your password through.
-# It takes out the two lines for the KDE wallet and adds three for oo7, all
-# marked optional, and keeps the old file as /etc/pam.d/login.before-oo7.
-# Nothing else in the file is touched. Then test it before you rely on it:
-# with this session still open, log in on a second console. If that login
-# fails, `kwallet` from the open session puts the file back.
+# It adds three lines for oo7, all marked optional, takes out the KDE
+# wallet's if they are there, and keeps the old file as
+# /etc/pam.d/login.before-oo7. Nothing else in the file is touched. Then
+# test it before you rely on it: with this session still open, log in on a
+# second console. If that login fails, `back` from the open session puts
+# the file back.
 #
-# `start` needs no root. It stops ksecretd, starts oo7, and checks that oo7
-# has your login password (the second console's login handed it over) and
-# that a program can store a secret and read it back.
+# `start` needs no root. It stops the KDE wallet if that is running, starts
+# oo7, and checks that oo7 has your login password (the second console's
+# login handed it over) and that a program can store a secret and read it
+# back.
 #
 # For the tests: KEYRING_ROOT is put in front of /etc and /usr and lifts the
 # need to be root.
@@ -122,19 +125,20 @@ to_oo7() {
 	say ""
 	say "Now test it, with this session left open:"
 	say "  1. Press Ctrl+Alt+F3, log in, type 'exit', and come back with Ctrl+Alt+F1."
-	say "     If that login fails: sudo sh tools/keyring.sh kwallet"
+	say "     If that login fails: sudo sh tools/keyring.sh back"
 	say "  2. sh tools/keyring.sh start"
 	say "Do not log out or reboot before step 1 has worked."
 }
 
-to_kwallet() {
+back() {
 	need_root
 	[ -e "$backup" ] || fail "There is no $backup to put back."
 	cp -p "$backup" "$pam.new"
 	mv "$pam.new" "$pam"
 	systemctl --global disable oo7-daemon.service
-	say "$pam is as it was before oo7. Log out and in again: the KDE wallet is then"
-	say "the keyring once more. A program that signed in since has to sign in again."
+	say "$pam is as it was before oo7. Log out and in again for the keyring it"
+	say "names, if any, to be the one in use. A program that signed in since has to"
+	say "sign in again."
 }
 
 start() {
@@ -157,9 +161,9 @@ start() {
 			tries=$((tries + 1))
 		done
 		systemctl --user start oo7-daemon.service ||
-			fail "oo7 did not start: journalctl --user -u oo7-daemon -n 20. To go back: sudo sh tools/keyring.sh kwallet, then log out and in."
+			fail "oo7 did not start: journalctl --user -u oo7-daemon -n 20. To go back: sudo sh tools/keyring.sh back, then log out and in."
 	fi
-	[ "$(owner)" = oo7-daemon ] || fail "oo7 is not what serves the keyring (it is: $(owner)). To go back: sudo sh tools/keyring.sh kwallet, then log out and in."
+	[ "$(owner)" = oo7-daemon ] || fail "oo7 is not what serves the keyring (it is: $(owner)). To go back: sudo sh tools/keyring.sh back, then log out and in."
 	if ! unlocked; then
 		say "oo7 is running but has not been given your login password yet."
 		say "Log in once on a second console (Ctrl+Alt+F3, log in, 'exit', Ctrl+Alt+F1),"
@@ -171,14 +175,14 @@ start() {
 	say ""
 	say "Next:"
 	say "  1. Lock the screen (Mod+Alt+L) and unlock it. If the password is refused,"
-	say "     Ctrl+Alt+F3 still logs in: sudo sh tools/keyring.sh kwallet from there."
+	say "     Ctrl+Alt+F3 still logs in: sudo sh tools/keyring.sh back from there."
 	say "  2. Quit the Claude app and open it again. It may ask you to sign in once."
 }
 
 case ${1:-status} in
 oo7) to_oo7 ;;
-kwallet) to_kwallet ;;
+back) back ;;
 start) start ;;
 status) status ;;
-*) fail "usage: $0 [oo7|start|kwallet]" ;;
+*) fail "usage: $0 [oo7|start|back]" ;;
 esac
