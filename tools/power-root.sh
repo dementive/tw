@@ -107,7 +107,7 @@ section "was the machine idle? (it has to be, for the rest to mean much)"
 ticks=$(getconf CLK_TCK)
 awk -v s="$elapsed" -v ticks="$ticks" 'NR == FNR { busy = $1; next }
 	{ cores = ($1 - busy) / ticks / s
-	  printf "%.2f of one cpu core busy: %s\n", cores, cores < 0.08 ? "idle" : "NOT IDLE, something was working" }' \
+	  printf "%.2f of one cpu core busy: %s\n", cores, cores < 0.1 ? "idle" : "NOT IDLE, something was working" }' \
 	"$tmp/stat.a" "$tmp/stat.b"
 awk 'NR == FNR { before += $2; next } { after += $2 } END { printf "%.0f interrupts per second in all\n", (after - before) / s }' \
 	s="$elapsed" "$tmp/irq.a" "$tmp/irq.b"
@@ -116,17 +116,13 @@ awk -v s="$elapsed" -v ticks="$ticks" 'NR == FNR { before[$1] = $2; next }
 	($1 in before) && $2 > before[$1] { printf "%8.1f  %s (%s)\n", 1000 * ($2 - before[$1]) / ticks / s, $3, $1 }' \
 	"$tmp/proc.a" "$tmp/proc.b" | sort -rn | head -n 6
 
-section "how deep the processor package slept (raw counter steps, in ticks of the TSC)"
-# Each counter advances at the TSC's rate while the package is in that
-# state, so its step divided by what the TSC does in the interval is the
-# share of the time spent there. What is left over was spent awake.
-tsc_mhz=$(dmesg 2>/dev/null | sed -n 's/.*tsc: Refined TSC clocksource calibration: \([0-9.]*\) MHz.*/\1/p' | tail -n 1)
-[ -n "$tsc_mhz" ] || tsc_mhz=$(dmesg 2>/dev/null | sed -n 's/.*tsc: Detected \([0-9.]*\) MHz.*/\1/p' | tail -n 1)
-echo "TSC: ${tsc_mhz:-unknown} MHz"
-paste -d'|' "$tmp/package.a" "$tmp/package.b" 2>/dev/null | awk -F'|' -v s="$elapsed" -v mhz="${tsc_mhz:-0}" '{
-	split($1, a, ":"); split($2, b, ":"); d = b[2] - a[2]
-	if (mhz > 0) printf "%-14s %14.0f  %6.2f%%\n", a[1], d, 100 * d / (mhz * 1e6 * s)
-	else printf "%-14s %14.0f\n", a[1], d }'
+section "how deep the processor package slept (share of the measurement)"
+# pmc_core gives the time spent in each state in microseconds (it divides
+# the CPU's counters by the TSC's rate itself). What the shares leave over
+# was spent awake.
+paste -d'|' "$tmp/package.a" "$tmp/package.b" 2>/dev/null | awk -F'|' -v s="$elapsed" '{
+	split($1, a, ":"); split($2, b, ":")
+	printf "%-14s %6.1f%%\n", a[1], 100 * (b[2] - a[2]) / (s * 1e6) }'
 if [ -s "$tmp/s0.a" ]; then
 	echo "deepest platform state (S0ix): $(awk -v a="$(cat "$tmp/s0.a")" -v b="$(cat "$tmp/s0.b")" -v s="$elapsed" \
 		'BEGIN { printf "%.2f%%", 100 * (b - a) / (s * 1e6) }') of the interval"

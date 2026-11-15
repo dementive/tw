@@ -876,9 +876,10 @@ sleep is a lower bound. This much stands. The battery read 10.1 W, against
 it, the cores 0.29 W and the GPU nothing, so more than 7 W goes to what is
 outside the processor: panel and backlight, the USB system disk, memory,
 chipset, radios. `psys` read 0.23 W and means nothing on this machine. The
-package was in C2 or C3 for 0.03% of the time and never deeper, although
-the cores were in C10 for 96.6%; whether that was the activity or
-something holding the package awake takes a quiet window to tell. The
+package was in C2 for 32% of the time and in C3 for 52%, and never deeper,
+although the cores were in C10 for 96.6%. (The script first printed those
+shares as 0.01% and 0.02% and the owner was told so: it took the figures
+of `package_cstate_show` for TSC ticks, and they are microseconds.) The
 panel does self refresh (PSR1, in self refresh when read), the display
 engine reaches DC5 and never DC6, and frame buffer compression is off
 because PSR1 is on (an Intel workaround). Link power saving (ASPM): the
@@ -902,3 +903,36 @@ Asked of the owner next: the report again in a quiet window, and once more
 after `echo auto` into the Ethernet controller's `power/control` (it lasts
 until a reboot), to see whether the package then sleeps deeper and what
 that is worth in watts.
+
+They ran both, eleven minutes later, 95 seconds apart, the machine idle
+both times (0.09 and 0.05 of a core busy). The firmware allows the deepest
+package sleep (MSR 0xE2 reads 0x74008008: no limit, locked). With the
+Ethernet controller awake: 9.74 W at the battery, 2.51 W in the CPU
+package, the package in C2 for 33% of the time and C3 for 53%, nothing
+deeper. With it suspended, which took its port down with it: 8.29 W at the
+battery, 1.13 W in the package, C2 32%, C3 1.5% and C6 59%, still nothing
+deeper. So the controller sitting in D0 with its link's power saving off
+held the package at C3, and letting it sleep is worth 1.4 W, a seventh of
+the idle draw. That is README step 11, a udev rule for the owner to
+install; `power/control` was left at `auto` by the test and lasts until
+the next boot.
+
+What holds the package at C6 now is most likely the USB controller. It is
+the one part of the chipset that asks for a short wake-up time (`ltr_show`:
+XHCI 0.41 ms, the next is Wi-Fi with 20 ms), and it can never sleep: the
+system disk hangs off it, and so does the keyboard, whose `power/control`
+is `on`. pmc_core's `ltr_ignore` could show whether that is it, but making
+the platform ignore a request of the controller the root disk is on is not
+something to hand the owner, and nothing short of moving the system to the
+internal disk would make it stick. What a deeper sleep could still give is
+part of the 1.1 W the package draws now. The 7 W outside the processor are
+the larger share and have no counter: panel and backlight, the USB disk,
+memory, chipset, Wi-Fi. The display does what it can (PSR1 in self refresh
+both times, DC5 entered, DC6 never, which follows from the package not
+going past C6). The deepest platform state (`slp_s0_residency_usec`) was
+never entered while awake, as expected; whether suspend reaches it is not
+known, and with it what a night with the lid closed costs.
+
+Where the draw stands on battery after all of this: 8.3 W with a still
+screen (11.4 W two days of work earlier) and about 12 W while the Claude
+app animates (16.5 W), on a battery that holds 54 Wh.

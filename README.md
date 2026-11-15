@@ -282,6 +282,27 @@ the command its login-screen entry runs (not tried from a console).
 Log out of a console when you are done with it. One left logged in is a
 shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
 
+### 11. Let the wired network chip sleep
+
+With no cable plugged in, the Ethernet controller still stays fully powered,
+and on this laptop that alone keeps the processor from sleeping deeper than
+its third level. Letting the controller sleep took the draw of the idle
+laptop from 9.7 W to 8.3 W:
+
+```sh
+echo 'ACTION=="add", SUBSYSTEM=="pci", ATTR{class}=="0x020000", TEST=="power/control", ATTR{power/control}="auto"' | sudo tee /etc/udev/rules.d/90-ethernet-pm.rules
+```
+
+It takes effect at the next boot. To have it now as well:
+
+```sh
+echo auto | sudo tee /sys/bus/pci/devices/0000:2c:00.0/power/control
+```
+
+(`lspci -D | grep -i ethernet` gives the address on another machine.) The
+controller wakes when a cable is plugged in. Should a cable ever go
+unnoticed, delete the file and reboot.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
