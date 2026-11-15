@@ -661,9 +661,11 @@ buffers. Against a boot where one logs in through plasmalogin the saving
 is its two resident processes (6 MB of their own) and upower, which the
 login screen started. All of it is README step 10. Not seen yet: a boot
 without plasmalogin (the text prompt on tty1), and KDE started from a
-console. `tw-session` still has to be typed after logging in; fish reads
-`/usr/local/share/fish/vendor_conf.d`, so tw's install could put a file
-there that starts it on the first console, which was put to the owner.
+console. `tw-session` has to be typed after logging in, and the owner
+wants it that way: offered a file in fish's vendor directory
+(`/usr/local/share/fish/vendor_conf.d`, which fish reads) that would start
+tw on the first console, they answered "I'll type it". Do not add an
+autostart for the session.
 
 fnott is no longer in `autostart[]`: its package ships a D-Bus service
 file, so the bus starts it when a program sends the first notification
