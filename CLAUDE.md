@@ -605,6 +605,25 @@ NetworkManager and wpa_supplicant; gnome-keyring and greetd are not
 installed; nothing maintained replaces WirePlumber, which sound and OBS's
 screen capture need.
 
+How login and the keyring hang together on this machine, looked up when
+the owner asked whether they could still log in to KDE or tw without
+plasmalogin (they are wary: "this can get my computer in a broken state if
+i can't login"). The login screen runs on tty1 and the session on tty2.
+Text consoles come from systemd's getty and do not depend on plasmalogin
+(`plasmalogin.service` only conflicts with `getty@tty1`). The wallet daemon
+is started by PAM and by nothing else: `/usr/lib/pam.d/plasmalogin` has
+`pam_kwallet5.so` with `auto_start` (and the same lines for
+`pam_gnome_keyring.so`, so installing gnome-keyring would start both), no
+D-Bus service file offers `org.freedesktop.secrets`, and `/etc/pam.d/login`
+has no keyring line, so a console login gets no keyring until two lines
+are added there. Plasma is installed (`plasma.desktop` runs
+`/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland`)
+and `plasma-workspace` requires the `kwallet` package, which is where
+`ksecretd` comes from. Advice given: replace the login manager in steps
+that can each be undone and tested from a second console, and leave the
+keyring as it is. Never run on this machine: tw started from a console
+login, the wallet unlocked by one, and KDE started from one.
+
 fnott is no longer in `autostart[]`: its package ships a D-Bus service
 file, so the bus starts it when a program sends the first notification
 (tried on a private bus with a headless tw: started by `notify-send`,
