@@ -934,5 +934,6 @@ never entered while awake, as expected; whether suspend reaches it is not
 known, and with it what a night with the lid closed costs.
 
 Where the draw stands on battery after all of this: 8.3 W with a still
-screen (11.4 W two days of work earlier) and about 12 W while the Claude
-app animates (16.5 W), on a battery that holds 54 Wh.
+screen (11.4 W the day before) and about 12 W while the Claude app
+animates (16.5 W; read before the Ethernet controller was put to sleep,
+so probably lower now), on a battery that holds 54 Wh.
