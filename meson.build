@@ -380,6 +380,15 @@ test(
 	timeout: 120,
 )
 
+# tools/iwd.sh, which moves Wi-Fi from NetworkManager to iwd and back,
+# against a made-up machine: no network or service involved.
+test(
+	'iwd',
+	find_program('tests/iwd.sh'),
+	args: [meson.current_source_dir() / 'tools'],
+	timeout: 60,
+)
+
 # Budgets only mean something for an optimized build. Ratchet these down as
 # the numbers improve; raising one needs a reason in the commit message.
 #

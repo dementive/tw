@@ -29,7 +29,7 @@ feature does nothing without its program:
 ```sh
 sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
-    libnotify \
+    libnotify iwd iw \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
 ```
 
@@ -44,6 +44,7 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | brightnessctl, wireplumber | brightness and volume keys |
 | power-profiles-daemon | the power-saver CPU profile while on battery |
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
+| iwd, iw | Wi-Fi without NetworkManager, see step 14 |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
@@ -351,6 +352,47 @@ notify-send 'Hello' 'from tw-notify'
 
 A box appears in the top right corner and goes after six seconds; a second
 later `pgrep -x tw-notify` prints nothing.
+
+### 14. Wi-Fi through iwd instead of NetworkManager
+
+NetworkManager and the `wpa_supplicant` it starts are two programs of
+42 MB in `btop` (5.7 MB of their own), and NetworkManager fetches a page
+every five minutes to see whether the internet is there. iwd does Wi-Fi by
+itself. Try it before deciding:
+
+```sh
+sudo sh tools/iwd.sh try
+```
+
+That copies the Wi-Fi networks NetworkManager knows to iwd, passwords
+included, stops NetworkManager, starts iwd, and waits up to a minute for
+the internet to be reachable. The network is away for some seconds. If it
+does not come back through iwd, or you interrupt the script, it starts
+NetworkManager again by itself. Either way nothing lasts past a reboot:
+NetworkManager is still what starts at boot.
+
+If it says the internet is reachable through iwd, use the machine for a
+while, then make it permanent, or go back:
+
+```sh
+sudo sh tools/iwd.sh keep
+sudo sh tools/iwd.sh back
+```
+
+`sh tools/iwd.sh` says which of the two is running. With iwd, Wi-Fi is
+handled with `iwctl` where it was `nmcli`:
+
+| Command | What it does |
+| --- | --- |
+| `iwctl station wlan0 show` | the network you are on |
+| `iwctl station wlan0 scan`, then `iwctl station wlan0 get-networks` | what is in range |
+| `iwctl station wlan0 connect <name>` | joins a network; asks for its password the first time |
+| `iwctl known-networks list` | the networks it remembers |
+| `iwctl known-networks <name> forget` | forgets one |
+
+iwd does nothing for the wired port, VPNs or mobile broadband. A cable
+plugged in is ignored until something is set up for it (systemd-networkd
+with one small file does it).
 
 ## Good to know
 

@@ -74,11 +74,13 @@ which GPUs it would use and starts nothing.
 | `tests/power.sh` | What tw makes of the power supplies it finds as it starts, and the command it runs, against made-up ones |
 | `tests/bus_test.c` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
 | `tests/notify.sh` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
+| `tests/iwd.sh` | `tools/iwd.sh` against a made-up machine: which networks are copied and how, and that every failed or interrupted trial ends on NetworkManager |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
 | `tools/power-root.sh` | What only root can read about the draw at idle: watts by part (RAPL), how deep the package sleeps, the display's power saving, PCIe link states, what the kernel said. The owner runs it with sudo |
+| `tools/iwd.sh` | Moves Wi-Fi from NetworkManager to iwd for a trial, and back by itself if the internet is not reachable; `keep` and `back` make either permanent. The owner runs it with sudo |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
@@ -928,6 +930,50 @@ in, no VPN profile although the OpenVPN plugin is installed, ModemManager
 installed and not running, and only `networkmanager-qt` requires
 NetworkManager. iwd does nothing for a wired port: that would be
 systemd-networkd with one `.network` file. Not measured: iwd itself.
+
+The owner agreed to iwd on one condition: "want to be sure I don't lose
+wifi access before we commit to that". `tools/iwd.sh try` is the answer
+(README step 14): it refuses unless the internet is reachable to begin
+with, copies NetworkManager's Wi-Fi networks to `/var/lib/iwd` (the
+passwords go from one root-only file to another and are never printed),
+writes `/etc/iwd/main.conf` if there is none, stops NetworkManager and
+`wpa_supplicant`, starts iwd, and waits a minute for a default route and a
+fetch by name of the page NetworkManager itself checks, after flushing the
+resolver's cache so that the fetch shows iwd has set the DNS servers. On
+failure, or on a signal, it goes back. Enablement is not touched until
+`keep`, so a reboot is always a way back. One trap is built into the way
+back: iwd deletes the kernel's Wi-Fi interface and makes its own with
+nl80211's socket-owner attribute (`manager.c` in iwd's source), so the
+interface is gone the moment iwd stops and NetworkManager would find no
+Wi-Fi device. `restore_interfaces()` gives each card without one an
+interface again (`iw phy phy0 interface add wlan0 type managed`).
+`/etc/resolv.conf` is the file NetworkManager wrote, pointing at
+systemd-resolved's stub, and is left as it is. Checked on the machine
+without root: both saved networks are in
+`/etc/NetworkManager/system-connections/*.nmconnection` with their
+password in the file (`psk-flags` 0), one `sae` and one `wpa-psk`, neither
+hidden, both on DHCP. Not run yet: the switch itself, so everything about
+iwd on this card (WPA3, how long it takes to connect, its memory, the
+interface coming back) is still to be seen. Breaking the script 16 ways,
+one at a time, each made `tests/iwd.sh` fail.
+
+For the keyring they picked oo7 ("that sounds fun"). How it is packaged
+(Arch file list and upstream's sources, read 2026-11-15; none of it tried):
+the daemon is `/usr/lib/oo7-daemon`, a user unit `oo7-daemon.service` of
+`Type=dbus` that nothing enables on install, with no D-Bus service file
+for `org.freedesktop.secrets`, so installing it changes nothing while
+`ksecretd` runs. `pam_oo7.so` goes in the auth, session (`auto_start`) and
+password stacks as `optional`; at login it hands the password to the
+daemon over `/run/user/<uid>/oo7-pam.sock`, or with `auto_start` to a
+helper (`oo7-daemon-login`) that holds it until the daemon asks.
+`oo7-daemon --login` reads the password from stdin. Keyrings are in
+`~/.local/share/keyrings/v1/`. Not settled by what was read: whether a
+default collection is made on first use, and what happens when a locked
+keyring is asked for a secret with no prompter around. Its portal backend
+is not used under tw (`tw-portals.conf` names gtk). For Dolphin they want
+"some alternative like thunar": Thunar 4.20 needs exo, libxfce4util and
+libxfce4ui in addition; gvfs is not installed, so it would have no trash
+and mount no drives by itself.
 
 KDE. Nothing of it runs in a tw session but `ksecretd`, so removing it
 frees disk and no memory. A dry run of removing the `plasma` group with
