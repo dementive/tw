@@ -659,9 +659,11 @@ touched (still active, wallet unlocked, GPU off). The "used" figure went
 from 2366 to 2112 MB within minutes, the login screen's 221 MB and its
 buffers. Against a boot where one logs in through plasmalogin the saving
 is its two resident processes (6 MB of their own) and upower, which the
-login screen started. All of it is README step 10. Not seen yet: a boot
-without plasmalogin (the text prompt on tty1), and KDE started from a
-console. `tw-session` has to be typed after logging in, and the owner
+login screen started. All of it is README step 10. A boot without
+plasmalogin has been seen since: a login on tty1's text prompt, then
+`tw-session`, with the wallet daemon running, the NVIDIA GPU off the bus
+and no login-screen process. Not seen yet: KDE started from a console.
+`tw-session` has to be typed after logging in, and the owner
 wants it that way: offered a file in fish's vendor directory
 (`/usr/local/share/fish/vendor_conf.d`, which fish reads) that would start
 tw on the first console, they answered "I'll type it". Do not add an
@@ -676,3 +678,64 @@ dbus-broker logs it as a duplicate at every login. The owner called this a
 "hack" that does not fix what they see ("i don't like fnott. why is it so
 much memory"), which is fair as far as it goes: once a notification has
 come, the daemon stays, with the 1.7 MB.
+
+## Battery
+
+The owner called the memory "good now" (2026-11-14) and asked what tw
+should do next for battery life. Nothing is built yet; this is what was
+measured and what was put to them.
+
+Measured that evening on battery, 14 minutes after boot, the screen at 15%
+brightness and only the Claude app and a terminal open, by reading the
+battery's `power_now` every two seconds next to the i915 interrupt count
+in `/proc/interrupts` (two interrupts per frame shown) and the CPU time of
+the app and of tw. The battery's figure lags what happens by about eight
+seconds.
+
+- While the app shows its working animation tw shows 300 frames a second
+  and the machine draws 16.5 W (16.4 to 18.4). The app uses 0.8 of a CPU
+  core for it, tw 0.1 (600 wakeups a second, two per frame), the kernel's
+  page-flip workers 0.03, and the Intel GPU is out of its sleep state
+  (`rc6_residency_ms`) half the time.
+- With nothing changing on screen (5 interrupts a second, 0.03 of a core
+  busy in the whole machine) the draw settles at 11.4 W.
+- In between the draw follows the frame rate: 15.3 to 16 W at 180 to 270
+  frames a second. By that line 60 frames a second would be about 12.4 W.
+  An estimate: the panel's 60 Hz mode has never been switched on.
+
+So animating at 300 Hz costs 5 W, a third of the draw, and 11.4 W is the
+floor still to explain. The battery holds 54 Wh of the 90 it was designed
+for (`energy_full`, `energy_full_design`), which makes 3.3 hours animating
+and 4.7 quiet; its charge limit (`charge_control_end_threshold`) is 100.
+
+What was found set, without root. The panel has two modes, 300 Hz
+(preferred, 711 MHz pixel clock) and 60 Hz (142 MHz), and says it takes 48
+to 300 Hz; tw sets the preferred mode once (`output.c`) and has no way to
+change it while running. The CPU is on intel_pstate with
+`energy_performance_preference` at `balance_performance` and the platform
+profile at `balanced`, on battery too: power-profiles-daemon is running
+but nothing tells it to switch, which KDE did. The cores spend 88% of the
+time in C10 even while the app animates. Kept awake (`power/control` is
+`on`): the Realtek Ethernet controller, the internal NVMe disk behind
+Intel's VMD although nothing on it is mounted, the keyboard's USB
+controller and the USB system disk. Already as they should be: the NVIDIA
+GPU off, keyboard backlight off, Bluetooth blocked, Wi-Fi power saving on,
+audio power saving after 10 s. Sleep is `s2idle`; the firmware offers
+`deep` as well. Swap is zram only, so the machine cannot hibernate.
+Nothing warns or acts when the battery runs out: upower, which does that,
+was only ever started by the KDE login screen, and the owner has no bar.
+They ran it down to 11% during this very measurement without noticing.
+
+Root is needed to see the rest: how the watts split between the CPU and
+everything else (RAPL), how deep the whole package sleeps
+(`/sys/kernel/debug/pmc_core`), whether the panel does self refresh
+(`i915_edp_psr_status`), and whether the PCIe links of the NVMe disk and
+the Ethernet controller save power (`lspci -vv`). powertop and turbostat
+are not installed.
+
+Put to the owner in this order: the panel at 60 Hz while on battery, tw
+switching on the power cable's kernel event; the power-saver profile on
+battery, off the same event; a warning and a suspend when the battery runs
+low, off the same events; one root reading of the floor; the worn battery
+and a charge limit of 80%; a test of which sleep mode drains less.
+Recommended: the first three as one change.
