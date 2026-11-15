@@ -1030,16 +1030,38 @@ systemd, "Secret delivered to daemon", the keyring open, a secret stored
 and read back. oo7 there is 8.8 MB resident and 1.3 MB its own (6.2 MB by
 PSS, 21 threads). It also took the KDE wallet over by itself:
 `~/.local/share/keyrings/v1/` holds `kdewallet.keyring` next to
-`login.keyring`. Not seen yet: the lock screen with the module in its
-stack, a boot with oo7, and whether the Claude app finds its sign-in.
+`login.keyring`, with its eight entries, open. The owner then reported
+that locking and unlocking worked. Not seen yet: a boot with oo7, and
+whether the Claude app finds its sign-in: they said its restart worked,
+but its main process was still the one started before the switch, so it
+had not asked the keyring again.
 
 KDE. Nothing of it runs in a tw session but `ksecretd`, so removing it
-frees disk and no memory. A dry run of removing the `plasma` group with
-what depends on it: 131 packages, 832 MB, among them dolphin, gwenview,
-spectacle, kwallet-pam and the Breeze themes. `kwallet` itself (where
-`ksecretd` comes from) stays as long as `kio` is installed, which kate,
-konsole and ark need; kdeconnect is not taken either. The session's
-`QT_STYLE_OVERRIDE` is `kvantum`.
+frees disk and no memory. Worked out once oo7 was in (README step 16), on
+a copy of pacman's database with the keepers marked explicit, so the
+command given is one pacman has accepted: the `plasma` group, the KDE
+applications, the CachyOS KDE settings and themes, NetworkManager, its
+OpenVPN plugin and `wpa_supplicant` come to 197 packages and 1121 MB. Kept
+by marking them explicit, because they came in as dependencies of KDE and
+are of use without it: `bolt` (the Thunderbolt security level is `user`,
+so a dock needs it), `vulkan-tools` (README step 6), `mpv` (Haruna's
+player, and the only one left), `ttf-hack` and `ttf-fira-sans`. Checked
+against the packages behind every running process and everything the
+README names: nothing else needed is taken. KDE Connect cannot stay
+without `modemmanager` (it needs `modemmanager-qt`), so the default keeps
+all three; with them gone too it is 217 packages. `heaptrack`, installed
+on purpose, keeps `kio` and through it `kwallet`, so `ksecretd` stays on
+disk; nothing starts it. OBS is not installed at present. What changes to
+the eye: GTK programs are set to KDE's pointer (`breeze_cursors`), which
+goes, while tw itself has shown Adwaita's all along (`XCURSOR_THEME` is
+unset and the default theme inherits Adwaita); `breeze-icons` stays,
+`heaptrack` needs it; the GTK theme comes from `GTK_THEME` and the user's
+own `~/.themes`; `QT_STYLE_OVERRIDE=kvantum` in their fish config names a
+style that is not installed. Not removed yet: the owner was asked to
+reboot first, since `tools/iwd.sh back` and `tools/keyring.sh kwallet`
+stop working once NetworkManager and `kwallet-pam` are gone. When it is
+done, `tw-session`'s wallet step, the `kwallet` command and README steps 4
+and 10 can go.
 
 ## Battery
 
