@@ -678,9 +678,14 @@ cat >"$tmp/session-bin/dbus-update-activation-environment" <<EOF
 #!/bin/sh
 echo "\$* NO_AT_BRIDGE=\${NO_AT_BRIDGE-} GTK_A11Y=\${GTK_A11Y-}" >'$tmp/told'
 EOF
-chmod +x "$tmp/session/tw" "$tmp/session-bin/dbus-update-activation-environment"
+cat >"$tmp/session-bin/systemctl" <<EOF
+#!/bin/sh
+echo "\$*" >>'$tmp/took-back'
+EOF
+chmod +x "$tmp/session/tw" "$tmp/session-bin/dbus-update-activation-environment" \
+	"$tmp/session-bin/systemctl"
 told() { # [VAR=value...]: what a session started like this passes on
-	rm -f "$tmp/told"
+	rm -f "$tmp/told" "$tmp/took-back"
 	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" "$@" \
 		sh "$tmp/session/tw-session" >/dev/null 2>&1
 	cat "$tmp/told" 2>/dev/null
@@ -688,11 +693,30 @@ told() { # [VAR=value...]: what a session started like this passes on
 got=$(told)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session did not tell the services to leave the accessibility bus alone: $got"
+[ ! -e "$tmp/took-back" ] || fail "tw-session took something back from systemd: $(cat "$tmp/took-back")"
 got=$(told TW_A11Y=1)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE= GTK_A11Y=" ] ||
 	fail "tw-session with TW_A11Y=1 still spoke of the accessibility bus: $got"
+# ... and takes back what an earlier session told systemd, which the bus's
+# own unit goes by.
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment NO_AT_BRIDGE GTK_A11Y" ] ||
+	fail "tw-session with TW_A11Y=1 left systemd told to keep the bus off: $(cat "$tmp/took-back" 2>/dev/null)"
 got=$(told DISPLAY=:7)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session passed on a DISPLAY that is not tw's: $got"
+
+# The accessibility bus's unit starts only where systemd has not been told
+# the variable that tw-session tells it: the two have to name the same one,
+# and the condition has to read the way it is meant.
+grep -q '^ConditionEnvironment=!NO_AT_BRIDGE$' "$data/tw-a11y.conf" ||
+	fail "the line added to the accessibility bus's unit does not go by NO_AT_BRIDGE"
+if command -v systemd-analyze >/dev/null 2>&1; then
+	condition=$(grep '^Condition' "$data/tw-a11y.conf")
+	if env NO_AT_BRIDGE=1 systemd-analyze condition "$condition" >/dev/null 2>&1; then
+		fail "the accessibility bus would start in a session that keeps it off"
+	fi
+	env -u NO_AT_BRIDGE systemd-analyze condition "$condition" >/dev/null 2>&1 ||
+		fail "the accessibility bus would not start in a session that asked for it"
+fi
 
 echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice and the accessibility bus in tw-session"

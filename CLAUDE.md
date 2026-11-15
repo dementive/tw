@@ -58,6 +58,9 @@ which GPUs it would use and starts nothing.
 | `notify/bake.c` | Build tool: draws the characters `tw-notify` can show into `font.h`, with FreeType, so that the program itself needs no font library |
 | `notify/config.h` | `tw-notify`'s settings, compile-time: sizes, colours, how long a notification stays |
 | `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, points programs at the keyring service, keeps the accessibility bus off |
+| `data/tw-a11y.conf` | The line added to the accessibility bus's unit, so that the session bus does not start it in a session that keeps it off |
+| `data/tw-power` | Sets the machine's power profile (saver, balanced, performance) and says which is set; what tw runs when the power cable goes in or out |
+| `data/tw-power-root`, `tw-power@.service.in`, `tw-power.rules` | What lets `tw-power` write the profile's three settings: root helper, system unit, polkit rule |
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
 | `data/tw-bluetooth` | Switches Bluetooth on when asked, and off by hand; says which it is |
@@ -79,6 +82,7 @@ which GPUs it would use and starts nothing.
 | `tests/iwd.sh` | `tools/iwd.sh` against a made-up machine: which networks are copied and how, and that every failed or interrupted trial ends on NetworkManager |
 | `tests/keyring.sh` | `tools/keyring.sh` against a made-up login file and session: the file comes out and goes back exactly, and what `start` does when oo7 is open, locked or broken |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
+| `tests/profile.sh` | `tw-power` and its root helper against a made-up `/sys`: the three profiles, machines that lack one of the settings, nothing written twice, refusals |
 | `tests/bluetooth.sh` | `tw-bluetooth` and its root helper against a made-up machine: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, and every way switching on can fail |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
@@ -268,12 +272,30 @@ programs only see what `dbus-update-activation-environment` hands on. So
 the names to hand on are kept in one list (`service_env`), which the
 startup command passes along with where the session is.
 
+Telling the toolkits is not enough for Chromium and Electron programs,
+which ask the session bus for the accessibility bus's address as they
+start; the session bus then starts the bus's launcher, which stays. So
+`tw-a11y.conf` adds `ConditionEnvironment=!NO_AT_BRIDGE` to the bus's user
+unit: it starts only where systemd has not been handed that variable,
+which is exactly what `tw-session` hands it. The caller is told at once
+that there is no such service. With `TW_A11Y=1`, `tw-session` also takes
+the variable back from systemd, which remembers what an earlier session
+told it for as long as the user is logged in anywhere.
+
 On battery tw does two things. Every output runs in the slowest mode of its
 preferred size that is not below `battery_refresh_hz` (60), because a
 program that animates draws as often as the output refreshes: on the
 owner's 300 Hz panel that was 5 W of 16.5. And `battery_command` runs, with
 `mains_command` when the cable is back and one of the two at startup, which
-puts the CPU on its power-saver profile and back. `output_mode()` is the
+puts the machine on its power-saver profile and back. The two commands are
+`tw-power saver` and `tw-power balanced`. A profile is three settings in
+`/sys` that only root may write: the platform's profile (`quiet`, or
+`low-power` where a machine has that), each CPU's
+`energy_performance_preference` (`power`) and its `energy_perf_bias` (15).
+`tw-power` has them written by a root helper through a oneshot unit, the
+way `tw-gpu` does its switching, and nothing stays running. It replaced
+power-profiles-daemon, which wrote the same three and then stayed for the
+session. `output_mode()` is the
 one place that says which mode an output should be in; a new output, an
 output coming back on and a change of power supply all ask it. wlroots
 refuses a mode for an output that is off, so `outputs_update_mode()` skips
@@ -557,10 +579,31 @@ udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
 every file where its reader looks.
 
 Keeping the accessibility bus off is tested as far as the session script
-goes: what it exports and what it hands to D-Bus and systemd. At a real
-login the portal then left the bus alone, as intended. A Chromium or
-Electron program still asks for the bus's address as it starts, which
-starts the launcher but not the registry daemon.
+goes: what it exports and what it hands to D-Bus and systemd, and that the
+condition on the bus's unit reads the way it is meant (`systemd-analyze
+condition`). At a real login the portal then left the bus alone, as
+intended. A Chromium or Electron program still asked for the bus's address
+as it started, which started the launcher but not the registry daemon;
+that is what the condition is for. Tried in the owner's session
+(2026-11-15) with the same line as a drop-in under `/run/user`, removed
+again afterwards: the launcher was stopped, a call for the bus's address
+was answered in 9 ms ("Could not activate remote peer 'org.a11y.Bus':
+unit failed"), and the launcher stayed away. Not seen yet: the installed
+file at a login, and the Claude app starting without the bus.
+
+`tests/profile.sh` runs `tw-power` against a made-up `/sys`. Breaking it
+and the helper 21 ways, one at a time, each made it fail (and five ways
+of breaking the accessibility condition and its part of `tw-session` each
+made `tests/gpu.sh` fail). What the three settings are was read off the
+real machine by switching power-profiles-daemon through its profiles and
+comparing: power-saver is platform `quiet`, preference `power`, bias 15;
+balanced is `balanced`, `balance_performance`, 6; performance is
+`performance`, `performance`, 0; nothing else in cpufreq or intel_pstate
+moved, and ASUS's `throttle_thermal_policy` follows the platform's profile
+by itself. `tw-power` alone read the real machine as "saver (platform:
+quiet, CPUs: power)" on battery. Not seen yet: the helper writing to the
+real `/sys`, its polkit rule, and tw running it at a login and when the
+cable moves.
 
 The keyring is not tw's business: oo7 is started by the user's systemd as
 they log in and unlocked by its PAM module (README step 15). What
@@ -1264,6 +1307,15 @@ init, the journal and the user manager, with eudev and elogind being the
 same code as udevd and logind, would hold 9 to 12 MB less, against
 everything in `data/` that is built on systemd units, CachyOS's kernel and
 optimised packages, and the Claude app's package.
+
+The owner disabled `systemd-userdbd` at once (socket and service). Seen
+right after: its four processes gone, only `io.systemd.DynamicUser` left
+in `/run/systemd/userdb`, users and groups still found (`getent` for the
+owner, root, `wheel` and a system user), nothing failed. It is README
+step 7. Asked whether to build the two that tw can take over, the
+accessibility launcher and power-profiles-daemon, they answered "Yes,
+build both": `tw-a11y.conf` and `tw-power` (see above). `bolt`, avahi,
+timesyncd and resolved were left as they are.
 
 ## Battery
 

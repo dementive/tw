@@ -95,8 +95,8 @@ static const int battery_refresh_hz = 60;
  * once at startup for whichever of the two holds then. "" runs nothing, and
  * so does a command that is not installed.
  */
-static const char battery_command[] = "powerprofilesctl set power-saver";
-static const char mains_command[] = "powerprofilesctl set balanced";
+static const char battery_command[] = "tw-power saver";
+static const char mains_command[] = "tw-power balanced";
 
 /*
  * A battery running low. tw has no bar to show the charge, so when it is

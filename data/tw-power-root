@@ -1,0 +1,73 @@
+#!/bin/sh
+# Sets the machine's power profile. Run as root by tw-power@saver.service,
+# tw-power@balanced.service and tw-power@performance.service, which tw-power
+# starts; the only input is the word from the unit's name.
+#
+# A profile is three settings, the same three power-profiles-daemon writes,
+# so that no daemon has to stay around to write them:
+#   the platform's own profile, which is fans and power limits
+#   how each CPU weighs speed against power (energy_performance_preference)
+#   the older hint to the same end (energy_perf_bias)
+# A machine that lacks one of them is not given it.
+set -u
+
+sys=${TW_SYS:-/sys} # the tests point this at a made-up machine
+
+case ${1:-} in
+saver)
+	# Some machines call their most frugal profile low-power, some quiet.
+	platform="low-power quiet"
+	preference=power
+	bias=15
+	;;
+balanced)
+	platform=balanced
+	preference=balance_performance
+	bias=6
+	;;
+performance)
+	platform=performance
+	preference=performance
+	bias=0
+	;;
+*)
+	echo "usage: tw-power-root saver|balanced|performance" >&2
+	exit 2
+	;;
+esac
+
+failed=0
+# put <file> <value>: writes the value, unless the file is not there or says
+# so already.
+put() {
+	[ -e "$1" ] || return 0
+	[ "$(cat "$1" 2>/dev/null)" = "$2" ] && return 0
+	if ! echo "$2" 2>/dev/null >"$1"; then
+		echo "tw-power: could not write '$2' to $1" >&2
+		failed=1
+	fi
+}
+# offered <file> <value>: true if the file lists the value, or is not there
+# to say what may be written.
+offered() {
+	[ -e "$1" ] || return 0
+	case " $(cat "$1" 2>/dev/null) " in
+	*" $2 "*) return 0 ;;
+	esac
+	return 1
+}
+
+for name in $platform; do
+	if offered "$sys/firmware/acpi/platform_profile_choices" "$name"; then
+		put "$sys/firmware/acpi/platform_profile" "$name"
+		break
+	fi
+done
+for policy in "$sys"/devices/system/cpu/cpufreq/policy*; do
+	offered "$policy/energy_performance_available_preferences" "$preference" &&
+		put "$policy/energy_performance_preference" "$preference"
+done
+for cpu in "$sys"/devices/system/cpu/cpu[0-9]*; do
+	put "$cpu/power/energy_perf_bias" "$bias"
+done
+exit "$failed"

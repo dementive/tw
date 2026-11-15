@@ -180,6 +180,39 @@ install_data(
 	rename: '72-tw-gpu.rules',
 	install_dir: get_option('prefix') / 'lib/udev/rules.d',
 )
+# tw-power sets the machine's power profile, which tw has it do when the
+# power cable goes in or out: the command, the root helper that writes the
+# settings, the system unit that runs it, and the polkit rule that lets the
+# user start that unit. It takes the place of a daemon.
+install_data(
+	'data/tw-power',
+	install_dir: get_option('bindir'),
+	install_mode: 'rwxr-xr-x',
+)
+install_data(
+	'data/tw-power-root',
+	install_dir: get_option('libexecdir'),
+	install_mode: 'rwxr-xr-x',
+)
+configure_file(
+	input: 'data/tw-power@.service.in',
+	output: 'tw-power@.service',
+	configuration: {'libexecdir': get_option('prefix') / get_option('libexecdir')},
+	install: true,
+	install_dir: get_option('prefix') / 'lib/systemd/system',
+)
+install_data(
+	'data/tw-power.rules',
+	rename: '50-tw-power.rules',
+	install_dir: get_option('datadir') / 'polkit-1/rules.d',
+)
+# The line added to the accessibility bus's unit, which keeps the session
+# bus from starting it in a session that tw-session told to leave it alone.
+install_data(
+	'data/tw-a11y.conf',
+	rename: 'tw.conf',
+	install_dir: get_option('prefix') / 'lib/systemd/user/at-spi-dbus-bus.service.d',
+)
 # tw-bluetooth keeps Bluetooth off and switches it on when asked. The command
 # itself, then what keeps the adapter's driver from loading as the machine
 # starts, and the parts that let the command load and unload it: a root
@@ -433,6 +466,15 @@ test(
 	find_program('tests/gpu.sh'),
 	args: [meson.current_source_dir() / 'data'],
 	timeout: 120,
+)
+
+# tw-power and its root helper, against a made-up machine: no setting of the
+# real one is read or written.
+test(
+	'profile',
+	find_program('tests/profile.sh'),
+	args: [meson.current_source_dir() / 'data'],
+	timeout: 60,
 )
 
 # tw-bluetooth and its root helper, against a made-up machine: no adapter,

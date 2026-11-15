@@ -105,11 +105,21 @@ fi
 # tw starts inherit that. The ones D-Bus and systemd start do not (the
 # portal that shows file dialogs is one, and is what starts the bus at
 # login), so they are told once tw is up, along with where the session is.
+#
+# Chromium and Electron programs ask the session bus for the accessibility
+# bus whatever the toolkits were told, and the session bus would start it
+# for them. Its unit therefore starts only where systemd has not been told
+# NO_AT_BRIDGE (tw-a11y.conf).
 service_env='WAYLAND_DISPLAY XDG_CURRENT_DESKTOP'
+a11y_step=
 if [ -z "${TW_A11Y:-}" ]; then
 	export NO_AT_BRIDGE=1 # GTK 3
 	export GTK_A11Y=none  # GTK 4
 	service_env="$service_env NO_AT_BRIDGE GTK_A11Y"
+else
+	# A session before this one may have told systemd otherwise, and
+	# systemd remembers for as long as the user is logged in anywhere.
+	a11y_step='command -v systemctl >/dev/null 2>&1 && systemctl --user unset-environment NO_AT_BRIDGE GTK_A11Y'
 fi
 
 if [ -n "${TW_SESSION_PRINT:-}" ]; then
@@ -129,6 +139,7 @@ if command -v dbus-update-activation-environment >/dev/null 2>&1; then
 	dbus-update-activation-environment --systemd '"$service_env"' \
 		${DISPLAY:+DISPLAY}
 fi
+'"$a11y_step"'
 '"$gpu_step"'
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
 if [ -x "$autostart" ]; then

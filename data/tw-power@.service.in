@@ -1,0 +1,10 @@
+# tw-power@saver.service, tw-power@balanced.service and
+# tw-power@performance.service set the machine's power profile. Started by
+# tw-power; tw-power.rules lets the person at the computer do that without a
+# password.
+[Unit]
+Description=Power profile: %i (tw-power)
+
+[Service]
+Type=oneshot
+ExecStart=@libexecdir@/tw-power-root %i

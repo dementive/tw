@@ -45,7 +45,7 @@ expect() {
 	rm -rf "$run_dir/sys" "$profile_log"
 }
 
-fake_program powerprofilesctl "echo \"\$*\" >>'$profile_log'"
+fake_program tw-power "echo \"\$*\" >>'$profile_log'"
 
 # A machine without a battery is left alone, whatever else is listed.
 expect "no power supplies" neither ""
@@ -57,21 +57,21 @@ expect "a desktop with a wireless mouse" neither ""
 # A laptop: on mains when its charger is online, on battery when it is not.
 supply BAT0 type=Battery status=Charging
 supply ADP0 type=Mains online=1
-expect "a laptop on its charger" mains "set balanced"
+expect "a laptop on its charger" mains "balanced"
 supply BAT0 type=Battery status=Discharging
 supply ADP0 type=Mains online=0
-expect "a laptop on battery" battery "set power-saver"
+expect "a laptop on battery" battery "saver"
 
 # Any supply that is not a battery counts, so a USB-C charger does too. A
 # phone charging from the laptop does not: its supply has the scope "Device".
 supply BAT0 type=Battery status=Charging
 supply ADP0 type=Mains online=0
 supply ucsi-source-psy-1 type=USB online=1
-expect "a laptop on a USB-C charger" mains "set balanced"
+expect "a laptop on a USB-C charger" mains "balanced"
 supply BAT0 type=Battery status=Discharging
 supply ADP0 type=Mains online=0
 supply ucsi-source-psy-1 type=USB online=1 scope=Device
-expect "a laptop on battery charging a phone" battery "set power-saver"
+expect "a laptop on battery charging a phone" battery "saver"
 
 # A battery that is already low as tw starts is left for its next
 # announcement. So tw does not warn before the session is up to show it, and
@@ -80,7 +80,7 @@ fake_program systemctl "echo \"systemctl \$*\" >>'$run_dir/low.log'"
 fake_program notify-send "echo \"notify-send \$*\" >>'$run_dir/low.log'"
 supply BAT0 type=Battery status=Discharging capacity=3
 supply ADP0 type=Mains online=0
-expect "a laptop on battery at 3%" battery "set power-saver"
+expect "a laptop on battery at 3%" battery "saver"
 [ ! -e "$run_dir/low.log" ] ||
 	fail "tw acted on a low battery as it started: $(cat "$run_dir/low.log")"
 
@@ -99,12 +99,12 @@ fi
 stop_tw
 
 # Without the program tw runs nothing and says so.
-rm "$bin_dir/powerprofilesctl"
+rm "$bin_dir/tw-power"
 supply BAT0 type=Battery status=Discharging
 supply ADP0 type=Mains online=0
 start_tw -d
 wait_until "tw to say the command is not installed" \
-	grep -q 'not installed: powerprofilesctl set power-saver' "$run_dir/tw.log"
+	grep -q 'not installed: tw-power saver' "$run_dir/tw.log"
 stop_tw
 
 echo "ok: no battery, mains, battery, USB-C charger, a device's supply, low at startup, not the session, missing command"

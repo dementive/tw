@@ -1,0 +1,59 @@
+#!/bin/sh
+# tw-power: sets the machine's power profile, which is the job of
+# power-profiles-daemon done without a daemon.
+#
+#   tw-power saver         the most frugal: what tw sets on battery
+#   tw-power balanced      what tw sets on mains
+#   tw-power performance   everything the machine has, fans included
+#   tw-power               say which is set
+#
+# tw sets saver or balanced whenever the power cable goes in or out
+# (battery_command and mains_command in config.h), so a profile set by hand
+# lasts until the cable next moves. Setting one takes root, so that part is
+# done by the system unit tw-power@.service, which a polkit rule lets you
+# start.
+set -u
+
+sys=${TW_SYS:-/sys} # the tests point this at a made-up machine
+
+usage() {
+	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
+	exit 2
+}
+
+case ${1:-status} in
+saver | balanced | performance)
+	if ! systemctl start "tw-power@$1.service"; then
+		echo "tw-power: could not set the profile. Why: journalctl -b -u tw-power@$1.service" >&2
+		exit 1
+	fi
+	;;
+status)
+	platform=$(cat "$sys/firmware/acpi/platform_profile" 2>/dev/null)
+	cpus=$(cat "$sys"/devices/system/cpu/cpufreq/policy*/energy_performance_preference 2>/dev/null |
+		sort -u | tr '\n' ' ')
+	cpus=${cpus% }
+	case $cpus in
+	power) name=saver ;;
+	balance_performance) name=balanced ;;
+	performance) name=performance ;;
+	'')
+		# No setting for the CPUs: go by the platform's.
+		case $platform in
+		low-power | quiet) name=saver ;;
+		balanced | performance) name=$platform ;;
+		'')
+			echo "Power profile: this machine has none to set"
+			exit 0
+			;;
+		*) name="none of tw's" ;;
+		esac
+		;;
+	*) name="none of tw's" ;;
+	esac
+	echo "Power profile: $name (platform: ${platform:-none}, CPUs: ${cpus:-none})"
+	;;
+*)
+	usage
+	;;
+esac

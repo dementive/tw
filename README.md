@@ -28,7 +28,7 @@ feature does nothing without its program:
 
 ```sh
 sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
-    grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
+    grim slurp brightnessctl wl-clipboard wireplumber \
     libnotify iwd iw oo7 libsecret bluez bluez-utils \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr thunar
 ```
@@ -42,7 +42,6 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
 | brightnessctl, wireplumber | brightness and volume keys |
-| power-profiles-daemon | the power-saver CPU profile while on battery |
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | iwd, iw | Wi-Fi without NetworkManager, see step 14 |
 | oo7, libsecret | the keyring, see steps 4 and 15 |
@@ -64,7 +63,13 @@ sudo meson install -C build-release --no-rebuild --skip-subprojects
 ```
 
 Run the last line again after every change. A running session keeps the old
-binary until you log out and in again.
+binary until you log out and in again. When an install brings new unit
+files, as the first one does, have both systemds read them:
+
+```sh
+sudo systemctl daemon-reload
+systemctl --user daemon-reload
+```
 
 ### 3. Log in
 
@@ -179,30 +184,36 @@ plugged in when you log in after a boot. If you have logged out and in since,
 the GPU is still switched off and tw cannot see the monitor: run `tw-gpu on`,
 then log out and in.
 
-### 7. Services and a package tw has no use for
+### 7. Services and packages tw has no use for
 
-Two services that CachyOS enables can go:
+Three services that CachyOS enables can go:
 
 ```sh
 sudo systemctl disable --now ananicy-cpp.service
 sudo systemctl disable --now switcheroo-control.service
+sudo systemctl disable --now systemd-userdbd.socket systemd-userdbd.service
 ```
 
 | Service | What it is | Why it can go |
 | --- | --- | --- |
 | ananicy-cpp | CachyOS's daemon that adjusts process priorities by a rule list | about 7 MB, and with only a couple of programs running there is little for it to sort out |
 | switcheroo-control | tells GNOME and KDE which GPU is the discrete one | `tw-gpu` does that job here |
+| systemd-userdbd | looks users up for systemd-homed and for user records kept as JSON files | neither is in use; it is four processes, 25 MB in `btop` (2.5 MB their own), and users are found without it |
 
 Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
 through it.
 
-And one package:
+And two packages:
 
 ```sh
-sudo pacman -Rns alsa-plugins
+sudo pacman -Rns alsa-plugins power-profiles-daemon
 ```
 
-It holds extras for programs that talk to ALSA directly. One of them, an
+`power-profiles-daemon` set the power-saver profile on battery and then
+stayed for the session (8 MB in `btop`). `tw-power`, which comes with tw,
+writes the same three settings and exits; see "Good to know".
+
+`alsa-plugins` holds extras for programs that talk to ALSA directly. One of them, an
 AC-3 encoder for an S/PDIF output, is loaded by the sound service
 (WirePlumber) at every login and brings FFmpeg along, 79 libraries in all.
 Without the package WirePlumber is 25 MB in `btop` instead of 37 (6 MB its
@@ -529,8 +540,10 @@ hand what it does.
   outputs (most likely the USB-C ports) and the NVIDIA GPU has HDMI and one
   DisplayPort.
 - Screen readers and other accessibility aids find no programs to talk to:
-  the session tells toolkits to leave the accessibility bus alone, which
-  saves two background programs. Log in with `TW_A11Y=1` set to keep it.
+  the session tells toolkits to leave the accessibility bus alone, and a
+  program that asks for the bus anyway (Chromium and Electron ones do) is
+  told there is none. That saves three background programs. Log in with
+  `TW_A11Y=1` set to keep it.
 - The laptop suspends after 15 minutes without input, also on mains power. Run
   a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
 - On battery every screen runs at 60 Hz and the CPU is set to its
@@ -538,8 +551,9 @@ hand what it does.
   refresh rate and the balanced profile. The screen may blink once as it
   changes. Both are settings in [src/config.h](src/config.h):
   `battery_refresh_hz` (0 keeps the full rate) and the two commands below it.
-  To use another profile until the cable next moves, run
-  `powerprofilesctl set performance` (or `balanced`, `power-saver`).
+  The profile is set by `tw-power`, which needs no daemon: to use another
+  one until the cable next moves, run `tw-power performance` (or `balanced`,
+  `saver`); `tw-power` alone says which is set.
 - A notification is a title and up to four lines of text, in the top right
   corner, above a fullscreen window too. Clicking one closes it; a left
   click also tells its program, which can then bring its window forward.
