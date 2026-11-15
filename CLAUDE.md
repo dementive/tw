@@ -347,8 +347,12 @@ again; `xprop -spy` kept them up, through a window closing too, and they
 went after it had left and the next window closed; the same from inside
 `bwrap --unshare-net`, whose connection is indeed missing from
 `/proc/net/unix`; and `vkcube --wsi xcb` kept them up while its window was
-open and they went five seconds after it closed. Not seen yet: the real
-session, where the Claude app is what starts them.
+open and they went five seconds after it closed. Then in the real session,
+after a reboot: the Claude app started, the helper two seconds later, and 43
+seconds after that neither it nor Xwayland was running. The helper has no
+chance to tidy up when stopped and leaves its own socket and lock file
+(`xwls-1`) in the runtime directory; the next helper takes the same name,
+so they do not pile up.
 
 ## Known noise
 
@@ -453,7 +457,9 @@ bus 2; fnott and wl-clip-persist 2; bolt, switcheroo-control, avahi and
 bluetoothd under 1 each. None of the daemons wakes more than once a second.
 tw itself woke 610 times a second during that reading and had used 149 s
 of CPU in 45 minutes: the application was animating, and tw draws at the
-panel's 300 Hz. The panel also has a 60 Hz mode.
+panel's 300 Hz. The panel also has a 60 Hz mode. With Xwayland stopped by
+tw and `ananicy-cpp` and `switcheroo-control` disabled by the owner, the
+same sum read 95 MB at the next login.
 
 Two ideas for tw's own share were tried in a headless tw drawing with the
 Intel GPU, and dropped. Keeping huge pages out of tw (`PR_SET_THP_DISABLE`):
