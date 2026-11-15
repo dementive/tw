@@ -58,7 +58,9 @@ binary until you log out and in again.
 
 ### 3. Log in
 
-Log out and pick "tw" in the login screen's session list. The screen is black
+Log out and pick "tw" in the login screen's session list, or log in on a
+text console and type `tw-session` (step 10 does away with the login screen
+altogether). The screen is black
 with a cursor until you open something: there is no wallpaper and no bar.
 Mod is the Super key. Mod+Shift+E quits, and Ctrl+Alt+F3 is a text console if
 something goes wrong.
@@ -235,6 +237,47 @@ boot loader; elsewhere it is `sudo mkinitcpio -P`. After a reboot,
 whose Intel GPU is driven by `xe`
 (`readlink /sys/class/drm/card*/device/driver` says so), leave the first
 line out.
+
+### 10. Log in on the text console instead of a login manager
+
+A login manager starts a whole compositor to ask for a password and then
+stays in memory for the session. The kernel's text consoles do the same job
+and leave nothing behind. Do it in this order: each step is undone with one
+command, and the login manager stays as the way back until the last one.
+
+First let the console unlock the keyring, as the login manager did:
+
+```sh
+sudo cp /etc/pam.d/login /etc/pam.d/login.orig
+printf '%s\n' '-auth       optional     pam_kwallet5.so' \
+    '-session    optional     pam_kwallet5.so auto_start force_run' |
+    sudo tee -a /etc/pam.d/login
+```
+
+The lock screen checks your password through this same file, so test it
+before anything else, with your session still open: press Ctrl+Alt+F3, log
+in, type `exit`, and come back (Ctrl+Alt+F2, or F1). If the login is
+refused, `sudo cp /etc/pam.d/login.orig /etc/pam.d/login` puts the file
+back.
+
+Then try the whole thing once: log out, log in on a text console, and type
+`tw-session`. A program that keeps a login, such as the Claude app, should
+still have it.
+
+Then switch the login manager off:
+
+```sh
+sudo systemctl disable --now plasmalogin
+```
+
+From the next boot there is a text prompt: your name, your password, then
+`tw-session`. KDE starts from there with
+`/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland`,
+the command its login-screen entry runs (not tried from a console).
+`sudo systemctl enable --now plasmalogin` brings the login screen back.
+
+Log out of a console when you are done with it. One left logged in is a
+shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
 
 ## Good to know
 

@@ -652,6 +652,19 @@ its session ends, and that screen holds 221 MB for itself (kwin_wayland
 plasmalogin runs; and a console left logged in, as tty3 was, is a shell
 anyone at the keyboard reaches past the lock screen.
 
+The owner then ran `sudo systemctl disable --now plasmalogin`: the service
+is disabled and stopped, the `display-manager.service` link is gone, no
+process of the login screen is left, and the running session was not
+touched (still active, wallet unlocked, GPU off). The "used" figure went
+from 2366 to 2112 MB within minutes, the login screen's 221 MB and its
+buffers. Against a boot where one logs in through plasmalogin the saving
+is its two resident processes (6 MB of their own) and upower, which the
+login screen started. All of it is README step 10. Not seen yet: a boot
+without plasmalogin (the text prompt on tty1), and KDE started from a
+console. `tw-session` still has to be typed after logging in; fish reads
+`/usr/local/share/fish/vendor_conf.d`, so tw's install could put a file
+there that starts it on the first console, which was put to the owner.
+
 fnott is no longer in `autostart[]`: its package ships a D-Bus service
 file, so the bus starts it when a program sends the first notification
 (tried on a private bus with a headless tw: started by `notify-send`,
