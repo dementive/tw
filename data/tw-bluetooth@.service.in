@@ -1,0 +1,13 @@
+# tw-bluetooth@on.service loads the Bluetooth adapter's driver,
+# tw-bluetooth@off.service stops the Bluetooth service and unloads it, and
+# tw-bluetooth@idle.service does the latter if nothing is connected. The
+# first two are started by tw-bluetooth, which tw-bluetooth.rules lets the
+# person at the computer do without a password; the third by
+# tw-bluetooth-idle.timer.
+[Unit]
+Description=Bluetooth: %i (tw-bluetooth)
+
+[Service]
+Type=oneshot
+Environment=TW_BLUETOOTH_CONF=@conf@
+ExecStart=@libexecdir@/tw-bluetooth-root %i

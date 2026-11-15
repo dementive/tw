@@ -60,6 +60,8 @@ which GPUs it would use and starts nothing.
 | `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, points programs at the keyring service, keeps the accessibility bus off |
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
+| `data/tw-bluetooth` | Switches Bluetooth on when asked, and off by hand; says which it is |
+| `data/tw-bluetooth-root`, `tw-bluetooth@.service.in`, `tw-bluetooth-idle.timer`, `tw-bluetooth.rules`, `tw-bluetooth-udev.rules`, `tw-bluetooth.conf` | What lets `tw-bluetooth` load and unload the adapter's driver, and what switches Bluetooth off when nothing is connected: root helper, system unit, timer, polkit rule, udev rules, and the modprobe file that keeps the driver from loading at boot |
 | `data/` (rest) | The login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify` |
 | `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
@@ -77,6 +79,7 @@ which GPUs it would use and starts nothing.
 | `tests/iwd.sh` | `tools/iwd.sh` against a made-up machine: which networks are copied and how, and that every failed or interrupted trial ends on NetworkManager |
 | `tests/keyring.sh` | `tools/keyring.sh` against a made-up login file and session: the file comes out and goes back exactly, and what `start` does when oo7 is open, locked or broken |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
+| `tests/bluetooth.sh` | `tw-bluetooth` and its root helper against a made-up machine: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, and every way switching on can fail |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
@@ -205,6 +208,42 @@ screen, which keeps the GPU open for some seconds after tw has the screen.
 Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
 `tw-gpu@off.service`, which a polkit rule allows, and those run
 `tw-gpu-root`.
+
+Bluetooth is handled like the NVIDIA GPU, off until asked for and none of
+it in tw's C code, because the owner uses it "VERY rarely" and found
+`bluetoothd` running all day. It ran because systemd starts it whenever the
+kernel has an adapter (udev gives every Bluetooth device a wish for
+`bluetooth.target`), whether the radio is blocked or not. So off is not a
+stopped service but a driver that is not loaded: with no adapter nothing
+starts the service, the stock `bluetooth.service` stays enabled as shipped,
+and the Bluetooth modules are out of the kernel too.
+
+`tw-bluetooth.conf`, installed into `modprobe.d`, blacklists the adapter's
+driver (`btusb`). A blacklist stops what udev does at boot, loading by the
+device's alias, and not a load by name, so the same file is the list of
+what `tw-bluetooth on` loads: the root helper reads the names out of it.
+`on` loads them, waits for an adapter, lifts the radio's block, leaves
+`/run/tw-bluetooth` and starts `tw-bluetooth-idle.timer`. It lifts the block
+a second after udev has settled, not at once, because systemd puts the
+block back to what it was when the adapter was last there (systemd-rfkill)
+and would undo it; once it has seen the block lifted, "not blocked" is what
+it puts back from then on. `off` stops `bluetooth.service` and unloads every
+module that holds the Bluetooth core and then the core, in up to five
+passes half a second apart: the sound service keeps a Bluetooth socket open
+until it has seen the daemon go.
+
+Bluetooth goes off by itself when nothing has been connected for ten
+minutes, with no process waiting for that. The kernel keeps each connection
+as a device next to its adapter (`hci0:256`); a udev rule starts the timer
+over whenever one is removed, and when the timer runs out the helper
+(`idle`) switches off unless a connection exists. Both only while
+`/run/tw-bluetooth` is there, so a machine that has Bluetooth on from boot
+(built with `-Dbluetooth=false`, or before its first reboot) is left alone.
+A second udev rule lets a USB adapter sleep (`power/control` to `auto`),
+which its driver would do as it loads and nobody does with the driver kept
+away. Switching needs root and goes the way `tw-gpu` does it:
+`tw-bluetooth` starts `tw-bluetooth@on.service` or `@off.service`, which a
+polkit rule allows.
 
 `tw-session` also keeps the accessibility bus from starting (`NO_AT_BRIDGE`
 for GTK 3, `GTK_A11Y` for GTK 4), unless `TW_A11Y=1` is set. The programs tw
@@ -457,6 +496,25 @@ off. Still not seen: suspend while it is off.
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
 path has never been run.
+
+`tests/bluetooth.sh` runs `tw-bluetooth` and its helper against a made-up
+machine, whose stand-in for `sleep` is also the moment in which systemd
+puts the radio's block back and a program lets go of its socket. Breaking
+the two scripts 35 ways, one at a time, each made it fail. It cannot show
+anything about the real machine, and when this was written nothing of it
+had been installed there, so none of this has been seen: the modules
+unloading (WirePlumber has one socket that is neither a Unix nor a netlink
+one, most likely the listening socket for headsets, which PipeWire's source
+closes when BlueZ leaves the bus); a boot with the blacklist, and whether
+anything loads the Bluetooth core without a driver (a program opening a
+Bluetooth socket would); `on`, with systemd starting `bluetoothd` for the
+new adapter and the block staying lifted; the polkit rule; a connection
+ending and starting the timer over (the rule matches `DEVTYPE=link`, a name
+taken from the kernel module's strings); the adapter asleep with no driver.
+Checked without root: a blacklisted module loads by name and not the way
+udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
+`systemd-analyze verify` the unit and the timer, and a staged install puts
+every file where its reader looks.
 
 Keeping the accessibility bus off is tested as far as the session script
 goes: what it exports and what it hands to D-Bus and systemd. At a real
@@ -1073,8 +1131,10 @@ three lines, and `tw-notify`'s the only notification entry left. With
 `kwallet-pam` and NetworkManager gone, `tools/keyring.sh back` and
 `tools/iwd.sh back` have nothing to go back to on this machine. So the
 wallet step came out of `tw-session`, the script's `kwallet` command
-became `back`, and README steps 4, 10 and 15 no longer assume KDE. Still
-not seen: a boot since iwd and oo7 went in.
+became `back`, and README steps 4, 10 and 15 no longer assume KDE. A boot on
+iwd and oo7 followed the same day; the owner's word on it: "All of that
+seems to have worked." Eight minutes into it iwd was running with the
+internet reachable and the keyring was oo7, open.
 
 Thunar, which they chose for Dolphin's place, was measured in a headless
 tw on a private bus with a scratch home: 52.9 MB resident and 11.2 MB its
@@ -1084,6 +1144,43 @@ also when the bus started it for another program's "show in folder"
 daemon, which the bus starts on first use: 9.0 MB resident, 0.57 MB its
 own, no wake-ups, until logout. Without `gvfs` and `tumbler`, which are
 not installed, it has no trash, mounts no drives and shows no thumbnails.
+
+Bluetooth, measured when the owner asked why `bluetoothd` runs all the
+time (2026-11-15, eight minutes after a boot, the first on iwd and oo7).
+The daemon: 6.8 MB resident, 0.58 MB its own, no wake-ups to speak of. The
+kernel modules: 1.6 MB (`bluetooth` 1.2, `btusb` and the four vendor
+modules under it, `rfcomm` and `bnep`, which the daemon loads). The radio:
+blocked (systemd restores the block at every boot) and its USB device
+(Intel 8087:0033) asleep for 99% of the time, so there was no power to
+save. And inside WirePlumber, whose Bluetooth half loads every audio codec
+at login: 2.9 MB resident, of which 2.6 MB are library pages nothing else
+maps and 0.28 MB is its own. `tw-bluetooth` takes the first two away. Two
+other designs were weighed and dropped. Following the radio's block
+(`rfkill unblock` starts the daemon, `block` stops it) needs no root
+helper, but leaves the modules loaded and has no clean way to start: a new
+adapter is unblocked until systemd blocks it again, so the daemon would
+start and stop at every boot. Running WirePlumber's Bluetooth half as a
+second instance only while Bluetooth is on (upstream's split mode,
+`wireplumber@bluetooth.service`, with `hardware.bluetooth = disabled` for
+the main one) would take the 2.9 MB off its line in `btop`, but only
+0.28 MB of that is memory in use, a whole second WirePlumber runs while
+Bluetooth is on, and whether a headset then plays cannot be tested here.
+WirePlumber does not start `bluetoothd` by looking for it (its
+`GetManagedObjects` call has auto-start off), and `bluetoothctl` only
+waits for it. The user's `bluetooth.target` was inactive although the
+adapter was there from boot, so nothing should be hung on it.
+
+Found on the way, and larger than all of Bluetooth: 79 of the 161
+libraries WirePlumber has mapped are there because of one ALSA plugin,
+`libasound_module_pcm_a52.so` from `alsa-plugins`, which encodes AC-3 for
+an S/PDIF output and links FFmpeg's `libavcodec` with everything that
+drags in (x265, rav1e, librsvg, libjxl). Together 12.1 MB resident, 7.3 MB
+by PSS, 2.6 MB of WirePlumber's own 9 MB. `alsa-plugins` was installed on
+purpose by somebody, nothing requires it, removing it takes nothing else
+along, ALSA programs reach PipeWire through `pipewire-audio`'s own files,
+and no other process has the plugin loaded. Put to the owner as
+`sudo pacman -Rns alsa-plugins`; the saving is what is mapped now, not a
+reading after the removal.
 
 ## Battery
 

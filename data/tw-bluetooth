@@ -1,0 +1,99 @@
+#!/bin/sh
+# tw-bluetooth: keeps Bluetooth switched off, and switches it on when asked.
+#
+#   tw-bluetooth on    switch Bluetooth on, to use it with bluetoothctl. It
+#                      goes off again by itself once nothing has been
+#                      connected for ten minutes.
+#   tw-bluetooth off   switch it off now, whatever is connected.
+#   tw-bluetooth       say which it is.
+#
+# Off means the adapter's kernel driver is not loaded. Then there is no
+# adapter, the Bluetooth service (bluetoothd) is not running, the radio has
+# no power, and no program can switch it on by looking for it. tw's install
+# keeps the driver from loading as the machine starts (tw-bluetooth.conf in
+# modprobe.d), so every boot begins off. Loading a driver takes root, so
+# that part is done by the system unit tw-bluetooth@.service, which a polkit
+# rule lets you start.
+set -u
+
+sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
+# Left by the root helper while Bluetooth is on because it was switched on
+# here, and so goes off by itself.
+flag=${TW_RUN:-/run}/tw-bluetooth
+
+usage() {
+	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
+	exit 2
+}
+
+# True if there is an adapter: hci0 and so on.
+adapter() {
+	for device in "$sys"/class/bluetooth/hci*; do
+		[ -e "$device" ] && return 0
+	done
+	return 1
+}
+
+# How many devices are connected. The kernel keeps each connection next to
+# its adapter, named after it with a colon and a number: hci0:256.
+connections() {
+	count=0
+	for link in "$sys"/class/bluetooth/hci*:*; do
+		[ -e "$link" ] && count=$((count + 1))
+	done
+	echo "$count"
+}
+
+# True if a Bluetooth radio is blocked (rfkill).
+blocked() {
+	for switch in "$sys"/class/rfkill/rfkill*; do
+		[ "$(cat "$switch/type" 2>/dev/null)" = bluetooth ] || continue
+		[ "$(cat "$switch/soft" 2>/dev/null)" = 0 ] || return 0
+	done
+	return 1
+}
+
+case ${1:-status} in
+on)
+	if ! systemctl start tw-bluetooth@on.service; then
+		echo "tw-bluetooth: could not switch Bluetooth on. Why: journalctl -b -u tw-bluetooth@on.service" >&2
+		exit 1
+	fi
+	echo "Bluetooth is on: connect with bluetoothctl."
+	echo "It goes off by itself once nothing has been connected for ten minutes."
+	;;
+off)
+	if ! systemctl start tw-bluetooth@off.service; then
+		echo "tw-bluetooth: could not switch Bluetooth off. Why: journalctl -b -u tw-bluetooth@off.service" >&2
+		exit 1
+	fi
+	echo "Bluetooth is off."
+	;;
+status)
+	if adapter; then
+		count=$(connections)
+		case $count in
+		0) state="nothing connected" ;;
+		1) state="1 device connected" ;;
+		*) state="$count devices connected" ;;
+		esac
+		if [ ! -e "$flag" ]; then
+			echo "Bluetooth: on since the machine started, $state. It stays on until 'tw-bluetooth off'."
+		elif [ "$count" = 0 ]; then
+			echo "Bluetooth: on, $state. It goes off when that has lasted ten minutes."
+		else
+			echo "Bluetooth: on, $state."
+		fi
+		if blocked; then
+			echo "Its radio is blocked: rfkill unblock bluetooth"
+		fi
+	elif [ -d "$sys/module/bluetooth" ]; then
+		echo "Bluetooth: no adapter, but its modules are loaded. 'tw-bluetooth off' unloads them."
+	else
+		echo "Bluetooth: off"
+	fi
+	;;
+*)
+	usage
+	;;
+esac

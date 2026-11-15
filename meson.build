@@ -180,6 +180,54 @@ install_data(
 	rename: '72-tw-gpu.rules',
 	install_dir: get_option('prefix') / 'lib/udev/rules.d',
 )
+# tw-bluetooth keeps Bluetooth off and switches it on when asked. The command
+# itself, then what keeps the adapter's driver from loading as the machine
+# starts, and the parts that let the command load and unload it: a root
+# helper, the system unit that runs it, the polkit rule that lets the user
+# start that unit, the timer that switches Bluetooth off again when nothing
+# is connected, and the udev rules that start that timer and let a
+# driverless adapter sleep. On a machine without Bluetooth it does nothing.
+if get_option('bluetooth')
+	bluetooth_conf = get_option('prefix') / 'lib/modprobe.d'
+	install_data(
+		'data/tw-bluetooth',
+		install_dir: get_option('bindir'),
+		install_mode: 'rwxr-xr-x',
+	)
+	install_data(
+		'data/tw-bluetooth-root',
+		install_dir: get_option('libexecdir'),
+		install_mode: 'rwxr-xr-x',
+	)
+	install_data(
+		'data/tw-bluetooth.conf',
+		install_dir: bluetooth_conf,
+	)
+	configure_file(
+		input: 'data/tw-bluetooth@.service.in',
+		output: 'tw-bluetooth@.service',
+		configuration: {
+			'libexecdir': get_option('prefix') / get_option('libexecdir'),
+			'conf': bluetooth_conf / 'tw-bluetooth.conf',
+		},
+		install: true,
+		install_dir: get_option('prefix') / 'lib/systemd/system',
+	)
+	install_data(
+		'data/tw-bluetooth-idle.timer',
+		install_dir: get_option('prefix') / 'lib/systemd/system',
+	)
+	install_data(
+		'data/tw-bluetooth.rules',
+		rename: '50-tw-bluetooth.rules',
+		install_dir: get_option('datadir') / 'polkit-1/rules.d',
+	)
+	install_data(
+		'data/tw-bluetooth-udev.rules',
+		rename: '72-tw-bluetooth.rules',
+		install_dir: get_option('prefix') / 'lib/udev/rules.d',
+	)
+endif
 configure_file(
 	input: 'data/tw.desktop.in',
 	output: 'tw.desktop',
@@ -378,6 +426,15 @@ test(
 	find_program('tests/gpu.sh'),
 	args: [meson.current_source_dir() / 'data'],
 	timeout: 120,
+)
+
+# tw-bluetooth and its root helper, against a made-up machine: no adapter,
+# driver or root involved.
+test(
+	'bluetooth',
+	find_program('tests/bluetooth.sh'),
+	args: [meson.current_source_dir() / 'data'],
+	timeout: 60,
 )
 
 # tools/iwd.sh, which moves Wi-Fi from NetworkManager to iwd and back,

@@ -29,7 +29,7 @@ feature does nothing without its program:
 ```sh
 sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
-    libnotify iwd iw oo7 libsecret \
+    libnotify iwd iw oo7 libsecret bluez bluez-utils \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr thunar
 ```
 
@@ -46,6 +46,7 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | iwd, iw | Wi-Fi without NetworkManager, see step 14 |
 | oo7, libsecret | the keyring, see steps 4 and 15 |
+| bluez, bluez-utils | Bluetooth (`bluetoothctl`), which is off until `tw-bluetooth on`, see step 17 |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | thunar | file manager. Its settings daemon (`xfconfd`, 9 MB in `btop`, 0.6 MB its own) stays after the first use until you log out |
 
@@ -454,6 +455,51 @@ passwords (`sudo rm -r /etc/NetworkManager`), and the old wallet
 Programs drawn with GTK were told to use KDE's mouse pointer, which is
 gone: `gsettings set org.gnome.desktop.interface cursor-theme Adwaita`
 gives them the one tw itself shows.
+
+### 17. Bluetooth: off until you ask for it
+
+Installing tw is all the setup there is; if this is the first install with
+`tw-bluetooth` in it, make the system read the new files as in step 6
+(`daemon-reload`, restart polkit, reload udev). From the next boot on
+Bluetooth is off, and stays off until you switch it on:
+
+| Command | What it does |
+| --- | --- |
+| `tw-bluetooth on` | switches Bluetooth on, which takes about two seconds. Then `bluetoothctl` as ever; a device you paired before connects by itself when you turn it on |
+| `tw-bluetooth off` | switches it off now, whatever is connected. Also the way to switch it off before the first reboot |
+| `tw-bluetooth` | says which it is |
+
+It also goes off by itself, ten minutes after the last device has
+disconnected, or after `tw-bluetooth on` if nothing ever connected.
+
+Off means the adapter's driver is not loaded. A file the install puts in
+`/usr/local/lib/modprobe.d` keeps it from loading as the machine starts;
+`tw-bluetooth on` loads it. Without the driver the kernel has no adapter,
+so systemd, which starts `bluetoothd` whenever there is one (whether its
+radio is blocked or not, which is why it used to run all day), never does.
+`bluetooth.service` stays enabled as it is; there is nothing to disable.
+What that frees on the ROG Strix: `bluetoothd` (7 MB in `btop`, 0.6 MB its
+own) and 1.6 MB of kernel modules. The radio was asleep already.
+
+Check it on the machine, because no test can:
+
+```sh
+tw-bluetooth off
+tw-bluetooth                  # Bluetooth: off
+lsmod | grep -c bluetooth     # 0
+tw-bluetooth on
+bluetoothctl show | grep Powered    # Powered: yes
+```
+
+Three things to know. A mouse or keyboard that drops its connection to save
+its own battery, and comes back when touched, finds Bluetooth off if it was
+away for ten minutes: for one of those make the time longer (`OnActiveSec`
+in [data/tw-bluetooth-idle.timer](data/tw-bluetooth-idle.timer)), or build
+with `meson configure build-release -Dbluetooth=false`, which leaves
+Bluetooth as the distribution set it up. An adapter that is not on USB
+needs its driver named in [data/tw-bluetooth.conf](data/tw-bluetooth.conf).
+And if `tw-bluetooth on` ever fails, `journalctl -b -u tw-bluetooth@on`
+says why, and `sudo modprobe btusb` does by hand what it does.
 
 ## Good to know
 

@@ -1,0 +1,127 @@
+#!/bin/sh
+# Switches Bluetooth on or off. Run as root by tw-bluetooth@on.service and
+# tw-bluetooth@off.service, which tw-bluetooth starts, and by
+# tw-bluetooth@idle.service, which a timer starts; the only input is the
+# word from the unit's name.
+#
+# Off: the Bluetooth service is stopped and every Bluetooth module is
+# unloaded, the adapter's driver among them. With no driver there is no
+# adapter, so nothing starts the service again, and the radio has no power.
+# On: the adapter's driver is loaded. systemd starts the service by itself
+# when the adapter appears, as it does on any machine that boots with one.
+# Idle: off, if it was this helper that switched Bluetooth on and nothing
+# is connected.
+set -u
+
+sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
+# The drivers kept from loading as the machine starts, which makes them the
+# ones to load here: every "blacklist" line of this file names one.
+conf=${TW_BLUETOOTH_CONF:-/usr/local/lib/modprobe.d/tw-bluetooth.conf}
+# Present while Bluetooth is on because this helper switched it on. Only
+# then does it go off by itself: a machine where Bluetooth is on from boot
+# is left alone.
+flag=${TW_RUN:-/run}/tw-bluetooth
+service=bluetooth.service
+timer=tw-bluetooth-idle.timer
+
+# True if there is an adapter: hci0 and so on.
+adapter() {
+	for device in "$sys"/class/bluetooth/hci*; do
+		[ -e "$device" ] && return 0
+	done
+	return 1
+}
+
+# True if a device is connected. The kernel keeps each connection next to
+# its adapter, named after it with a colon and a number: hci0:256.
+connected() {
+	for link in "$sys"/class/bluetooth/hci*:*; do
+		[ -e "$link" ] && return 0
+	done
+	return 1
+}
+
+# Lifts the block on every Bluetooth radio, as `rfkill unblock bluetooth`
+# does.
+unblock() {
+	for switch in "$sys"/class/rfkill/rfkill*; do
+		[ "$(cat "$switch/type" 2>/dev/null)" = bluetooth ] || continue
+		[ "$(cat "$switch/soft" 2>/dev/null)" = 0 ] || echo 0 >"$switch/soft"
+	done
+}
+
+switch_off() {
+	# First, so that the connections ending now do not start the timer.
+	rm -f "$flag"
+	systemctl stop "$timer" 2>/dev/null
+	[ -d "$sys/module/bluetooth" ] || return 0
+	# The service has the modules open, so it goes before them.
+	systemctl stop "$service" 2>/dev/null
+	# Every module that needs the Bluetooth core, then the core. Removing a
+	# driver takes along what only it needed (btintel with btusb), so each
+	# is looked for again before it is removed. And more than once: a
+	# program that had a device open, the sound service for one, takes a
+	# moment to let go after the Bluetooth service has gone.
+	passes=0
+	while :; do
+		for holder in "$sys"/module/bluetooth/holders/*; do
+			[ -e "$holder" ] && modprobe -r "${holder##*/}" 2>/dev/null
+		done
+		modprobe -r bluetooth 2>/dev/null
+		[ -d "$sys/module/bluetooth" ] || return 0
+		passes=$((passes + 1))
+		[ "$passes" -lt 5 ] || break
+		sleep 0.5
+	done
+	echo "tw-bluetooth: a program still has Bluetooth open; its modules stay loaded" >&2
+	return 1
+}
+
+case ${1:-} in
+on)
+	drivers=$(sed -n 's/^[[:space:]]*blacklist[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$conf" 2>/dev/null | tr '\n' ' ')
+	if [ -z "$drivers" ]; then
+		echo "tw-bluetooth: $conf names no driver to load" >&2
+		exit 1
+	fi
+	for driver in $drivers; do
+		# One that this machine has no use for may fail; what counts is
+		# whether an adapter turns up.
+		modprobe "$driver"
+	done
+	# The adapter is there as soon as its driver has found it.
+	tries=0
+	until adapter; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 25 ]; then
+			echo "tw-bluetooth: no Bluetooth adapter appeared after loading: $drivers" >&2
+			switch_off
+			exit 1
+		fi
+		sleep 0.2
+	done
+	: >"$flag"
+	# systemd puts the radio's block back to what it was when the adapter
+	# was last there, a moment after udev is done with the adapter. If that
+	# was "blocked", a block lifted before then would come back. So give
+	# systemd that moment first. It takes note of the block being lifted,
+	# and what it puts back from then on is "not blocked".
+	udevadm settle --timeout=5
+	sleep 1
+	unblock
+	# Off again once nothing has been connected for a while.
+	systemctl restart "$timer"
+	;;
+off)
+	switch_off
+	;;
+idle)
+	[ -e "$flag" ] || exit 0
+	connected && exit 0
+	switch_off
+	;;
+*)
+	echo "usage: tw-bluetooth-root on|off|idle" >&2
+	exit 2
+	;;
+esac

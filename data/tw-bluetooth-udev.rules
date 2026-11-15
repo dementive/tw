@@ -1,0 +1,12 @@
+# A Bluetooth adapter on USB may go to sleep when it has nothing to do. Its
+# driver allows that as it loads; with the driver kept away nobody does, and
+# the adapter would sit awake for as long as the machine runs.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", \
+    ATTR{bDeviceClass}=="e0", ATTR{bDeviceSubClass}=="01", ATTR{bDeviceProtocol}=="01", \
+    TEST=="power/control", ATTR{power/control}="auto"
+
+# A connection ended while Bluetooth is on because tw-bluetooth switched it
+# on: start the wait for the next one over. When it runs out with nothing
+# connected, Bluetooth goes off.
+ACTION=="remove", SUBSYSTEM=="bluetooth", ENV{DEVTYPE}=="link", TEST=="/run/tw-bluetooth", \
+    RUN+="/usr/bin/systemctl --no-block restart tw-bluetooth-idle.timer"

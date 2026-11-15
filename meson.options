@@ -5,6 +5,12 @@ option(
 	description: 'Build the pinned wlroots in subprojects/ and link it statically',
 )
 option(
+	'bluetooth',
+	type: 'boolean',
+	value: true,
+	description: 'Install tw-bluetooth and keep the Bluetooth driver from loading at boot: Bluetooth is off until `tw-bluetooth on`',
+)
+option(
 	'notify',
 	type: 'feature',
 	value: 'auto',

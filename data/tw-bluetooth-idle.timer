@@ -1,0 +1,11 @@
+# How long Bluetooth stays on with nothing connected. Started by
+# tw-bluetooth-root as it switches Bluetooth on, and started over by a udev
+# rule each time a connection ends. When it runs out, tw-bluetooth@idle
+# switches Bluetooth off, unless something is connected by then.
+[Unit]
+Description=Bluetooth goes off when nothing has been connected for a while (tw-bluetooth)
+
+[Timer]
+# tw-bluetooth names this figure in what it prints.
+OnActiveSec=10min
+Unit=tw-bluetooth@idle.service
