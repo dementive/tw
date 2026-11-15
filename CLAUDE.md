@@ -1019,10 +1019,19 @@ unit, and reports whether the keyring is open and whether a secret can be
 stored and read back. `tw-session` needs no change: its wallet step runs
 only when the wallet's login module has set `PAM_KWALLET5_LOGIN`. Applied
 to a copy of the real login file the change is exactly those lines, and
-going back gives the file byte for byte. Not seen: `pam_oo7.so` inside a
-real login or inside swaylock, the unit under systemd with its sandboxing,
-a boot with oo7, and the Claude app against it. Breaking the script 16
-ways, one at a time, each made `tests/keyring.sh` fail.
+going back gives the file byte for byte. Breaking the script 16 ways, one
+at a time, each made `tests/keyring.sh` fail.
+
+The owner ran it the same day. `oo7` left the real login file with exactly
+those three lines and the unit enabled. The login on the third console
+worked: the journal has `login` starting `oo7-daemon-login` and "LOGIN ON
+tty3". `start` 22 seconds later: `ksecretd` gone, the unit started under
+systemd, "Secret delivered to daemon", the keyring open, a secret stored
+and read back. oo7 there is 8.8 MB resident and 1.3 MB its own (6.2 MB by
+PSS, 21 threads). It also took the KDE wallet over by itself:
+`~/.local/share/keyrings/v1/` holds `kdewallet.keyring` next to
+`login.keyring`. Not seen yet: the lock screen with the module in its
+stack, a boot with oo7, and whether the Claude app finds its sign-in.
 
 KDE. Nothing of it runs in a tw session but `ksecretd`, so removing it
 frees disk and no memory. A dry run of removing the `plasma` group with
