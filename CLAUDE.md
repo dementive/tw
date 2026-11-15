@@ -979,3 +979,25 @@ be awake again from each level (MSRs 0x60A to 0x60C and 0x633 to 0x635),
 to set against what the devices ask for. Since the draw while Claude
 works is now close to idle, how deep the package sleeps matters for the
 owner's case after all.
+
+The owner ran it a third time (idle, 8.10 W at the battery, 1.10 W in the
+package; C2 32%, C3 1%, C6 61%, nothing deeper, as in the second report).
+The six registers read zero with the valid bit clear: the firmware never
+set them, so there is nothing to set against the devices' requests and
+the question stays open. What is known: the firmware allows C10; with the
+Ethernet controller asleep the package gets to C6 and, in two idle
+reports, not for one microsecond deeper, which looks like a condition
+that is never met and not like idle periods that are merely short (about
+500 wake-ups a second, 440 of them timers, with the Claude app and a code
+editor open). What could tell the candidates apart was not done, and the
+owner was told why: making the chipset ignore the USB controller's
+request (`ltr_ignore`) with the root disk on that controller; letting the
+keyboard's USB device suspend, which input devices are commonly excluded
+from because some do not wake; and a report with the Claude app closed,
+which is safe but describes a state the owner is never in. At stake is
+part of the 1.1 W the package draws when idle.
+
+Where it ended (2026-11-15, on battery, screen at 15%): 8.1 W idle and
+8.8 W while Claude works, against 11.4 W and 16.5 W the day before. In
+order of size: reduced motion and the 60 Hz mode (the animation), the
+Ethernet controller (1.4 W), the power-saver profile.

@@ -142,9 +142,11 @@ if [ -r /dev/cpu/0/msr ]; then
 		shift "$((limit < 8 ? limit : 8))"
 		echo "limit: $limit, package $1; locked by the firmware: $(((0x$raw >> 15) & 1))"
 	fi
-	# How soon the package has to be awake again from each level. It only goes
-	# to a level if every device tolerates that long a wait (their requests
-	# are under "what each part of the chipset asks for" below).
+	# How soon the package has to be awake again from each level, where the
+	# firmware has set that: it only goes to a level if every device
+	# tolerates that long a wait (their requests are under "what each part of
+	# the chipset asks for" below). On the laptop this was written for none
+	# of the six is set, so there is nothing to compare.
 	for level in "C3 0x60a" "C6 0x60b" "C7 0x60c" "C8 0x633" "C9 0x634" "C10 0x635"; do
 		raw=$(msr "${level#* }")
 		[ -n "$raw" ] || continue
@@ -155,7 +157,11 @@ if [ -r /dev/cpu/0/msr ]; then
 			ns=$((ns * 32))
 			unit=$((unit - 1))
 		done
-		echo "package ${level% *}: awake again within $((ns / 1000)) us (raw 0x$raw, in force: $(((value >> 15) & 1)))"
+		if [ $(((value >> 15) & 1)) = 1 ]; then
+			echo "package ${level% *}: awake again within $((ns / 1000)) us (raw 0x$raw)"
+		else
+			echo "package ${level% *}: not set by the firmware (raw 0x$raw)"
+		fi
 	done
 else
 	echo "cannot read /dev/cpu/0/msr"
