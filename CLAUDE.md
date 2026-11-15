@@ -956,3 +956,26 @@ Claude works has gone from 16.5 W to about 10.5 W. What is left in
 software is that 1 W (telling the app to reduce motion, or tw sending
 frame callbacks less often while nothing is typed). Larger, and not tw's:
 the battery's wear (54 of 90 Wh) and the system running from the USB disk.
+
+The owner said yes to trying reduced motion. `gsettings set
+org.gnome.desktop.interface enable-animations false` took effect in the
+running Claude app within two seconds, and switching it back and forth
+showed it was the setting: on, 64 to 78 frames a second and 10.8 to
+11.8 W while Claude worked; off, 5 to 6 frames a second and 8.8 W, with
+0.05 of a core busy in the whole machine. So the working animation was
+costing 2 to 3 W, more than the 1 W estimated from the frame rate alone,
+and with it gone the draw while Claude works is nearly that of a still
+screen. The setting was left off (README step 12). It is the user's own
+desktop setting, in dconf, not something tw sets.
+
+They also asked whether the USB controller holding the package at C6 was
+known or a guess. A guess, and they were told so. It rests on one reading
+(XHCI is the only part asking for a short wake-up time), and the same
+report has a figure that may speak against it: `ltr_show` gives the
+aggregated request as 800 ms. The other candidates were never ruled out:
+some 500 timer interrupts a second with the Claude app open, and the
+display. `tools/power-root.sh` now also prints how soon the package must
+be awake again from each level (MSRs 0x60A to 0x60C and 0x633 to 0x635),
+to set against what the devices ask for. Since the draw while Claude
+works is now close to idle, how deep the package sleeps matters for the
+owner's case after all.

@@ -129,8 +129,11 @@ if [ -s "$tmp/s0.a" ]; then
 fi
 
 section "the deepest package sleep the firmware allows (register 0xE2 of the CPU)"
+msr() { # msr <number>: one register of the first CPU, as 16 hex digits
+	dd if=/dev/cpu/0/msr bs=8 count=1 skip=$(($1)) iflag=skip_bytes 2>/dev/null | od -A n -t x8 | tr -d ' '
+}
 if [ -r /dev/cpu/0/msr ]; then
-	raw=$(dd if=/dev/cpu/0/msr bs=8 count=1 skip=$((0xe2)) iflag=skip_bytes 2>/dev/null | od -A n -t x8 | tr -d ' ')
+	raw=$(msr 0xe2)
 	echo "raw 0x$raw"
 	if [ -n "$raw" ]; then
 		# The table of this CPU family, as turbostat has it.
@@ -139,6 +142,21 @@ if [ -r /dev/cpu/0/msr ]; then
 		shift "$((limit < 8 ? limit : 8))"
 		echo "limit: $limit, package $1; locked by the firmware: $(((0x$raw >> 15) & 1))"
 	fi
+	# How soon the package has to be awake again from each level. It only goes
+	# to a level if every device tolerates that long a wait (their requests
+	# are under "what each part of the chipset asks for" below).
+	for level in "C3 0x60a" "C6 0x60b" "C7 0x60c" "C8 0x633" "C9 0x634" "C10 0x635"; do
+		raw=$(msr "${level#* }")
+		[ -n "$raw" ] || continue
+		value=$((0x$raw))
+		ns=$((value & 0x3ff))
+		unit=$(((value >> 10) & 7)) # the count is in units of 32^unit ns
+		while [ "$unit" -gt 0 ]; do
+			ns=$((ns * 32))
+			unit=$((unit - 1))
+		done
+		echo "package ${level% *}: awake again within $((ns / 1000)) us (raw 0x$raw, in force: $(((value >> 15) & 1)))"
+	done
 else
 	echo "cannot read /dev/cpu/0/msr"
 fi

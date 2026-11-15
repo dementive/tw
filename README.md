@@ -303,6 +303,22 @@ echo auto | sudo tee /sys/bus/pci/devices/0000:2c:00.0/power/control
 controller wakes when a cable is plugged in. Should a cable ever go
 unnoticed, delete the file and reboot.
 
+### 12. Tell applications to keep still
+
+Programs that honour the desktop's "reduce motion" setting stop animating
+for decoration. The Claude app's working animation alone had the screen
+redrawn 64 times a second for as long as Claude worked, which cost about
+2 W; with the setting it is redrawn 5 times a second:
+
+```sh
+gsettings set org.gnome.desktop.interface enable-animations false
+```
+
+It takes effect at once, in GTK programs and in Chromium and Electron ones,
+and it is kept across logins. Scrolling in those programs may jump where it
+used to glide. To undo it:
+`gsettings reset org.gnome.desktop.interface enable-animations`.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
