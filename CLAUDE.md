@@ -624,6 +624,17 @@ that can each be undone and tested from a second console, and leave the
 keyring as it is. Never run on this machine: tw started from a console
 login, the wallet unlocked by one, and KDE started from one.
 
+The owner agreed to the first step: two lines appended to
+`/etc/pam.d/login`, `-auth optional pam_kwallet5.so` and
+`-session optional pam_kwallet5.so auto_start force_run`. `force_run` is
+needed because the module skips a session that is not graphical, which a
+console login is (its own message says so). Mind that the lock screen
+authenticates through the same file (`/etc/pam.d/swaylock` has
+`auth include login`), so a mistake there would also lock the owner out at
+the lock screen; `sudo` and plasmalogin use other files and stay as a way
+back. A console login made while a session is running leaves a second
+`ksecretd --pam-login` waiting for an environment nobody sends.
+
 fnott is no longer in `autostart[]`: its package ships a D-Bus service
 file, so the bus starts it when a program sends the first notification
 (tried on a private bus with a headless tw: started by `notify-send`,
