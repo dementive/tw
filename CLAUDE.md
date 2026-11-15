@@ -1760,16 +1760,20 @@ was switched). The firmware offers `deep` (S3) besides `s2idle`, and the
 keyboard is allowed to wake the machine (`power/wakeup` is `enabled` for
 its USB device and for the PS/2 port).
 
-What was done. `suspend_after_seconds` is 0. README step 19 has the owner
-mask `sleep.target` and `suspend.target`, because the lid (logind's
-default is to suspend), the 5% battery suspend and a typed `systemctl
-suspend` all lead to the same place. A sleep block held from this session
+What was done. `suspend_after_seconds` is 0, and so is
+`battery_suspend_percent` (it was 5): tw sends this machine to sleep in no
+case. README step 19 has the owner mask `sleep.target` and
+`suspend.target`, because the lid (logind's default is to suspend) and a
+typed `systemctl suspend` lead to the same place. A sleep block held from this session
 for the running tw (`systemd-inhibit --mode=block`, which since systemd
 257 also binds the user's own requests) was refused by the app's own
 safety check, so the mask is what protects a running session.
 
-Finding the cause needs tests that can each end in another hard power-off,
-so they are the owner's to ask for: the kernel's dry runs
+Asked whether to work out why it will not wake or to leave sleep off, the
+owner answered "Leave sleep off". So the cause stays unknown, and none of
+the following was run. Do not offer it again unless they bring sleep up.
+Finding the cause would need tests that can each end in another hard
+power-off: the kernel's dry runs
 (`/sys/power/pm_test` at `freezer`, `devices`, `platform`, `processors`,
 `core`, each of which goes down to that level, waits five seconds and
 comes back), `pm_trace` to name the device a hang stops at (it scrambles

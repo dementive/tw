@@ -116,7 +116,10 @@ static const char mains_command[] = "tw-power balanced";
 static const int battery_warn_percent = 10;
 static const char battery_warn_command[] =
 	"notify-send --urgency=critical 'Battery low' 'Plug in the charger.'";
-static const int battery_suspend_percent = 5;
+/* 0 like suspend_after_seconds, and for its reason: this laptop does not
+ * wake from a suspend, and the owner chose to leave sleep off (2026-11-15).
+ * It was 5. */
+static const int battery_suspend_percent = 0;
 
 /*
  * Lock the session when the laptop lid closes, when the screen turns off

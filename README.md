@@ -585,19 +585,20 @@ Thunderbolt devices: they never needed `boltd` and show nothing here.
 On 2026-11-15 the ROG Strix was sent to sleep for the first time under tw,
 by tw's own 15-minute timer, and did not wake: it could not be brought
 back and had to be switched off and on again.
-Why is not known. tw's timer is off since then (`suspend_after_seconds` is
-0), but three other things still send the machine to sleep: closing the
-lid (systemd does that by itself), the battery falling to 5% (tw), and
-`systemctl suspend` typed by hand. Until a sleep and a wake-up have been
-seen to work, take sleep away from all of them:
+Why is not known, and the decision was to leave sleep off rather than
+test for it. tw no longer sends the machine to sleep at all: not when idle
+(`suspend_after_seconds` is 0) and not on a low battery
+(`battery_suspend_percent` is 0). Two things outside tw still do: closing
+the lid (systemd does that by itself) and `systemctl suspend` typed by
+hand. Take sleep away from those too:
 
 ```sh
 sudo systemctl mask sleep.target suspend.target
 ```
 
-Closing the lid then only locks the session, and on battery the laptop
-runs until it is empty: the warning at 10% is what is left, so plug in
-when it shows. To have sleep back:
+Closing the lid then only locks the session. On battery the laptop runs
+until it is empty: the warning at 10% is all there is, so plug in when it
+shows. To have sleep back, on a machine that wakes:
 
 ```sh
 sudo systemctl unmask sleep.target suspend.target
@@ -648,12 +649,12 @@ sudo systemctl unmask sleep.target suspend.target
   [notify/config.h](notify/config.h); the font is picked when tw is built
   (`meson configure build-release -Dnotify_font='DejaVu Sans'`).
 - There is no battery indicator. When the charge is down to 10% a
-  notification says so, and it stays until you click it. At 5% the laptop
-  locks and suspends, and it does so again for each further percent if you
-  wake it without plugging in. It cannot hibernate (the swap is in RAM), so a
-  suspended laptop still runs out in the end, only much later. The two
-  thresholds are `battery_warn_percent` and `battery_suspend_percent` in
-  [src/config.h](src/config.h); 0 turns either off. With sleep masked
-  (step 19) the laptop locks at 5% and stays on.
+  notification says so, and it stays until you click it. Nothing more
+  happens after that: the laptop runs until it is empty. On a machine that
+  wakes from sleep, `battery_suspend_percent` in
+  [src/config.h](src/config.h) makes tw lock and suspend at that charge,
+  and again for each further percent if it is woken without being plugged
+  in; it is 0, which is off, because the ROG Strix does not (step 19).
+  `battery_warn_percent` is the warning's threshold.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
   are all in [src/config.h](src/config.h).
