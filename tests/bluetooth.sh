@@ -2,12 +2,12 @@
 # tw-bluetooth and its root helper, run against a made-up machine: one
 # directory standing in for /sys and one for /run, and stand-ins for
 # modprobe, systemctl, udevadm and sleep that load and unload pretend
-# modules, start and stop a pretend Bluetooth service, and do to the radio's
-# block what systemd does. Nothing here touches a real adapter, driver or
-# service, or needs root. What it cannot show: that the real modules unload
-# and load again, that systemd starts the service when the adapter appears,
-# that the polkit rule lets the units be started, or that the udev rules do
-# what they say.
+# modules, start and stop a pretend Bluetooth service, start it again the
+# way the system bus does, and do to the radio's block what systemd does.
+# Nothing here touches a real adapter, driver or service, or needs root.
+# What it cannot show: that the real modules unload and load again, that
+# systemd starts the service when the adapter appears, that the polkit rule
+# lets the units be started, or that the udev rules do what they say.
 # $1 = the data/ directory of the source tree.
 set -eu
 data=$1
@@ -63,11 +63,23 @@ load) # btusb, and what the kernel and systemd do when it finds the adapter
 	echo bluetooth >$sys/class/rfkill/rfkill1/type
 	echo 0 >$sys/class/rfkill/rfkill1/soft # a new radio is not blocked
 	cp $state/remembered $state/restore
-	"\$0" daemon
+	"\$0" start # systemd wants the service for the adapter
 	;;
-daemon) # systemd starts the service for the adapter
+start) # systemd is asked to start the service, and does if it may: the
+	# Bluetooth core has to be loaded, which is the unit's own condition,
+	# and with tw's line added to the unit the helper's note has to be
+	# there.
+	[ -d $sys/class/bluetooth ] || exit 0
+	if grep -q '^ConditionPathExists=/run/tw-bluetooth\$' "$data/tw-bluetooth-service.conf" 2>/dev/null; then
+		[ -e $run/tw-bluetooth ] || exit 0
+	fi
+	exec "\$0" daemon
+	;;
+daemon) # the service runs. It opens the core, which the kernel loads for it
+	# if need be, and rfcomm and bnep.
 	: >$state/daemon
-	mkdir -p \$module/rfcomm/holders \$module/bnep/holders
+	mkdir -p \$module/bluetooth/holders \$module/rfcomm/holders \$module/bnep/holders \\
+		$sys/class/bluetooth
 	ln -sfn ../../rfcomm \$module/bluetooth/holders/rfcomm
 	ln -sfn ../../bnep \$module/bluetooth/holders/bnep
 	;;
@@ -118,7 +130,13 @@ cat >"$rootbin/systemctl" <<EOF
 #!/bin/sh
 echo "root systemctl \$*" >>"$log"
 case "\$*" in
-"stop bluetooth.service") rm -f "$state/daemon" ;;
+"stop bluetooth.service")
+	rm -f "$state/daemon"
+	# The sound service takes its leave of the service that has just gone,
+	# and the system bus starts a service that is called while it is not
+	# running. On the real machine that took seven milliseconds.
+	"$rootbin/kernel" start
+	;;
 "restart tw-bluetooth-idle.timer") : >"$state/timer" ;;
 "stop tw-bluetooth-idle.timer") rm -f "$state/timer" ;;
 esac
@@ -164,12 +182,13 @@ machine() { # the laptop as it boots with tw installed: no driver, no adapter
 	cp "$data/tw-bluetooth.conf" "$conf"
 	: >"$log"
 }
-# The same laptop without tw's file in modprobe.d, or before its first
-# reboot with it: the driver loaded as it started, and systemd blocked the
-# radio again.
+# The same laptop before its first reboot with tw's files: the driver loaded
+# as it started, the service was started before tw's line was added to its
+# unit, and systemd blocked the radio again.
 machine_on_from_boot() {
 	machine
 	"$rootbin/kernel" load
+	"$rootbin/kernel" daemon
 	"$rootbin/kernel" restore
 }
 
@@ -251,7 +270,7 @@ disconnect 257
 : >"$log"
 root idle || fail "idle failed with nothing connected"
 all_off || fail "Bluetooth stayed on with nothing connected"
-[ "$(grep -n 'stop bluetooth.service' "$log" | cut -d: -f1)" -lt \
+[ "$(grep -n 'stop bluetooth.service' "$log" | head -n 1 | cut -d: -f1)" -lt \
 	"$(grep -n 'modprobe -r' "$log" | head -n 1 | cut -d: -f1)" ] ||
 	fail "the modules were unloaded before the service was stopped"
 bluetooth status
@@ -269,6 +288,14 @@ said '^Its radio is blocked: rfkill unblock bluetooth$' || fail "status does not
 bluetooth off || fail "off failed on a machine with Bluetooth on from boot"
 all_off || fail "off left something of a Bluetooth that was on from boot"
 said '^Bluetooth is off.$' || fail "off does not say so"
+
+# What the first switch-off on the real machine left, before the service
+# was kept from starting again: the driver and the adapter gone, the service
+# back, holding the core. Off clears that up.
+machine
+"$rootbin/kernel" daemon
+bluetooth off || fail "off failed with only the service and the core left"
+all_off || fail "off left the service or the core it holds"
 
 # --- Off by hand --------------------------------------------------------------
 # With a device connected: off all the same.
@@ -377,6 +404,8 @@ for word in on off; do
 		grep -q "systemctl start tw-bluetooth@$word.service" "$data/tw-bluetooth" ||
 		fail "the polkit rule and tw-bluetooth no longer name the same unit for '$word'"
 done
+grep -q '^ConditionPathExists=/run/tw-bluetooth$' "$data/tw-bluetooth-service.conf" ||
+	fail "the line added to the Bluetooth service and the helper no longer name the same note"
 grep -q '^Environment=TW_BLUETOOTH_CONF=@conf@$' "$data/tw-bluetooth@.service.in" ||
 	fail "the unit does not tell the helper where the file of drivers is"
 # The udev rules, as far as udev can check them without a device.

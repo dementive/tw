@@ -17,9 +17,10 @@ sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
 # The drivers kept from loading as the machine starts, which makes them the
 # ones to load here: every "blacklist" line of this file names one.
 conf=${TW_BLUETOOTH_CONF:-/usr/local/lib/modprobe.d/tw-bluetooth.conf}
-# Present while Bluetooth is on because this helper switched it on. Only
-# then does it go off by itself: a machine where Bluetooth is on from boot
-# is left alone.
+# Present while Bluetooth is on because this helper switched it on. The
+# Bluetooth service starts only while it is there (tw-bluetooth-service.conf),
+# and only then does Bluetooth go off by itself: a machine where it is on
+# from boot is left alone.
 flag=${TW_RUN:-/run}/tw-bluetooth
 service=bluetooth.service
 timer=tw-bluetooth-idle.timer
@@ -51,7 +52,9 @@ unblock() {
 }
 
 switch_off() {
-	# First, so that the connections ending now do not start the timer.
+	# First: without it the service that is about to be stopped cannot be
+	# started again by whoever calls it next, and the connections ending
+	# now do not start the timer.
 	rm -f "$flag"
 	systemctl stop "$timer" 2>/dev/null
 	[ -d "$sys/module/bluetooth" ] || return 0
@@ -84,6 +87,9 @@ on)
 		echo "tw-bluetooth: $conf names no driver to load" >&2
 		exit 1
 	fi
+	# Before the driver: systemd starts the service when the adapter
+	# appears, and the service starts only with this in place.
+	: >"$flag"
 	for driver in $drivers; do
 		# One that this machine has no use for may fail; what counts is
 		# whether an adapter turns up.
@@ -100,7 +106,6 @@ on)
 		fi
 		sleep 0.2
 	done
-	: >"$flag"
 	# systemd puts the radio's block back to what it was when the adapter
 	# was last there, a moment after udev is done with the adapter. If that
 	# was "blocked", a block lifted before then would come back. So give

@@ -61,7 +61,7 @@ which GPUs it would use and starts nothing.
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
 | `data/tw-bluetooth` | Switches Bluetooth on when asked, and off by hand; says which it is |
-| `data/tw-bluetooth-root`, `tw-bluetooth@.service.in`, `tw-bluetooth-idle.timer`, `tw-bluetooth.rules`, `tw-bluetooth-udev.rules`, `tw-bluetooth.conf` | What lets `tw-bluetooth` load and unload the adapter's driver, and what switches Bluetooth off when nothing is connected: root helper, system unit, timer, polkit rule, udev rules, and the modprobe file that keeps the driver from loading at boot |
+| `data/tw-bluetooth-root`, `tw-bluetooth@.service.in`, `tw-bluetooth-idle.timer`, `tw-bluetooth.rules`, `tw-bluetooth-udev.rules`, `tw-bluetooth.conf`, `tw-bluetooth-service.conf` | What lets `tw-bluetooth` load and unload the adapter's driver, and what switches Bluetooth off when nothing is connected: root helper, system unit, timer, polkit rule, udev rules, the modprobe file that keeps the driver from loading at boot, and the line added to `bluetooth.service` that keeps the bus from starting it while Bluetooth is off |
 | `data/` (rest) | The login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify` |
 | `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
@@ -222,8 +222,8 @@ and the Bluetooth modules are out of the kernel too.
 driver (`btusb`). A blacklist stops what udev does at boot, loading by the
 device's alias, and not a load by name, so the same file is the list of
 what `tw-bluetooth on` loads: the root helper reads the names out of it.
-`on` loads them, waits for an adapter, lifts the radio's block, leaves
-`/run/tw-bluetooth` and starts `tw-bluetooth-idle.timer`. It lifts the block
+`on` leaves `/run/tw-bluetooth`, loads them, waits for an adapter, lifts
+the radio's block and starts `tw-bluetooth-idle.timer`. It lifts the block
 a second after udev has settled, not at once, because systemd puts the
 block back to what it was when the adapter was last there (systemd-rfkill)
 and would undo it; once it has seen the block lifted, "not blocked" is what
@@ -231,6 +231,21 @@ it puts back from then on. `off` stops `bluetooth.service` and unloads every
 module that holds the Bluetooth core and then the core, in up to five
 passes half a second apart: the sound service keeps a Bluetooth socket open
 until it has seen the daemon go.
+
+`bluetoothd` cannot simply be stopped, which the first switch-off on the
+owner's machine showed. When it leaves the bus, WirePlumber calls it to
+take back what it had registered, and the system bus starts a service that
+is called while it is not running (the calls that take leave have
+auto-start on, unlike the one that looks for it). The service was running
+again 7 ms after it had stopped, held `bnep` and the core, and `off`
+failed. A second `off` did worse: the service was started again 13 ms
+after the stop, the helper unloaded the core while the new daemon had not
+opened anything yet and reported success, and the daemon's first socket
+made the kernel load the core again. So `tw-bluetooth-service.conf` adds
+`ConditionPathExists=/run/tw-bluetooth` to `bluetooth.service`: the service
+starts only while Bluetooth is switched on. That is why `on` leaves the
+note before it loads the driver, and `off` removes it before it stops the
+service. A start that the condition refuses is one line in the journal.
 
 Bluetooth goes off by itself when nothing has been connected for ten
 minutes, with no process waiting for that. The kernel keeps each connection
@@ -499,18 +514,28 @@ path has never been run.
 
 `tests/bluetooth.sh` runs `tw-bluetooth` and its helper against a made-up
 machine, whose stand-in for `sleep` is also the moment in which systemd
-puts the radio's block back and a program lets go of its socket. Breaking
-the two scripts 35 ways, one at a time, each made it fail. It cannot show
-anything about the real machine, and when this was written nothing of it
-had been installed there, so none of this has been seen: the modules
-unloading (WirePlumber has one socket that is neither a Unix nor a netlink
-one, most likely the listening socket for headsets, which PipeWire's source
-closes when BlueZ leaves the bus); a boot with the blacklist, and whether
-anything loads the Bluetooth core without a driver (a program opening a
-Bluetooth socket would); `on`, with systemd starting `bluetoothd` for the
-new adapter and the block staying lifted; the polkit rule; a connection
-ending and starting the timer over (the rule matches `DEVTYPE=link`, a name
-taken from the kernel module's strings); the adapter asleep with no driver.
+puts the radio's block back and a program lets go of its socket, and whose
+stand-in for stopping the service starts it again at once, as the bus
+does, if the unit's conditions allow. Breaking the scripts and the line
+added to the service 38 ways, one at a time, each made it fail. It cannot
+show anything about the real machine. Seen there (2026-11-15): the polkit
+rule, since the owner started the unit without `sudo`; the driver and its
+four helper modules unloading, which takes the adapter away; and the
+adapter's USB device asleep with no driver bound (`power/control` was
+still `auto` from the driver, so that was not the udev rule's doing). The
+made-up machine had not known about the bus: the first two switch-offs
+failed as described above, and the model and the condition came out of
+that. Not seen yet: a switch-off with the condition in place, and with it
+the core unloading (WirePlumber has one socket that is neither a Unix nor
+a netlink one, most likely the listening socket for headsets, which
+PipeWire's source closes when BlueZ leaves the bus); what the bus tells a
+caller when the condition refuses the start; a boot with the blacklist,
+and whether anything loads the Bluetooth core without a driver (a program
+opening a Bluetooth socket would); `on`, with systemd starting `bluetoothd`
+for the new adapter and the block staying lifted; a connection ending and
+starting the timer over (the rule matches `DEVTYPE=link`, a name taken from
+the kernel module's strings); the udev rule putting a driverless adapter
+to sleep after a boot.
 Checked without root: a blacklisted module loads by name and not the way
 udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
 `systemd-analyze verify` the unit and the timer, and a staged install puts
@@ -1166,8 +1191,8 @@ the main one) would take the 2.9 MB off its line in `btop`, but only
 0.28 MB of that is memory in use, a whole second WirePlumber runs while
 Bluetooth is on, and whether a headset then plays cannot be tested here.
 WirePlumber does not start `bluetoothd` by looking for it (its
-`GetManagedObjects` call has auto-start off), and `bluetoothctl` only
-waits for it. The user's `bluetooth.target` was inactive although the
+`GetManagedObjects` call has auto-start off), though it does by taking its
+leave of one that has just stopped, and `bluetoothctl` only waits for it. The user's `bluetooth.target` was inactive although the
 adapter was there from boot, so nothing should be hung on it.
 
 Found on the way, and larger than all of Bluetooth: 79 of the 161

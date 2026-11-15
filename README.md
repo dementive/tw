@@ -478,6 +478,9 @@ Off means the adapter's driver is not loaded. A file the install puts in
 so systemd, which starts `bluetoothd` whenever there is one (whether its
 radio is blocked or not, which is why it used to run all day), never does.
 `bluetooth.service` stays enabled as it is; there is nothing to disable.
+The install also adds one line to that service, so that it starts only
+while Bluetooth is switched on: otherwise the sound service, which calls it
+to take its leave, would start it again the moment it is stopped.
 What that frees on the ROG Strix: `bluetoothd` (7 MB in `btop`, 0.6 MB its
 own) and 1.6 MB of kernel modules. The radio was asleep already.
 
@@ -499,7 +502,8 @@ with `meson configure build-release -Dbluetooth=false`, which leaves
 Bluetooth as the distribution set it up. An adapter that is not on USB
 needs its driver named in [data/tw-bluetooth.conf](data/tw-bluetooth.conf).
 And if `tw-bluetooth on` ever fails, `journalctl -b -u tw-bluetooth@on`
-says why, and `sudo modprobe btusb` does by hand what it does.
+says why, and `sudo touch /run/tw-bluetooth && sudo modprobe btusb` does by
+hand what it does.
 
 ## Good to know
 

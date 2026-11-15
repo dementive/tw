@@ -185,8 +185,10 @@ install_data(
 # starts, and the parts that let the command load and unload it: a root
 # helper, the system unit that runs it, the polkit rule that lets the user
 # start that unit, the timer that switches Bluetooth off again when nothing
-# is connected, and the udev rules that start that timer and let a
-# driverless adapter sleep. On a machine without Bluetooth it does nothing.
+# is connected, the udev rules that start that timer and let a driverless
+# adapter sleep, and the line added to the Bluetooth service that keeps the
+# system bus from starting it while Bluetooth is off. On a machine without
+# Bluetooth it does nothing.
 if get_option('bluetooth')
 	bluetooth_conf = get_option('prefix') / 'lib/modprobe.d'
 	install_data(
@@ -216,6 +218,11 @@ if get_option('bluetooth')
 	install_data(
 		'data/tw-bluetooth-idle.timer',
 		install_dir: get_option('prefix') / 'lib/systemd/system',
+	)
+	install_data(
+		'data/tw-bluetooth-service.conf',
+		rename: 'tw-bluetooth.conf',
+		install_dir: get_option('prefix') / 'lib/systemd/system/bluetooth.service.d',
 	)
 	install_data(
 		'data/tw-bluetooth.rules',
