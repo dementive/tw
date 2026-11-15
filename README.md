@@ -186,6 +186,33 @@ sudo systemctl disable --now switcheroo-control.service
 Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
 through it.
 
+### 8. The kernel's memory reserves
+
+Of what `btop` and `free` call "used" right after login, about 285 MB is
+free memory that the kernel holds back. Two settings shrink that to about
+140 MB and take 170 MB off the figure, the per-CPU page caches that follow
+it included:
+
+```sh
+printf 'vm.min_free_kbytes = 16384\nvm.lowmem_reserve_ratio = 1024 1024 32 0 0\n' |
+    sudo install -Dm644 /dev/stdin /etc/sysctl.d/90-memory.conf
+sudo sysctl --system
+```
+
+| Setting | What it is | What changing it costs |
+| --- | --- | --- |
+| `vm.min_free_kbytes` | the memory the kernel always keeps free. With huge pages on it picks 66 MB; 16 MB is what it picks without them on a 16 GB machine | huge pages stay on, but once the file cache has filled the RAM a newly started program more often gets normal pages first and huge ones a little later |
+| `vm.lowmem_reserve_ratio` | how much of the first 4 GB is kept for devices that can only use that part: 58 MB by default, 14 MB with this | nothing found |
+
+On a machine with a different amount of RAM, take the square root of
+16 times the RAM in kB for the first value (22600 for 32 GB).
+
+To check: `sh tools/mem.sh` prints the figure and what it is made of; the
+"held back" line is the one these settings change. To see whether huge
+pages suffer, look at `grep thp_fault_fallback /proc/vmstat` after a few
+days of use: it counts the times a program wanted a huge page and got
+normal ones. It was 0 before the change.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
