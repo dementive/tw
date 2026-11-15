@@ -55,3 +55,20 @@ bool tw_spring_settled(double pos, double vel, double target) {
 bool tw_refresh_saves(int candidate, int current, int floor_hz) {
 	return candidate < current && (candidate + 500) / 1000 >= floor_hz;
 }
+
+int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
+		int warn_at, int suspend_at) {
+	int due = 0;
+	if (fresh) {
+		battery->low_mark = charge;
+	}
+	if (warn_at > 0 && charge <= warn_at && !battery->warned) {
+		battery->warned = true;
+		due |= TW_BATTERY_WARN;
+	}
+	if (suspend_at > 0 && charge <= suspend_at && charge < battery->low_mark) {
+		battery->low_mark = charge;
+		due |= TW_BATTERY_SUSPEND;
+	}
+	return due;
+}

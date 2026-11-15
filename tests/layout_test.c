@@ -117,6 +117,46 @@ int main(void) {
 	CHECK(!tw_refresh_saves(59499, 300000, 60));
 	CHECK(tw_refresh_saves(48000, 300000, 48));
 
+	/* A battery running down from 12%, warning at 10 and suspending at 5.
+	 * The first reading is where it starts from. */
+	struct tw_battery battery = {0};
+	CHECK(tw_battery_look(&battery, 12, true, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 11, false, 10, 5) == 0);
+	/* One warning, however long the charge stays low. */
+	CHECK(tw_battery_look(&battery, 10, false, 10, 5) == TW_BATTERY_WARN);
+	CHECK(tw_battery_look(&battery, 10, false, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 6, false, 10, 5) == 0);
+	/* Suspended on reaching 5%, and not again while it stays there. */
+	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == TW_BATTERY_SUSPEND);
+	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == 0);
+	/* Woken at 5% and left unplugged: nothing at once, and nothing for a
+	 * reading that wobbles up and back, but again at the next percent lost. */
+	CHECK(tw_battery_look(&battery, 5, true, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 6, false, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 4, false, 10, 5) == TW_BATTERY_SUSPEND);
+	/* Having slept down to 2%, it is not suspended the moment it wakes. */
+	CHECK(tw_battery_look(&battery, 2, true, 10, 5) == 0);
+	CHECK(tw_battery_look(&battery, 1, false, 10, 5) == TW_BATTERY_SUSPEND);
+
+	/* The cable pulled at 4%: warned at once, suspended only after a fall. */
+	struct tw_battery pulled = {0};
+	CHECK(tw_battery_look(&pulled, 4, true, 10, 5) == TW_BATTERY_WARN);
+	CHECK(tw_battery_look(&pulled, 4, false, 10, 5) == 0);
+	CHECK(tw_battery_look(&pulled, 3, false, 10, 5) == TW_BATTERY_SUSPEND);
+	/* A reading that skips the thresholds asks for both at once. */
+	struct tw_battery skipped = {0};
+	CHECK(tw_battery_look(&skipped, 40, true, 10, 5) == 0);
+	CHECK(tw_battery_look(&skipped, 3, false, 10, 5) == (TW_BATTERY_WARN | TW_BATTERY_SUSPEND));
+	/* A threshold of 0 turns its half off, down to an empty battery. */
+	struct tw_battery off = {0};
+	CHECK(tw_battery_look(&off, 40, true, 0, 0) == 0);
+	CHECK(tw_battery_look(&off, 0, false, 0, 0) == 0);
+	CHECK(tw_battery_look(&off, 0, false, 10, 0) == TW_BATTERY_WARN);
+	struct tw_battery quiet = {0};
+	CHECK(tw_battery_look(&quiet, 40, true, 0, 5) == 0);
+	CHECK(tw_battery_look(&quiet, 5, false, 0, 5) == TW_BATTERY_SUSPEND);
+
 	if (failures > 0) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

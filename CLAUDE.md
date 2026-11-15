@@ -43,13 +43,13 @@ which GPUs it would use and starts nothing.
 | File | Role |
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: gaps, column widths, outputs, autostart, timeouts, key bindings |
-| `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Pure functions, no wlroots, unit tested |
+| `src/layout.c` | Strip maths: column widths, stacking, view scrolling, the scroll spring. Also the two decisions of the battery mode (which refresh rate, what a falling charge calls for). Pure functions, no wlroots, unit tested |
 | `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, focus requests, `strip_arrange()`, scroll animation and swipes |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up |
 | `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects, and stops it when none is left |
-| `src/power.c` | Running on battery: learns from udev when the power cable goes in or out, slows the outputs down and runs the power-profile command |
+| `src/power.c` | Running on battery: learns from udev when the power cable goes in or out, slows the outputs down and runs the power-profile command; warns and then suspends as the battery runs low |
 | `src/output.c` | Outputs, which workspace each one shows, which mode each one runs in, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
@@ -224,8 +224,31 @@ monitor on the `power_supply` subsystem (wlroots links libudev anyway).
 tw does not read what an announcement says; it reads
 `/sys/class/power_supply` again and acts only if the answer changed. That
 matters because the owner's battery and charger both announce themselves
-every 35 seconds or so with nothing changed. A machine without a battery opens no
-monitor and runs no command.
+every 35 seconds or so with nothing changed. A machine without a battery
+opens no monitor and runs no command. Neither does a tw that is not what
+runs the machine, one inside another session or on the headless backend
+(`server->session` is NULL): it would set the power profile and suspend
+the machine a second time, next to the session that does. The tests
+switch it on all the same by pointing `TW_SYS` at a made-up machine.
+
+The owner has no bar, so nothing shows the charge. With each announcement
+on battery `handle_change()` reads it (the fullest battery's `capacity`)
+and asks `tw_battery_look()` what is due: `battery_warn_command` once at
+`battery_warn_percent` (10), and a suspend when the charge has fallen to
+`battery_suspend_percent` (5) and again for each percent below that, so
+that a machine woken and left unplugged goes back to sleep before it runs
+out. Suspending goes the way it does when idle: `lock_now()`, then
+`suspend_command`. A reading is `fresh` when somebody has just arrived (the
+cable was pulled, tw started, the machine woke up), and then it only sets
+the mark the charge has to fall below: nobody is put to sleep the moment
+they open the lid. Waking is told from the clocks, not from an event that
+could come after the battery's: CLOCK_BOOTTIME runs during sleep and
+CLOCK_MONOTONIC does not, so their difference grows only then
+(`asleep_ms()`). tw does not look at the charge as it starts, because a
+notification sent before `tw-session` has told D-Bus where the session is
+would start fnott without a display; the battery's next announcement comes
+soon enough. The machine cannot hibernate (swap is zram), so suspending
+only buys hours.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -402,8 +425,9 @@ rate: of that path only the choice is tested (`tw_refresh_saves()`, in the
 unit test), not the loop over an output's modes in `output_mode()`, nor
 `outputs_update_mode()`, nor the mode half of `output_set_power()`. And only
 the kernel can announce that a power supply changed, so `handle_change()`
-in `power.c` is untested; `tests/power.sh` covers what tw does with the
-state it finds as it starts. Seen on the owner's laptop (2026-11-14), in a
+in `power.c` is untested, and with it everything about a low battery but
+the decision (`tw_battery_look()`, in the unit test); `tests/power.sh`
+covers what tw does with the state it finds as it starts. Seen on the owner's laptop (2026-11-14), in a
 headless tw whose supplies were made up (`TW_SYS`) but whose announcements
 were real: the battery and the charger each announced a change about
 every 35 seconds while charging, tw noticed the made-up charger going offline at
@@ -412,10 +436,18 @@ power-saver` and `set balanced` once each. With the monitor open tw holds
 20 kB more of its own. `powerprofilesctl set power-saver` needs no
 password there and sets the CPUs' `energy_performance_preference` to
 `power` and the platform profile to `quiet`; the daemon behind it was
-already running in a session where tw never called it. Not seen yet: the
-panel changing mode (the first time the cable is pulled after an install),
-whether the screen blinks as it does, what the machine draws at 60 Hz, and
-whether a USB-C charger shows up as a supply that is online.
+already running in a session where tw never called it. A second such run
+had the made-up battery run down, with stand-ins for `notify-send` and
+`systemctl`: tw warned once at 9%, suspended at 5%, did nothing more while
+the charge stayed at 5%, suspended again at 4%, did nothing at 3% on the
+charger, warned again but did not suspend when the charger went at 3%, and
+suspended at 2%. The announcements came 55 to 110 seconds apart that time,
+so how soon tw notices varies. In the real session `notify-send` with the
+warning's urgency was accepted by fnott. Not seen yet: the panel changing
+mode (the first time the cable is pulled after an install), whether the
+screen blinks as it does, what the machine draws at 60 Hz, whether a USB-C
+charger shows up as a supply that is online, a real suspend from a low
+battery, and a wake-up being told from the clocks.
 
 ## Known noise
 
@@ -449,7 +481,9 @@ to 2536 kB for the commit before the battery mode and 2483 to 2565 with it
 (six runs each, back to back; the binary's code had grown by 3.8 kB), over
 the budget half the time, while the allocated figure stayed at 808 to 812.
 The likely reason is that the login screen's compositor mapped the same
-libraries and no longer shares them. So that budget went from 2500 to
+libraries and no longer shares them. A second tw from the same build
+running during the test (a probe) shares the binary too, and the figure
+then reads about 1960. So that budget went from 2500 to
 2650, and the allocated figure got a budget of its own, 850, which is the
 one that means something.
 
@@ -797,9 +831,10 @@ Recommended: the first three as one change.
 Asked "Build 60 Hz and the power-saver profile on battery first?", the
 owner answered "Yes, build it", and those two are in (`power.c`,
 `battery_refresh_hz` and the two commands in `config.h`). What they cost
-when in use: a socket that wakes tw about four times a minute to read six
-small files, and 20 kB. What they save is still the estimate above until the
+when in use: a socket that wakes tw two to four times a minute to read a
+handful of small files, and 20 kB. What they save is still the estimate above until the
 owner has been on battery with the new build: `sh tools/power.sh` then
 shows the draw next to the frame rate, to set against 16.5 W animating and
-11.4 W still. The warning and suspend on a low battery are not built; they
-were left for the owner to decide.
+11.4 W still. Asked next whether to build the warning and the suspend on a
+low battery, the owner again answered "Yes, build it", and that is in too
+(10% and 5%; `battery_warn_percent`, `battery_suspend_percent`).

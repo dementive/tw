@@ -24,6 +24,7 @@ feature does nothing without its program:
 ```sh
 sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
+    libnotify \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
 ```
 
@@ -38,6 +39,7 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | grim, slurp | screenshots (Print, Shift+Print) |
 | brightnessctl, wireplumber | brightness and volume keys |
 | power-profiles-daemon | the power-saver CPU profile while on battery |
+| libnotify | `notify-send`, for the low-battery warning |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
@@ -299,5 +301,12 @@ shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
   `battery_refresh_hz` (0 keeps the full rate) and the two commands below it.
   To use another profile until the cable next moves, run
   `powerprofilesctl set performance` (or `balanced`, `power-saver`).
+- There is no battery indicator. When the charge is down to 10% a
+  notification says so, and it stays until you click it. At 5% the laptop
+  locks and suspends, and it does so again for each further percent if you
+  wake it without plugging in. It cannot hibernate (the swap is in RAM), so a
+  suspended laptop still runs out in the end, only much later. The two
+  thresholds are `battery_warn_percent` and `battery_suspend_percent` in
+  [src/config.h](src/config.h); 0 turns either off.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
   are all in [src/config.h](src/config.h).

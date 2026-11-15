@@ -67,4 +67,29 @@ bool tw_spring_settled(double pos, double vel, double target);
  */
 bool tw_refresh_saves(int candidate, int current, int floor_hz);
 
+/* What tw remembers about a battery that is running down. */
+struct tw_battery {
+	bool warned;  /* the warning has been given since the machine went on battery */
+	int low_mark; /* the machine is not suspended until the charge is below this */
+};
+
+#define TW_BATTERY_WARN 1
+#define TW_BATTERY_SUSPEND 2
+
+/*
+ * What a battery at `charge` percent calls for, as a set of the flags above.
+ * Call with each reading while the machine runs on battery, starting from a
+ * zeroed struct each time it goes on battery.
+ *
+ * The warning is due once, at `warn_at` or below. Suspending is due when the
+ * charge has fallen to `suspend_at` or below, and again for each percent it
+ * falls further, so a machine that is woken and left unplugged goes back to
+ * sleep before it runs out. `fresh` says that somebody has just arrived: the
+ * cable was pulled, tw started, or the machine woke up. The charge found
+ * then is where it starts from, however low, and only a fall from there
+ * suspends. A threshold of 0 turns that part off.
+ */
+int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
+	int warn_at, int suspend_at);
+
 #endif

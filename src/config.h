@@ -99,6 +99,21 @@ static const char battery_command[] = "powerprofilesctl set power-saver";
 static const char mains_command[] = "powerprofilesctl set balanced";
 
 /*
+ * A battery running low. tw has no bar to show the charge, so when it is
+ * down to battery_warn_percent tw runs battery_warn_command, once. When it is
+ * down to battery_suspend_percent tw locks the session and suspends the
+ * machine (suspend_command above) before it runs out, and does so again for
+ * each further percent lost if you wake it and leave it unplugged. A charge
+ * that was already that low when you pulled the cable, logged in or woke the
+ * machine does not suspend it; only a fall from there does. Plugging in ends
+ * all of it. 0 turns either part off.
+ */
+static const int battery_warn_percent = 10;
+static const char battery_warn_command[] =
+	"notify-send --urgency=critical 'Battery low' 'Plug in the charger.'";
+static const int battery_suspend_percent = 5;
+
+/*
  * Lock the session when the laptop lid closes, when the screen turns off
  * after blank_after_seconds, and before suspending. tw locks at once and by itself, so nothing is
  * visible or reachable even if the machine suspends before the locker is up;

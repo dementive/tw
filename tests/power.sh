@@ -4,9 +4,11 @@
 # made up: tw reads $run_dir/sys in place of /sys (see lib.sh).
 #
 # Two things cannot be shown here. Only the kernel can announce that a supply
-# changed, so a cable going in or out while tw runs is not covered. And the
-# headless backend's outputs have no modes, so of the change of refresh rate
-# only the choice of mode is tested (tests/layout_test.c).
+# changed, so nothing that happens while tw runs is covered: a cable going in
+# or out, and the battery running low. What a falling charge calls for is
+# tested as a function instead (tests/layout_test.c). And the headless
+# backend's outputs have no modes, so of the change of refresh rate only the
+# choice of mode is tested, in the same place.
 set -eu
 . "$(dirname "$0")/lib.sh"
 
@@ -71,6 +73,31 @@ supply ADP0 type=Mains online=0
 supply ucsi-source-psy-1 type=USB online=1 scope=Device
 expect "a laptop on battery charging a phone" battery "set power-saver"
 
+# A battery that is already low as tw starts is left for its next
+# announcement. So tw does not warn before the session is up to show it, and
+# does not suspend a machine that somebody has just logged in to.
+fake_program systemctl "echo \"systemctl \$*\" >>'$run_dir/low.log'"
+fake_program notify-send "echo \"notify-send \$*\" >>'$run_dir/low.log'"
+supply BAT0 type=Battery status=Discharging capacity=3
+supply ADP0 type=Mains online=0
+expect "a laptop on battery at 3%" battery "set power-saver"
+[ ! -e "$run_dir/low.log" ] ||
+	fail "tw acted on a low battery as it started: $(cat "$run_dir/low.log")"
+
+# A tw that does not run the machine leaves its power alone: one inside
+# another session or, as here, one without a screen that no test has pointed
+# at a made-up machine. On a laptop this tw could see the real battery.
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY -u TW_SYS \
+	PATH="$bin_dir" XDG_RUNTIME_DIR="$run_dir" WLR_BACKENDS=headless WLR_RENDERER=pixman \
+	"$tw_bin" -d >"$run_dir/tw.log" 2>&1 &
+tw_pid=$!
+wait_until "the Wayland socket" test -S "$run_dir/wayland-0"
+sleep 0.3
+if [ -e "$profile_log" ] || grep -q 'running on \(battery\|mains\)$' "$run_dir/tw.log"; then
+	fail "a tw that does not run the machine acted on its power supplies"
+fi
+stop_tw
+
 # Without the program tw runs nothing and says so.
 rm "$bin_dir/powerprofilesctl"
 supply BAT0 type=Battery status=Discharging
@@ -80,4 +107,4 @@ wait_until "tw to say the command is not installed" \
 	grep -q 'not installed: powerprofilesctl set power-saver' "$run_dir/tw.log"
 stop_tw
 
-echo "ok: no battery, mains, battery, USB-C charger, a device's supply, missing command"
+echo "ok: no battery, mains, battery, USB-C charger, a device's supply, low at startup, not the session, missing command"
