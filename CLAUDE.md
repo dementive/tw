@@ -72,6 +72,7 @@ which GPUs it would use and starts nothing.
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
+| `tools/power-root.sh` | What only root can read about the draw at idle: watts by part (RAPL), how deep the package sleeps, the display's power saving, PCIe link states, what the kernel said. The owner runs it with sudo |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
@@ -819,7 +820,26 @@ everything else (RAPL), how deep the whole package sleeps
 (`/sys/kernel/debug/pmc_core`), whether the panel does self refresh
 (`i915_edp_psr_status`), and whether the PCIe links of the NVMe disk and
 the Ethernet controller save power (`lspci -vv`). powertop and turbostat
-are not installed.
+are not installed. `tools/power-root.sh` reads all of that in one go; the
+owner asked for it ("Yes, write it") and runs it with sudo, on battery and
+with the screen still, into `build/power-root.txt`. Its root-only parts
+had not run when this was written, so expect to adjust a path or a
+pattern after the first report.
+
+Found while writing it, without root. CachyOS switches the sound driver's
+power saving with the cable (`/usr/lib/udev/rules.d/20-audio-pm.rules`:
+`power_save` is 10 on battery and 0 on mains), which is why that setting
+read 10 in the first measurement and 0 later. The laptop's own sound chip
+(Realtek ALC285) had all the same not been powered down for one
+millisecond in 61 minutes, 20 of them on battery (`power_on_acct` and
+`power_off_acct` under `/sys/class/sound/card0/hwC0D0`), with no stream
+open at the end; the HDMI codecs had slept nearly all that time. A second
+rule, in `/etc/udev/rules.d/62-cachy-t7.rules` and owned by no package,
+keeps the USB system disk from being suspended, which is right for a root
+disk. Awake on mains, besides those listed above: the Thunderbolt
+controller, the USB controller, Wi-Fi, the sound controller and the SPI
+controller. The NVIDIA GPU's sound function is still on the bus while the
+GPU is off, suspended, and the port above both is in D3cold.
 
 Put to the owner in this order: the panel at 60 Hz while on battery, tw
 switching on the power cable's kernel event; the power-saver profile on
