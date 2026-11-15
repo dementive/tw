@@ -613,6 +613,9 @@ static void handle_pointer_focus_change(struct wl_listener *listener, void *data
 static void handle_request_set_selection(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, request_set_selection);
 	struct wlr_seat_request_set_selection_event *event = data;
+	if (event->source == NULL) {
+		clipboard_cleared(server);
+	}
 	wlr_seat_set_selection(server->seat, event->source, event->serial);
 }
 

@@ -48,6 +48,7 @@ which GPUs it would use and starts nothing.
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up |
 | `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
+| `src/clipboard.c` | Keeps what was copied for when its program exits: reads each copy as it is made, and offers it in the program's place once the program is gone |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects, and stops it when none is left |
 | `src/power.c` | Running on battery: learns from udev when the power cable goes in or out, slows the outputs down and runs the power-profile command; warns and then suspends as the battery runs low |
 | `src/output.c` | Outputs, which workspace each one shows, which mode each one runs in, scene layers, the frame handler |
@@ -65,17 +66,20 @@ which GPUs it would use and starts nothing.
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
 | `data/tw-bluetooth` | Switches Bluetooth on when asked, and off by hand; says which it is |
 | `data/tw-bluetooth-root`, `tw-bluetooth@.service.in`, `tw-bluetooth-idle.timer`, `tw-bluetooth.rules`, `tw-bluetooth-udev.rules`, `tw-bluetooth.conf`, `tw-bluetooth-service.conf` | What lets `tw-bluetooth` load and unload the adapter's driver, and what switches Bluetooth off when nothing is connected: root helper, system unit, timer, polkit rule, udev rules, the modprobe file that keeps the driver from loading at boot, and the line added to `bluetooth.service` that keeps the bus from starting it while Bluetooth is off |
+| `data/tw-thunderbolt.rules` | The udev rule that lets a Thunderbolt device in as it is plugged in, where the kernel protects its memory, so that no daemon has to wait for one |
 | `data/` (rest) | The login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify` |
 | `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
 | `tests/keys.c` | Presses key combinations and moves and clicks the mouse, through the virtual-keyboard and virtual-pointer protocols |
+| `tests/clip.c` | Copies and pastes the way a clipboard tool does (data-control), with contents that are long, never answered, or cut short by the program's exit |
 | `tests/smoke.sh` | End-to-end behaviour on the headless backend |
 | `tests/columns.sh` | Windows sharing a column, floating dialogs |
 | `tests/pointer.sh` | The mouse: pointer focus, click to focus, pointer lock, confinement |
 | `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
+| `tests/clipboard.sh` | A copy outlives its program; an emptied clipboard stays empty; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read |
 | `tests/power.sh` | What tw makes of the power supplies it finds as it starts, and the command it runs, against made-up ones |
 | `tests/bus_test.c` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
 | `tests/notify.sh` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
@@ -84,6 +88,7 @@ which GPUs it would use and starts nothing.
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/profile.sh` | `tw-power` and its root helper against a made-up `/sys`: the three profiles, machines that lack one of the settings, nothing written twice, refusals |
 | `tests/bluetooth.sh` | `tw-bluetooth` and its root helper against a made-up machine: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, and every way switching on can fail |
+| `tests/thunderbolt.sh` | That the Thunderbolt rule is still the kernel guide's and udev accepts it |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
@@ -176,6 +181,55 @@ window closing is therefore noticed at the next window that does. A client
 queued behind a helper tw stopped is served by the next one, not turned
 away like one queued behind a helper that died.
 
+What is copied outlives the program it was copied in, and that is tw's
+doing (`clipboard.c`). On Wayland a copy stays inside its program, which
+hands it over when somebody pastes, so it is gone when the program exits.
+`wl-clip-persist` used to cover that, started with the session and running
+all of it. The owner asked for it inside tw ("seems silly to have a
+seperate package and process for it"), and a helper for it could never be
+started on demand anyway: it has to have read a copy before its program
+exits.
+
+tw reads every copy as it is made. When the seat's selection changes
+(`set_selection`) it asks the new source for each format it offers, one
+after the other, each through a pipe of its own, and keeps the bytes. The
+program stays the clipboard's owner for as long as it lives, unlike under
+`wl-clip-persist`, which took every copy over at once. When the source
+goes away tw offers what it read as a data source of its own
+(`handle_takeover()`; from an idle callback, so that every listener has
+first heard that the clipboard is empty), until the next copy replaces it.
+tw knows its own source by its `impl` and does not read that one. A
+program that asks for an empty clipboard is obeyed:
+`handle_request_set_selection()` calls `clipboard_cleared()` first, which
+is how a copy taken back on purpose is told from one whose program exited.
+
+What keeps it small. Formats with the same bytes are kept once (a text
+comes under five names). One copy may hold `clipboard_keep_bytes` (64 MB)
+at most, the format being read included; a larger one is left with its
+program, so no program can make tw grow without limit. Formats are read one
+at a time, so the most held in passing is one format more than what is
+kept. Nothing blocks: tw's end of every pipe is non-blocking, when it
+reads and when it serves a paste from a copy it keeps, and a paste larger
+than the reader's pipe goes on as the reader takes it (`tw_paste`).
+Writing to a reader that has left would kill tw, so tw ignores SIGPIPE,
+and `spawn()` and the start of the X11 helper set it back for the programs
+tw starts. There is no timer and no polling: with a copy held and nothing
+happening tw does not wake.
+
+A pipe ends the same way when its program has written everything and when
+the program died over it. The kernel closes a dying program's files from
+the highest number down, which puts the pipe before the connection to tw,
+so tw can have taken a format that was cut short as read, and asked for
+the next one, before it learns that the program is gone. What tells the
+two apart is that a dead program never reacts to that next request. So
+when a source goes away while it is being read, the newest format read
+counts only if something came of the one after it (`answered`), the format
+on its way is dropped, and a format that ended with no bytes is never
+kept. The last format a program offers has none after it and is taken as
+it is: a program that dies while writing its last format in more than one
+piece (over 4 kB) leaves that one cut short on the clipboard. Known, and
+left.
+
 The NVIDIA GPU of a laptop that also has an Intel one is handled like X11:
 off until something needs it, and none of it is in tw's C code. Off means its
 kernel driver is unloaded and the GPU is off the PCI bus (`remove` on the
@@ -263,6 +317,18 @@ which its driver would do as it loads and nobody does with the driver kept
 away. Switching needs root and goes the way `tw-gpu` does it:
 `tw-bluetooth` starts `tw-bluetooth@on.service` or `@off.service`, which a
 polkit rule allows.
+
+Thunderbolt devices are let in by a udev rule (`tw-thunderbolt.rules`) and
+not by boltd. The laptop's port only knows the security level `user`: the
+PCIe side of a device (a dock's network port and disks, an external GPU)
+stays off until something writes 1 to the device's `authorized` file.
+boltd does that and runs from boot for it, because the port's controller
+counts as a device. Where the kernel's DMA protection is on
+(`iommu_dma_protection` reads 1, as it does here) boltd approves every
+device without asking, and the rule, which is the one in the kernel's own
+guide, does the same as the device appears. The owner plugs a Thunderbolt
+dock in now and then ("my computer doens't have enough usb inputs").
+`-Dthunderbolt=false` leaves the rule out.
 
 `tw-session` also keeps the accessibility bus from starting (`NO_AT_BRIDGE`
 for GTK 3, `GTK_A11Y` for GTK 4), unless `TW_A11Y=1` is set. The programs tw
@@ -459,6 +525,8 @@ xwayland-satellite, bars and launchers are layer-shell clients, configuration
 is `config.h`. No in-process Xwayland, scripting runtime or config parser.
 A helper is started when it is first needed, never at startup, and tw checks
 that it is installed (`program_find()`) instead of running it to find out.
+The one job taken in is keeping the clipboard (`clipboard.c`): a helper for
+it cannot be started when needed, so it ran all session.
 
 **A behaviour change comes with a test.** Layout maths goes in
 `tests/layout_test.c`; anything a client can observe goes in `tests/smoke.sh`,
@@ -577,6 +645,56 @@ Checked without root: a blacklisted module loads by name and not the way
 udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
 `systemd-analyze verify` the unit and the timer, and a staged install puts
 every file where its reader looks.
+
+`tests/thunderbolt.sh` can only have udev read the Thunderbolt rule
+(breaking the rule four ways each made it fail). The rule has never met a
+device. The owner's dock was not plugged in during
+any boot the journal holds (17, back to 2026-11-13), and boltd never
+enrolled a device on this install (`/var/lib/boltd` holds one file, from
+2026-08-23), so either the dock has not been used here since then or it
+is a USB-C dock, which needs no approval. The kernel's guide leaves open
+whether a dock's USB ports and display outputs work before the device is
+approved. README step 18 has the owner try the dock with boltd masked
+before the package goes.
+
+`tests/clipboard.sh` copies and pastes through the data-control protocol,
+as clipboard tools do (`tests/clip.c`), and not the way windows do it
+(`wl_data_device`, which wants a window that has the keyboard). The two
+meet inside wlroots, before tw's code. Breaking the code 27 ways, one
+at a time, each made a test fail, after three had not: the test had no
+second program copying while the first still ran, which is the everyday
+case, and no tw exiting while it held a copy. (A breakage run that is
+interrupted leaves a stale program in the scratch copy, and every test
+then fails or hangs for no reason: rebuild it from clean.)
+
+Seen with real programs (2026-11-15, in a headless tw). A word selected in
+foot with the mouse and copied with Ctrl+Shift+C was read (five formats,
+kept once: 8 bytes), was still there after foot was killed, and was pasted
+into a second foot with Ctrl+Shift+V, so the window side works in both
+directions. `wl-copy --foreground` kept running; under `wl-clip-persist`
+it lost the clipboard at once and exited. A PNG came back byte for byte.
+`wl-copy --clear` left the clipboard empty. Measured there: tw holds
+708 kB of its own before any copy, 28 kB more with a line of text,
+20.4 MB with a text of 20 MB that `wl-copy` offers in five formats
+(`wl-clip-persist` held 98 MB for it) and 860 kB after the next, small
+copy; in five seconds of offering a copy with nothing happening tw did not
+wake once. tw's code grew by 5.6 kB; what it allocates as it starts did
+not (808 to 812 kB), and the budget test read 2545 to 2635 kB over seven
+runs.
+
+The rule for a program that dies while it is being read came out of
+running the test over and over. The first version took a format as read
+once everything else that had happened by then was handled, on the belief
+that the kernel closes a dying program's connection before its pipe. It
+is the other way round (files are closed from the highest number down),
+and a program made to die in the second of its three formats left the
+cut-short one on offer in 11 of 300 tries. With the rule as it is now:
+none in 600, with the pipe closed before the connection and after it.
+
+Not seen yet: the installed build in the owner's session; a copy from the
+Claude app or another Chromium, GTK or Qt program, which offer more
+formats than foot does; a copy made through xwayland-satellite, and tw
+stopping that helper while it owns the clipboard.
 
 Keeping the accessibility bus off is tested as far as the session script
 goes: what it exports and what it hands to D-Bus and systemd, and that the
@@ -1362,10 +1480,22 @@ nothing being copied. What it holds grows with what was copied, once for
 each format the program offered: a text of 20 MB, which `wl-copy` offers
 in five formats, made it 98 MB of its own until the next copy, when it
 was back at 0.56. So a large picture copied in a browser sits there
-several times over until something else is copied. Doing the same inside
-tw would move that memory and work into the compositor, against "keep
-everything else out of process", and nothing can start such a helper on
-demand: it has to have read the copy before the program exits.
+several times over until something else is copied. Nothing can start such
+a helper on demand: it has to have read the copy before the program exits.
+The owner was told that neither is required, that boltd can go, and that
+the clipboard helper was the one worth keeping.
+
+Their answer, to both. "I do actually occasionally use a thunderbolt dock
+since my computer doens't have enough usb inputs...would that not work
+anymore?" and "maybe we can include the clipboard stuff in tw directly? I
+still want those features to work right...it seems like such a simple
+problem though seems silly to have a seperate package and process for it".
+So the advice to remove boltd was wrong as given: it rested on nothing
+ever having been enrolled, not on asking. Both were built the same day:
+the udev rule that does boltd's job on this machine (README step 18, with
+a trial before the package goes), and `clipboard.c`, with `autostart[]`
+left empty. See the sections above for how, and "Not covered by tests"
+for what was measured.
 
 ## Battery
 

@@ -50,6 +50,8 @@ void spawn(const char *cmd) {
 		sigset_t set;
 		sigemptyset(&set);
 		sigprocmask(SIG_SETMASK, &set, NULL);
+		/* So does a signal that is ignored, see main(). */
+		signal(SIGPIPE, SIG_DFL);
 		setsid();
 		/* Fork twice so the command is reparented to init: no zombies to
 		 * reap, so no SIGCHLD handler and no wakeups when children exit. */
@@ -167,6 +169,11 @@ int main(int argc, char *argv[]) {
 	bool nested = getenv("WAYLAND_DISPLAY") != NULL || getenv("DISPLAY") != NULL;
 	server.mod = nested ? WLR_MODIFIER_ALT : WLR_MODIFIER_LOGO;
 
+	/* A program that pastes may close its end before tw has written all
+	 * of a copy it keeps (clipboard.c), and writing to a closed pipe kills
+	 * the writer unless this signal is ignored. */
+	signal(SIGPIPE, SIG_IGN);
+
 	server.display = wl_display_create();
 	server.loop = wl_display_get_event_loop(server.display);
 	server.sigint = wl_event_loop_add_signal(server.loop, SIGINT, handle_signal, &server);
@@ -224,6 +231,7 @@ int main(int argc, char *argv[]) {
 	layer_init(&server);
 	window_init(&server);
 	input_init(&server);
+	clipboard_init(&server);
 	idle_init(&server);
 	lock_init(&server);
 	power_init(&server);
@@ -267,6 +275,7 @@ teardown:
 	power_finish(&server);
 	lock_finish(&server);
 	idle_finish(&server);
+	clipboard_finish(&server);
 	input_finish(&server);
 	window_finish(&server);
 	layer_finish(&server);

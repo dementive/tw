@@ -27,7 +27,7 @@ Programs tw starts or works with. None is required to build, but each key or
 feature does nothing without its program:
 
 ```sh
-sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
+sudo pacman -S foot fuzzel swaylock xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber \
     libnotify iwd iw oo7 libsecret bluez bluez-utils \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr thunar
@@ -38,9 +38,9 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | foot | terminal (Mod+T) |
 | fuzzel | launcher (Mod+Space, Mod+D) |
 | swaylock | lock screen (Mod+Alt+L, lid close, idle) |
-| wl-clip-persist | keeps what you copied when its program exits, started with the session |
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
+| wl-clipboard | `wl-copy` and `wl-paste`, the clipboard from a terminal |
 | brightnessctl, wireplumber | brightness and volume keys |
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | iwd, iw | Wi-Fi without NetworkManager, see step 14 |
@@ -203,11 +203,15 @@ sudo systemctl disable --now systemd-userdbd.socket systemd-userdbd.service
 Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
 through it.
 
-And two packages:
+And three packages:
 
 ```sh
-sudo pacman -Rns alsa-plugins power-profiles-daemon
+sudo pacman -Rns alsa-plugins power-profiles-daemon wl-clip-persist
 ```
+
+`wl-clip-persist` kept what you had copied when the program you copied it
+from exited, and ran all session for that (5 MB in `btop`). tw does it
+itself now; see "Good to know".
 
 `power-profiles-daemon` set the power-saver profile on battery and then
 stayed for the session (8 MB in `btop`). `tw-power`, which comes with tw,
@@ -453,14 +457,15 @@ NetworkManager gone, `tools/iwd.sh back` and `tools/keyring.sh back` have
 nothing to go back to.
 
 ```sh
-sudo pacman -D --asexplicit bolt vulkan-tools mpv ttf-hack ttf-fira-sans
+sudo pacman -D --asexplicit vulkan-tools mpv ttf-hack ttf-fira-sans
 sudo pacman -Rns $(pacman -Qgq plasma) ark dolphin ffmpegthumbs filelight gwenview kate kcalc kdegraphics-thumbnailers kdialog kio-admin kio-extras konsole kwalletmanager partitionmanager signon-kwallet-extension haruna kde-gtk-config cachyos-kde-settings phonon-qt6-vlc kwallet-pam breeze-gtk cachyos-emerald-kde-theme-git cachyos-nord-kde-theme-git networkmanager networkmanager-openvpn wpa_supplicant
 ```
 
-The first line keeps five packages that came in with KDE and are of use
-without it: `bolt` (lets Thunderbolt devices in), `vulkan-tools` (step 6),
-`mpv`, and two fonts. The second shows what it will remove, about 200
-packages, and asks before it does.
+The first line keeps four packages that came in with KDE and are of use
+without it: `vulkan-tools` (step 6), `mpv`, and two fonts. The second shows
+what it will remove, about 200 packages, and asks before it does. `bolt`,
+the daemon that lets Thunderbolt devices in, goes with them: read step 18
+first if you use a Thunderbolt dock.
 
 | Goes | In its place |
 | --- | --- |
@@ -532,6 +537,49 @@ And if `tw-bluetooth on` ever fails, `journalctl -b -u tw-bluetooth@on`
 says why, and `sudo touch /run/tw-bluetooth && sudo modprobe btusb` does by
 hand what it does.
 
+### 18. Thunderbolt: a dock without a daemon
+
+A Thunderbolt or USB4 port does not let a device's fast side in by itself:
+a dock's network port and the disks on it, or an external GPU, stay off
+until something approves the device. `boltd` (package `bolt`) is the
+program for that. It is started at every boot, because the port itself
+counts as a device, and stays (10 MB in `btop`, 0.7 MB its own, awake every
+eleven seconds) for the day a dock is plugged in.
+
+On a machine whose kernel shields its memory from such devices, `boltd`
+approves every device without asking, and that needs no program. tw
+installs the one udev rule the kernel's own guide gives for it
+([data/tw-thunderbolt.rules](data/tw-thunderbolt.rules)). Whether your
+machine is one of those:
+
+```sh
+cat /sys/bus/thunderbolt/devices/domain0/iommu_dma_protection   # 1: yes
+```
+
+If that reads 0, or you want to be asked before a device is let in, keep
+`bolt` and build with `meson configure build-release -Dthunderbolt=false`.
+If it reads 1, try the dock without `boltd` before you remove it. After
+installing tw, have udev read the new rule and put `boltd` out of the way:
+
+```sh
+sudo udevadm control --reload
+sudo systemctl mask --now bolt.service
+```
+
+Plug the dock in and try everything on it. Then one of:
+
+```sh
+sudo pacman -Rns bolt                    # it all works: boltd can go
+sudo systemctl unmask bolt.service       # it does not: back to boltd, plug the dock in again
+```
+
+A device that is waiting can also be let in by hand, which shows whether
+approval is what it lacks: `boltctl` is gone with the package, so
+`grep . /sys/bus/thunderbolt/devices/*/authorized` (0 is waiting), then
+`echo 1 | sudo tee /sys/bus/thunderbolt/devices/0-1/authorized` for that
+device. A plain USB-C hub or dock, a charger and a monitor on USB-C are not
+Thunderbolt devices: they never needed `boltd` and show nothing here.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
@@ -539,6 +587,15 @@ hand what it does.
   log in; see step 6. On the ROG Strix the Intel GPU has two DisplayPort
   outputs (most likely the USB-C ports) and the NVIDIA GPU has HDMI and one
   DisplayPort.
+- What you copy is still there after you close the program you copied it
+  from. Left to itself Wayland loses it, because a copy stays inside its
+  program until somebody pastes. tw reads each copy as it is made and
+  offers it again once the program is gone, so no clipboard helper has to
+  run. It holds one copy at a time, the latest, and at most 64 MB of it
+  (`clipboard_keep_bytes` in [src/config.h](src/config.h); 0 turns this
+  off): a larger copy goes with its program as before. A program that
+  empties the clipboard on purpose, as a password manager does after a
+  while, is obeyed.
 - Screen readers and other accessibility aids find no programs to talk to:
   the session tells toolkits to leave the accessibility bus alone, and a
   program that asks for the bus anyway (Chromium and Electron ones do) is

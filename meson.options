@@ -11,6 +11,12 @@ option(
 	description: 'Install tw-bluetooth and keep the Bluetooth driver from loading at boot: Bluetooth is off until `tw-bluetooth on`',
 )
 option(
+	'thunderbolt',
+	type: 'boolean',
+	value: true,
+	description: 'Install the udev rule that lets Thunderbolt devices in where the kernel protects its memory from them, which is what boltd does there',
+)
+option(
 	'notify',
 	type: 'feature',
 	value: 'auto',

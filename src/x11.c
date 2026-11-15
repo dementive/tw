@@ -452,6 +452,7 @@ static bool helper_start(struct tw_x11 *x11) {
 		sigset_t set;
 		sigemptyset(&set);
 		sigprocmask(SIG_SETMASK, &set, NULL);
+		signal(SIGPIPE, SIG_DFL); /* tw ignores it, see main() */
 		/* The sockets are close-on-exec so that no other program inherits
 		 * them. The helper is the one that must. */
 		fcntl(x11->fds[0], F_SETFD, 0);

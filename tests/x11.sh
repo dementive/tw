@@ -63,6 +63,11 @@ spawn_client x1 --x11 path "$display"
 expect_line x1 "x11 served" "the first X11 client to be answered"
 grep -Eqx "serve pid=[0-9]+ $display -listenfd [0-9]+ -listenfd [0-9]+" "$run_dir/helper.log" ||
 	fail "unexpected helper arguments: $(cat "$run_dir/helper.log")"
+# tw ignores SIGPIPE for itself (clipboard.c). The helper must not start
+# that way, nor Xwayland and the X11 programs under it.
+if grep -qx 'ignores SIGPIPE' "$run_dir/helper.log"; then
+	fail "the helper was started ignoring SIGPIPE"
+fi
 
 # Later clients, by either kind of socket, reach the same helper.
 spawn_client x2 --x11 abstract "$display"

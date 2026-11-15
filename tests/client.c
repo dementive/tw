@@ -668,6 +668,11 @@ static int x11_serve(int argc, char *argv[]) {
 	struct pollfd sockets[2 + 16];
 	nfds_t listening = 0;
 	bool stranger = false;
+	/* tw ignores SIGPIPE; the programs it starts must not inherit that. */
+	struct sigaction on_pipe;
+	if (sigaction(SIGPIPE, NULL, &on_pipe) == 0 && on_pipe.sa_handler == SIG_IGN) {
+		printf("ignores SIGPIPE\n");
+	}
 	printf("serve pid=%d", (int)getpid());
 	for (int i = 0; i < argc; i++) {
 		printf(" %s", argv[i]);

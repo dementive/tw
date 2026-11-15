@@ -21,6 +21,7 @@
 /* In an output rule: let tw place the output, to the right of the others. */
 #define TW_AUTO INT32_MIN
 
+struct tw_clipboard;
 struct tw_layer_surface;
 struct tw_lock;
 struct tw_server;
@@ -145,6 +146,9 @@ struct tw_server {
 	/* power.c */
 	struct tw_power *power; /* NULL on a machine without a battery */
 	bool on_battery;        /* nothing but its battery supplies the machine */
+
+	/* clipboard.c */
+	struct tw_clipboard *clipboard; /* NULL when copies are not kept */
 
 	/* input.c */
 	struct wlr_seat *seat;
@@ -360,6 +364,14 @@ void x11_init(struct tw_server *server);
 void x11_finish(struct tw_server *server);
 /* A window closed: its program may have been the last X11 application. */
 void x11_window_closed(struct tw_server *server);
+
+/* clipboard.c */
+/* Keeps what is copied for when its program exits. Call after input_init(). */
+void clipboard_init(struct tw_server *server);
+void clipboard_finish(struct tw_server *server);
+/* A program asked for an empty clipboard: the copy kept so far goes too.
+ * Call before the seat is told. */
+void clipboard_cleared(struct tw_server *server);
 
 /* input.c */
 void input_init(struct tw_server *server);

@@ -1,0 +1,14 @@
+# Lets a Thunderbolt device in as it is plugged in, with no daemon waiting
+# for it.
+#
+# A Thunderbolt or USB4 port keeps the PCIe side of a device off (a dock's
+# network port and disks, an external GPU) until something writes 1 to the
+# device's `authorized` file. boltd is the program for that, and it stays in
+# memory from boot to do it. But where the kernel shields its memory from
+# such devices (`iommu_dma_protection` reads 1 on the port's controller),
+# boltd lets every device in without asking anybody, and that needs no
+# program: this is the rule the kernel's own guide gives for it
+# (Documentation/admin-guide/thunderbolt.rst). Where that protection is off
+# the rule does nothing, and a device waits to be let in by hand.
+ACTION=="add", SUBSYSTEM=="thunderbolt", ATTRS{iommu_dma_protection}=="1", \
+    ATTR{authorized}=="0", ATTR{authorized}="1"

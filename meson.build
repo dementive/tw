@@ -89,6 +89,7 @@ protocols = {
 	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
+	'wlr-data-control-unstable-v1': 'protocols/wlr-data-control-unstable-v1.xml',
 	'wlr-virtual-pointer-unstable-v1': 'protocols/wlr-virtual-pointer-unstable-v1.xml',
 }
 server_header = {}
@@ -124,6 +125,7 @@ tw = executable(
 	'src/input.c',
 	'src/window.c',
 	'src/layer.c',
+	'src/clipboard.c',
 	'src/idle.c',
 	'src/lock.c',
 	'src/x11.c',
@@ -268,6 +270,16 @@ if get_option('bluetooth')
 		install_dir: get_option('prefix') / 'lib/udev/rules.d',
 	)
 endif
+# The udev rule that lets a Thunderbolt device in as it is plugged in, where
+# the kernel protects its memory from such devices. With it a dock works
+# without boltd, which otherwise runs from boot for the day one is plugged in.
+if get_option('thunderbolt')
+	install_data(
+		'data/tw-thunderbolt.rules',
+		rename: '72-tw-thunderbolt.rules',
+		install_dir: get_option('prefix') / 'lib/udev/rules.d',
+	)
+endif
 configure_file(
 	input: 'data/tw.desktop.in',
 	output: 'tw.desktop',
@@ -374,6 +386,14 @@ test_client = executable(
 	protocol_code['fractional-scale-v1'],
 	dependencies: wayland_client,
 )
+# Copies and pastes the way a clipboard tool does.
+test_clip = executable(
+	'tw-test-clip',
+	'tests/clip.c',
+	client_header['wlr-data-control-unstable-v1'],
+	protocol_code['wlr-data-control-unstable-v1'],
+	dependencies: wayland_client,
+)
 test_keys = executable(
 	'tw-test-keys',
 	'tests/keys.c',
@@ -440,6 +460,15 @@ test(
 	timeout: 120,
 )
 
+# The clipboard: a copy outlives the program it was made in.
+test(
+	'clipboard',
+	find_program('tests/clipboard.sh'),
+	args: [tw, test_client, test_clip],
+	is_parallel: false,
+	timeout: 120,
+)
+
 # What tw does on battery and on mains, against made-up power supplies.
 test(
 	'power',
@@ -486,6 +515,14 @@ test(
 	timeout: 60,
 )
 
+# The udev rule that lets Thunderbolt devices in: that udev accepts it.
+test(
+	'thunderbolt',
+	find_program('tests/thunderbolt.sh'),
+	args: [meson.current_source_dir() / 'data'],
+	timeout: 60,
+)
+
 # tools/iwd.sh, which moves Wi-Fi from NetworkManager to iwd and back,
 # against a made-up machine: no network or service involved.
 test(
@@ -513,7 +550,7 @@ test(
 # 2536 kB without one. What tw allocated does not move, so that is the
 # figure that catches a regression.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
-budget_own_kb = 2650      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2613)
+budget_own_kb = 2650      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2635)
 budget_alloc_kb = 850     # of which allocated by tw itself (measured: 808 to 812)
 if get_option('buildtype') == 'release'
 	test(

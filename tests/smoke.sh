@@ -13,14 +13,12 @@ on='activated=1 suspended=0'      # focused and visible
 off_screen='activated=0 suspended=1'
 
 # --- Autostart -----------------------------------------------------------------
-# Stand-ins for the programs in config.h's autostart list: each must be
-# started once, with its arguments. The notification daemon is installed too
-# and must not be started: D-Bus does that when a notification arrives.
+# config.h's autostart list is empty: tw starts no helper with the session.
+# These two are installed and must not be started. D-Bus starts a
+# notification service when a notification arrives, and tw keeps what was
+# copied itself (tests/clipboard.sh).
 fake_program fnott "echo fnott >>'$run_dir/autostart.log'"
 fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart.log'"
-autostarted() {
-	grep -qx "wl-clip-persist --clipboard regular" "$run_dir/autostart.log"
-}
 
 # Stand-ins for the launcher and the terminal, to see their keys start them.
 fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
@@ -28,9 +26,6 @@ launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log
 fake_program foot "echo opened >>'$run_dir/terminal.log'"
 
 start_tw
-wait_until "the autostart programs to be started" autostarted
-[ "$(grep -c . "$run_dir/autostart.log")" = 1 ] ||
-	fail "autostart ran something twice, or something it should not: $(cat "$run_dir/autostart.log")"
 
 press super+space
 wait_until "Mod+Space to start the launcher" launched 1
@@ -38,6 +33,10 @@ press super+d
 wait_until "Mod+D to start the launcher" launched 2
 press super+t
 wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
+# By now tw has long been through its startup: it started what the keys
+# asked for and nothing by itself.
+[ ! -e "$run_dir/autostart.log" ] ||
+	fail "tw started a helper with the session: $(cat "$run_dir/autostart.log")"
 
 # --- Columns -------------------------------------------------------------------
 start_client a
@@ -244,4 +243,4 @@ expect_keyboard h enter "the keyboard to return to the focused window"
 expect_state h "$on" "windows to come back after unlocking"
 
 stop_tw
-echo "ok: autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"
+echo "ok: no autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"

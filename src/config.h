@@ -142,11 +142,21 @@ static const char screenshot_region[] = "grim -g \"$(slurp)\"";
  *
  * No notification service is here for that reason: D-Bus starts tw-notify
  * when a program sends a notification, and it exits after the last one.
+ * Nor is a clipboard helper: tw keeps what was copied itself, see below.
  */
 static const char *const autostart[] = {
-	"wl-clip-persist --clipboard regular", /* keeps a copy when its program exits */
 	NULL,
 };
+
+/*
+ * What is copied stays in the program it was copied from, and would be gone
+ * when that program exits. tw reads each copy as it is made and offers it in
+ * the program's place once the program is gone. This is the most it holds
+ * for one copy at any moment, in bytes: the formats it has read, those with
+ * the same bytes held once, and the one it is reading. A larger copy is left
+ * alone and goes with its program. 0 keeps nothing.
+ */
+static const size_t clipboard_keep_bytes = 64 << 20;
 
 /*
  * X11 applications run through this helper, which starts Xwayland. tw starts
