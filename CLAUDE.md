@@ -490,9 +490,32 @@ tool). `/etc/sysctl.d` and `/etc/modprobe.d` were empty before. Asked which
 to keep, the owner chose "Only these two": the sysctls, as README step 8.
 The swap size, the NVMe queue depth and the `xe` blacklist were left. The
 file is in place (`/etc/sysctl.d/90-memory.conf`) and `systemd-sysctl
---cat-config` shows no other file setting either value. Not seen yet: the
-values coming back by themselves after a reboot, and the figure at startup
-with them.
+--cat-config` shows no other file setting either value. After a reboot both
+values were back by themselves, and the owner read "like 680" at startup.
+
+They then set a target: under 500 at startup, by `btop` in a terminal
+("I think we can do it!"). What that reading is made of now, roughly: 140
+held back, 280 kernel outside the counters, 143 slab and the like, 57
+buffers and 107 programs, the terminal showing it being 45 of the last two.
+Sized against it. Free of any cost found, 94 MB: the swap device at 4 GB
+(46), the NVMe queue depth (9), no `xe` (5), `vm.lowmem_reserve_ratio` at
+4096 (22), another login manager (6, and upower, 3, is then no longer
+started by the KDE login screen), no accessibility bus (2). At startup only,
+25 MB: the portals and PipeWire not started at login, which needs a keyring
+daemon that does not wake the portal; they start with the first application
+anyway. Small or uncertain, 20 MB: one GPU driver instance in tw instead of
+two, `cgroup_disable=memory`, iwd in place of NetworkManager and
+wpa_supplicant, no `systemd-userdbd`. That makes 540 to 590. The last step
+to 500 would be the distance between the kernel's watermarks
+(`vm.watermark_scale_factor` from 10 to 1, about 65 MB with the per-CPU
+pages that follow): the band in which the kernel frees memory in the
+background shrinks from 16 to 4 MB, and since the file cache keeps the RAM
+full on a machine that has run for a while, a burst of allocations then
+stalls the program making it. That is the smoothness the owner wants, so it
+was advised against. About 115 MB of driver pages remain that nothing can
+attribute. Also found: CachyOS's hardware detection puts the NVIDIA modules
+into the boot image (`/etc/mkinitcpio.conf.d/10-chwd.conf`), so the driver
+loads at every boot before tw takes the GPU off the bus again.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
