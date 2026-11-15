@@ -869,6 +869,14 @@ With KDE's wallet and NetworkManager no longer running (2026-11-15) it read
 2518 to 2613 kB over seven runs, the allocated figure 808 to 812 as ever:
 fewer programs share the C library and GLib with tw. Still inside the
 budget, with 37 kB to spare at the top.
+Later that day, with the clipboard in tw (5.6 kB of code) and after a
+reboot without power-profiles-daemon, `systemd-userdbd` and boltd, the
+test failed three runs of four at 2653 to 2669 kB. Built back to back, the
+commit before the last change read 2546 to 2691 and the last one 2499 to
+2634 (five runs each, the allocated figure 808 to 812 in all of them), so
+nothing had regressed and the figure was simply swinging across the line;
+three more runs read 2545, 2670 and 2713. That budget is 2800 now. It
+says little; the allocated one is the guard.
 
 At a real login tw's private memory is 15 to 20 MB, not the budget test's
 0.8. The difference is the GPU driver (Mesa), which the tests' software
