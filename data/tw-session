@@ -6,6 +6,7 @@
 #   WLR_DRM_DEVICES   which GPUs to use, the one that renders first
 #   TW_ALL_GPUS=1     use every GPU, whether or not a monitor is plugged into
 #                     the second one; costs its power and memory all session
+#   TW_A11Y=1         keep the accessibility bus, for a screen reader
 #   TW_SESSION_PRINT=1  print which GPUs would be used, and start nothing
 #
 # Programs to start with the session are listed in config.h (autostart). For
@@ -98,11 +99,26 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 	fi
 fi
 
+# The accessibility bus. GTK programs start it as they start: two daemons
+# that then stay for the session, for a screen reader or another aid to
+# listen on. With none in use, tell the toolkits to leave it alone. Programs
+# tw starts inherit that. The ones D-Bus and systemd start do not (the
+# portal that shows file dialogs is one, and is what starts the bus at
+# login), so they are told once tw is up, along with where the session is.
+service_env='WAYLAND_DISPLAY XDG_CURRENT_DESKTOP'
+if [ -z "${TW_A11Y:-}" ]; then
+	export NO_AT_BRIDGE=1 # GTK 3
+	export GTK_A11Y=none  # GTK 4
+	service_env="$service_env NO_AT_BRIDGE GTK_A11Y"
+fi
+
 if [ -n "${TW_SESSION_PRINT:-}" ]; then
 	echo "WLR_DRM_DEVICES=${WLR_DRM_DEVICES-}"
 	echo "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES-}"
 	echo "VK_DRIVER_FILES=${VK_DRIVER_FILES-}"
 	echo "once tw is up=$gpu_step"
+	echo "NO_AT_BRIDGE=${NO_AT_BRIDGE-} GTK_A11Y=${GTK_A11Y-}"
+	echo "told to services=$service_env"
 	exit 0
 fi
 
@@ -110,7 +126,7 @@ fi
 # services can find it, then run the user's autostart script.
 startup='
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-	dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP \
+	dbus-update-activation-environment --systemd '"$service_env"' \
 		${DISPLAY:+DISPLAY}
 fi
 # The keyring. A login screen set up for KDE unlocks the KDE wallet with the

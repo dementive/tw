@@ -620,9 +620,12 @@ session() { # [VAR=value...]: what tw-session decides, on one line
 }
 # What tw-session runs once tw is up to switch the second GPU off.
 step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
+# The accessibility bus is kept off: said to the programs tw starts, and
+# passed on to the ones D-Bus and systemd start.
+a11y='NO_AT_BRIDGE=1 GTK_A11Y=none;told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y'
 expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...]
 	description=$1
-	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_DRIVER_FILES=$4;once tw is up=$5;"
+	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_DRIVER_FILES=$4;once tw is up=$5;$a11y;"
 	shift 5
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
@@ -658,5 +661,38 @@ machine
 "$bin/driver" unload
 rm -rf "$nvidia" "$bus/0000:01:00.0"
 expect_session "a single GPU" '' '' '' ''
+a11y='NO_AT_BRIDGE= GTK_A11Y=;told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP'
+expect_session "the accessibility bus asked for" '' '' '' '' TW_A11Y=1
 
-echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice in tw-session"
+# --- tw-session: what the services are told once tw is up ---------------------------
+# A stand-in tw runs the startup command it is handed, the way tw does, with
+# a stand-in for the program that passes the environment on to D-Bus and
+# systemd and nothing else to find: no tw-gpu, no autostart script.
+mkdir -p "$tmp/session" "$tmp/session-bin"
+cp "$data/tw-session" "$tmp/session/tw-session"
+cat >"$tmp/session/tw" <<EOF
+#!/bin/sh
+[ "\$1" = -s ] && WAYLAND_DISPLAY=wayland-9 PATH='$tmp/session-bin' exec /bin/sh -c "\$2"
+EOF
+cat >"$tmp/session-bin/dbus-update-activation-environment" <<EOF
+#!/bin/sh
+echo "\$* NO_AT_BRIDGE=\${NO_AT_BRIDGE-} GTK_A11Y=\${GTK_A11Y-}" >'$tmp/told'
+EOF
+chmod +x "$tmp/session/tw" "$tmp/session-bin/dbus-update-activation-environment"
+told() { # [VAR=value...]: what a session started like this passes on
+	rm -f "$tmp/told"
+	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" "$@" \
+		sh "$tmp/session/tw-session" >/dev/null 2>&1
+	cat "$tmp/told" 2>/dev/null
+}
+got=$(told)
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
+	fail "tw-session did not tell the services to leave the accessibility bus alone: $got"
+got=$(told TW_A11Y=1)
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE= GTK_A11Y=" ] ||
+	fail "tw-session with TW_A11Y=1 still spoke of the accessibility bus: $got"
+got=$(told DISPLAY=:7)
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
+	fail "tw-session passed on a DISPLAY that is not tw's: $got"
+
+echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice and the accessibility bus in tw-session"

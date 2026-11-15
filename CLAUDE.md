@@ -52,7 +52,7 @@ which GPUs it would use and starts nothing.
 | `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
-| `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring |
+| `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring, keeps the accessibility bus off |
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
 | `data/` (rest) | The login-screen entry, the portal configuration |
@@ -66,7 +66,7 @@ which GPUs it would use and starts nothing.
 | `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
-| `tests/gpu.sh` | `tw-gpu`, its root helper and the GPU choice in `tw-session`, against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
+| `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
@@ -191,6 +191,14 @@ screen, which keeps the GPU open for some seconds after tw has the screen.
 Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
 `tw-gpu@off.service`, which a polkit rule allows, and those run
 `tw-gpu-root`.
+
+`tw-session` also keeps the accessibility bus from starting (`NO_AT_BRIDGE`
+for GTK 3, `GTK_A11Y` for GTK 4), unless `TW_A11Y=1` is set. The programs tw
+starts inherit that, but the one that started the bus at every login is
+the file-dialog portal, a GTK 3 program that systemd starts, and such
+programs only see what `dbus-update-activation-environment` hands on. So
+the names to hand on are kept in one list (`service_env`), which the
+startup command passes along with where the session is.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -330,6 +338,10 @@ GPU is off, and suspend while it is off.
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
 path has never been run.
+
+Keeping the accessibility bus off is tested as far as the session script
+goes: what it exports and what it hands to D-Bus and systemd. That the
+portal then leaves the bus alone has not been seen at a real login yet.
 
 The keyring set-up in `data/tw-session` also only runs at a real login. It
 does two things, both seen to work at a real login: it passes the
@@ -516,6 +528,16 @@ was advised against. About 115 MB of driver pages remain that nothing can
 attribute. Also found: CachyOS's hardware detection puts the NVIDIA modules
 into the boot image (`/etc/mkinitcpio.conf.d/10-chwd.conf`), so the driver
 loads at every boot before tw takes the GPU off the bus again.
+
+Of that list the owner took two as "totally free wins": the accessibility
+bus (now in `tw-session`) and `xe` (README step 9; `xe` is loaded from the
+boot image, before the root file system's driver, so the blacklist needs a
+rebuild of it). They asked what the NVMe queue depth is and whether 4 GB of
+swap would hurt compiling C++ or Rust and playing games, and were told:
+the queue depth is how many requests may be under way per queue, 128 is
+far more than a laptop uses and going lower gains under 1 MB; swap only
+matters once RAM is full, which on 16 GB is what a large parallel build
+does, so 8 GB rather than 4 if they shrink it at all.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was

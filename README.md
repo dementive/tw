@@ -213,6 +213,24 @@ pages suffer, look at `grep thp_fault_fallback /proc/vmstat` after a few
 days of use: it counts the times a program wanted a huge page and got
 normal ones. It was 0 before the change.
 
+### 9. Keep the unused Intel driver out
+
+The kernel loads two drivers for the Intel GPU, `i915` and the newer `xe`,
+and only `i915` drives it on this generation. `xe` sits there with its
+helper modules, about 5 MB. It is loaded from the boot image, so the line
+that keeps it out has to go into the boot image too:
+
+```sh
+echo 'blacklist xe' | sudo tee /etc/modprobe.d/memory.conf
+sudo limine-mkinitcpio
+```
+
+`limine-mkinitcpio` is CachyOS's command to rebuild the boot image with
+the Limine boot loader; elsewhere it is `sudo mkinitcpio -P`. After a
+reboot `lsmod | grep '^xe '` prints nothing. On a machine whose Intel GPU
+is driven by `xe` (`readlink /sys/class/drm/card*/device/driver` says so),
+skip this step.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
@@ -220,6 +238,9 @@ normal ones. It was 0 before the change.
   log in; see step 6. On the ROG Strix the Intel GPU has two DisplayPort
   outputs (most likely the USB-C ports) and the NVIDIA GPU has HDMI and one
   DisplayPort.
+- Screen readers and other accessibility aids find no programs to talk to:
+  the session tells toolkits to leave the accessibility bus alone, which
+  saves two background programs. Log in with `TW_A11Y=1` set to keep it.
 - The laptop suspends after 15 minutes without input, also on mains power. Run
   a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
