@@ -580,6 +580,29 @@ approval is what it lacks: `boltctl` is gone with the package, so
 device. A plain USB-C hub or dock, a charger and a monitor on USB-C are not
 Thunderbolt devices: they never needed `boltd` and show nothing here.
 
+### 19. Sleep: off until waking is known to work
+
+On 2026-11-15 the ROG Strix was sent to sleep for the first time under tw,
+by tw's own 15-minute timer, and did not wake: it could not be brought
+back and had to be switched off and on again.
+Why is not known. tw's timer is off since then (`suspend_after_seconds` is
+0), but three other things still send the machine to sleep: closing the
+lid (systemd does that by itself), the battery falling to 5% (tw), and
+`systemctl suspend` typed by hand. Until a sleep and a wake-up have been
+seen to work, take sleep away from all of them:
+
+```sh
+sudo systemctl mask sleep.target suspend.target
+```
+
+Closing the lid then only locks the session, and on battery the laptop
+runs until it is empty: the warning at 10% is what is left, so plug in
+when it shows. To have sleep back:
+
+```sh
+sudo systemctl unmask sleep.target suspend.target
+```
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
@@ -601,8 +624,12 @@ Thunderbolt devices: they never needed `boltd` and show nothing here.
   program that asks for the bus anyway (Chromium and Electron ones do) is
   told there is none. That saves three background programs. Log in with
   `TW_A11Y=1` set to keep it.
-- The laptop suspends after 15 minutes without input, also on mains power. Run
-  a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
+- The screen goes off after 5 minutes without input and the session locks,
+  but the laptop does not go to sleep by itself: the ROG Strix did not wake
+  from the one sleep it was sent into (step 19). On a machine that wakes,
+  `suspend_after_seconds` in [src/config.h](src/config.h) sets after how
+  long it sleeps; a long job run as `systemd-inhibit --what=sleep <command>`
+  holds that off.
 - On battery every screen runs at 60 Hz and the CPU is set to its
   power-saver profile; plugging the power cable in brings back the full
   refresh rate and the balanced profile. The screen may blink once as it
@@ -626,6 +653,7 @@ Thunderbolt devices: they never needed `boltd` and show nothing here.
   wake it without plugging in. It cannot hibernate (the swap is in RAM), so a
   suspended laptop still runs out in the end, only much later. The two
   thresholds are `battery_warn_percent` and `battery_suspend_percent` in
-  [src/config.h](src/config.h); 0 turns either off.
+  [src/config.h](src/config.h); 0 turns either off. With sleep masked
+  (step 19) the laptop locks at 5% and stays on.
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
   are all in [src/config.h](src/config.h).

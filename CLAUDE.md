@@ -1673,7 +1673,9 @@ that". So the case to work on is the Claude app working for hours with the
 owner at the machine, and sleep modes are off the list. The journal agrees:
 no suspend in the last three boots. Nothing holds the idle suspend off
 while the app works (it has only a `delay` inhibitor), so a run left alone
-for 15 minutes would be suspended; that has not happened.
+for 15 minutes would be suspended. That happened the same afternoon, and
+the machine did not wake: see "The first suspend" at the end of this
+section.
 
 Read again for that case with the Ethernet controller asleep: 10.0 to
 10.6 W while the app animates at 44 to 52 frames a second, and 9 to 9.5 W
@@ -1728,3 +1730,51 @@ Where it ended (2026-11-15, on battery, screen at 15%): 8.1 W idle and
 8.8 W while Claude works, against 11.4 W and 16.5 W the day before. In
 order of size: reduced motion and the 60 Hz mode (the animation), the
 Ethernet controller (1.4 W), the power-saver profile.
+
+### The first suspend
+
+On 2026-11-15 at 16:20:42 tw's idle timer ran out for the first time
+(15 minutes without input, on mains, the owner away) and tw ran
+`systemctl suspend`. The owner: "i just had my computer idle after 15
+minutes and I could NOT get it to come back on!!! I had to restart fully
+turning it off then back on it sucked!" The journal of that boot ends with
+"PM: suspend entry (s2idle)" and "Filesystems sync: 0.004 seconds"; the
+next boot starts at 16:25:01. It is the only suspend in the 18 boots the
+journal holds (`journalctl _TRANSPORT=kernel`; `-k` alone only shows the
+running boot), with no exit: under tw this machine had never been through
+a sleep and a wake-up, which this file said in three places ("not seen
+yet") while the timer stayed at 900 seconds. That was the mistake: a timer
+that sends a machine into a state nobody has seen it come back from.
+
+What is not known is where it stopped: going down, coming up, coming up
+without its root disk (the system runs from a USB disk), or up with a
+screen tw did not light. Lines written after a wake-up reach the disk
+only with the next writeback, so their absence proves little for the
+first half minute. The state it slept in: the NVIDIA GPU off the bus with
+its sound function still there, the Bluetooth driver not loaded, the
+Ethernet controller runtime-suspended, boltd running, the tw of 14:39
+(before the clipboard). Ruled out: NVIDIA's sleep hook
+(`/usr/lib/systemd/system-sleep/nvidia` and `nvidia-sleep.sh` exit at once
+without the driver's `/proc` file, and its units are disabled, so no VT
+was switched). The firmware offers `deep` (S3) besides `s2idle`, and the
+keyboard is allowed to wake the machine (`power/wakeup` is `enabled` for
+its USB device and for the PS/2 port).
+
+What was done. `suspend_after_seconds` is 0. README step 19 has the owner
+mask `sleep.target` and `suspend.target`, because the lid (logind's
+default is to suspend), the 5% battery suspend and a typed `systemctl
+suspend` all lead to the same place. A sleep block held from this session
+for the running tw (`systemd-inhibit --mode=block`, which since systemd
+257 also binds the user's own requests) was refused by the app's own
+safety check, so the mask is what protects a running session.
+
+Finding the cause needs tests that can each end in another hard power-off,
+so they are the owner's to ask for: the kernel's dry runs
+(`/sys/power/pm_test` at `freezer`, `devices`, `platform`, `processors`,
+`core`, each of which goes down to that level, waits five seconds and
+comes back), `pm_trace` to name the device a hang stops at (it scrambles
+the clock until the next time sync), a real sleep ended by the clock
+(`rtcwake -m freeze -s 30`), and the same with the GPU switched on, with
+`deep`, and with the Ethernet rule out, to see which of this week's
+changes it is, if any.
+

@@ -73,8 +73,13 @@ static const int blank_after_seconds = 300;
  * inhibitor (`systemd-inhibit --what=sleep <command>` for a long build). If
  * the machine is still awake afterwards, tw tries again after the same time.
  * `tw -z` overrides this.
+ *
+ * 0, because the one time this ran out on the owner's laptop (2026-11-15,
+ * after 900 seconds) the machine did not wake again and had to be switched
+ * off. Give it a time only once a suspend and a wake-up have been seen to
+ * work on the machine; README step 19.
  */
-static const int suspend_after_seconds = 900;
+static const int suspend_after_seconds = 0;
 static const char suspend_command[] = "systemctl suspend";
 
 /*
