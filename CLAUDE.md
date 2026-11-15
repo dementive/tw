@@ -488,7 +488,11 @@ files in `/etc/modprobe.d/` (the `modconf` hook copies them) followed by
 `KERNEL_CMDLINE` in `/etc/default/limine` (Limine with CachyOS's entry
 tool). `/etc/sysctl.d` and `/etc/modprobe.d` were empty before. Asked which
 to keep, the owner chose "Only these two": the sysctls, as README step 8.
-The swap size, the NVMe queue depth and the `xe` blacklist were left.
+The swap size, the NVMe queue depth and the `xe` blacklist were left. The
+file is in place (`/etc/sysctl.d/90-memory.conf`) and `systemd-sysctl
+--cat-config` shows no other file setting either value. Not seen yet: the
+values coming back by themselves after a reboot, and the figure at startup
+with them.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
