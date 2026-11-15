@@ -537,7 +537,10 @@ swap would hurt compiling C++ or Rust and playing games, and were told:
 the queue depth is how many requests may be under way per queue, 128 is
 far more than a laptop uses and going lower gains under 1 MB; swap only
 matters once RAM is full, which on 16 GB is what a large parallel build
-does, so 8 GB rather than 4 if they shrink it at all.
+does, so 8 GB rather than 4 if they shrink it at all. They then took the
+NVMe setting as well: `/etc/modprobe.d/memory.conf` holds both lines
+(README step 9). Not seen yet: either in effect after the boot image was
+rebuilt.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was

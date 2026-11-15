@@ -213,23 +213,28 @@ pages suffer, look at `grep thp_fault_fallback /proc/vmstat` after a few
 days of use: it counts the times a program wanted a huge page and got
 normal ones. It was 0 before the change.
 
-### 9. Keep the unused Intel driver out
+### 9. Two module settings in the boot image
 
-The kernel loads two drivers for the Intel GPU, `i915` and the newer `xe`,
-and only `i915` drives it on this generation. `xe` sits there with its
-helper modules, about 5 MB. It is loaded from the boot image, so the line
-that keeps it out has to go into the boot image too:
+Both save memory that is set aside at boot and never used here:
 
 ```sh
-echo 'blacklist xe' | sudo tee /etc/modprobe.d/memory.conf
+printf 'blacklist xe\noptions nvme io_queue_depth=128\n' | sudo tee /etc/modprobe.d/memory.conf
 sudo limine-mkinitcpio
 ```
 
-`limine-mkinitcpio` is CachyOS's command to rebuild the boot image with
-the Limine boot loader; elsewhere it is `sudo mkinitcpio -P`. After a
-reboot `lsmod | grep '^xe '` prints nothing. On a machine whose Intel GPU
-is driven by `xe` (`readlink /sys/class/drm/card*/device/driver` says so),
-skip this step.
+| Line | What it does | Saves |
+| --- | --- | --- |
+| `blacklist xe` | the kernel loads two drivers for the Intel GPU, `i915` and the newer `xe`, and only `i915` drives it on this generation; this keeps `xe` and its helper modules out | about 5 MB |
+| `options nvme io_queue_depth=128` | the SSD driver makes room for 1,023 requests under way in each of its queues, one queue per CPU thread; 128 each is still far more than a laptop uses | about 9 MB |
+
+Both modules are loaded from the boot image, so the file has to go into it:
+`limine-mkinitcpio` is CachyOS's command to rebuild it with the Limine
+boot loader; elsewhere it is `sudo mkinitcpio -P`. After a reboot,
+`lsmod | grep '^xe '` prints nothing and
+`cat /sys/module/nvme/parameters/io_queue_depth` prints 128. On a machine
+whose Intel GPU is driven by `xe`
+(`readlink /sys/class/drm/card*/device/driver` says so), leave the first
+line out.
 
 ## Good to know
 
