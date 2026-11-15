@@ -340,8 +340,10 @@ without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
 path has never been run.
 
 Keeping the accessibility bus off is tested as far as the session script
-goes: what it exports and what it hands to D-Bus and systemd. That the
-portal then leaves the bus alone has not been seen at a real login yet.
+goes: what it exports and what it hands to D-Bus and systemd. At a real
+login the portal then left the bus alone, as intended. A Chromium or
+Electron program still asks for the bus's address as it starts, which
+starts the launcher but not the registry daemon.
 
 The keyring set-up in `data/tw-session` also only runs at a real login. It
 does two things, both seen to work at a real login: it passes the
@@ -539,8 +541,26 @@ far more than a laptop uses and going lower gains under 1 MB; swap only
 matters once RAM is full, which on 16 GB is what a large parallel build
 does, so 8 GB rather than 4 if they shrink it at all. They then took the
 NVMe setting as well: `/etc/modprobe.d/memory.conf` holds both lines
-(README step 9). Not seen yet: either in effect after the boot image was
-rebuilt.
+(README step 9). After `limine-mkinitcpio` and a reboot all three were in
+effect: no `xe` (208 modules, vmalloc 4.7 MB smaller), queue depth 128, and
+the accessibility bus not started at login. The Claude app still starts the
+bus's launcher three seconds after it starts itself (one process where
+there were three). The owner saw no change: "still at like 680 on boot".
+Together these are about 16 MB, and the reading swings by more than that
+from one boot to the next, because the pages parked per CPU were anywhere
+from 55 to 97 MB in the first minutes. `btop` cannot show steps of this
+size; compare `tools/mem.sh` readings line by line instead.
+
+This system runs from the external USB SSD (`sda`, a Samsung T7: `/boot` on
+`sda1`, an XFS root on `sda2`). The internal NVMe disk holds another
+install and is not mounted. A lead on the kernel pages nothing could
+attribute: XFS keeps its metadata buffers outside the page cache, in pages
+no counter in `/proc/meminfo` shows, and `/sys/fs/xfs/sda2/stats/stats`
+says about 7,000 were created by three minutes after boot (the `buf`
+line), a good part of them 16 kB inode clusters. That could be most of
+those pages, and it would be cache the kernel gives back when asked, not
+drivers. Put to the owner as a test: `sysctl -w vm.drop_caches=2` and a
+reading before and after.
 
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
