@@ -23,7 +23,7 @@ feature does nothing without its program:
 
 ```sh
 sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
-    grim slurp brightnessctl wl-clipboard wireplumber \
+    grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
 ```
 
@@ -37,6 +37,7 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
 | brightnessctl, wireplumber | brightness and volume keys |
+| power-profiles-daemon | the power-saver CPU profile while on battery |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
@@ -291,5 +292,12 @@ shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
   saves two background programs. Log in with `TW_A11Y=1` set to keep it.
 - The laptop suspends after 15 minutes without input, also on mains power. Run
   a long job as `systemd-inhibit --what=sleep <command>` to hold that off.
+- On battery every screen runs at 60 Hz and the CPU is set to its
+  power-saver profile; plugging the power cable in brings back the full
+  refresh rate and the balanced profile. The screen may blink once as it
+  changes. Both are settings in [src/config.h](src/config.h):
+  `battery_refresh_hz` (0 keeps the full rate) and the two commands below it.
+  To use another profile until the cable next moves, run
+  `powerprofilesctl set performance` (or `balanced`, `power-saver`).
 - Keys, timeouts, monitor scale, autostart programs and the default terminal
   are all in [src/config.h](src/config.h).

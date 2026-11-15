@@ -57,14 +57,10 @@ static void set_blanked(struct tw_server *server, bool blanked) {
 
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		struct wlr_output_state state;
-		wlr_output_state_init(&state);
-		wlr_output_state_set_enabled(&state, !blanked);
-		if (!wlr_output_commit_state(output->wlr_output, &state)) {
+		if (!output_set_power(output, !blanked)) {
 			wlr_log(WLR_ERROR, "failed to power %s output %s",
 				blanked ? "off" : "on", output->wlr_output->name);
 		}
-		wlr_output_state_finish(&state);
 		if (!blanked) {
 			wlr_output_schedule_frame(output->wlr_output);
 		}

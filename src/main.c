@@ -226,6 +226,7 @@ int main(int argc, char *argv[]) {
 	input_init(&server);
 	idle_init(&server);
 	lock_init(&server);
+	power_init(&server);
 
 	/* From here on listeners are attached, so every exit goes through the
 	 * full teardown below. */
@@ -263,6 +264,7 @@ teardown:
 	 * listens on is destroyed, so the order here matters. */
 	wl_display_destroy_clients(server.display);
 	x11_finish(&server);
+	power_finish(&server);
 	lock_finish(&server);
 	idle_finish(&server);
 	input_finish(&server);

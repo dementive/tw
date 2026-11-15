@@ -49,7 +49,8 @@ which GPUs it would use and starts nothing.
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up |
 | `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects, and stops it when none is left |
-| `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
+| `src/power.c` | Running on battery: learns from udev when the power cable goes in or out, slows the outputs down and runs the power-profile command |
+| `src/output.c` | Outputs, which workspace each one shows, which mode each one runs in, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
 | `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring, keeps the accessibility bus off |
@@ -66,9 +67,11 @@ which GPUs it would use and starts nothing.
 | `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
+| `tests/power.sh` | What tw makes of the power supplies it finds as it starts, and the command it runs, against made-up ones |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
-| `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
+| `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
+| `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
@@ -199,6 +202,30 @@ the file-dialog portal, a GTK 3 program that systemd starts, and such
 programs only see what `dbus-update-activation-environment` hands on. So
 the names to hand on are kept in one list (`service_env`), which the
 startup command passes along with where the session is.
+
+On battery tw does two things. Every output runs in the slowest mode of its
+preferred size that is not below `battery_refresh_hz` (60), because a
+program that animates draws as often as the output refreshes: on the
+owner's 300 Hz panel that was 5 W of 16.5. And `battery_command` runs, with
+`mains_command` when the cable is back and one of the two at startup, which
+puts the CPU on its power-saver profile and back. `output_mode()` is the
+one place that says which mode an output should be in; a new output, an
+output coming back on and a change of power supply all ask it. wlroots
+refuses a mode for an output that is off, so `outputs_update_mode()` skips
+those and `output_set_power()` sets the mode as it turns one on, and turns
+it on in its old mode if the new one is refused: a dark screen is the one
+failure this must not have.
+
+`server->on_battery` follows the kernel's own rule
+(`power_supply_is_system_supplied()`): the machine has a battery, and no
+supply that is not a battery is online. Supplies of scope `Device` belong
+to a mouse or a phone and are skipped. Changes arrive through a libudev
+monitor on the `power_supply` subsystem (wlroots links libudev anyway).
+tw does not read what an announcement says; it reads
+`/sys/class/power_supply` again and acts only if the answer changed. That
+matters because the owner's battery and charger both announce themselves
+every 35 seconds or so with nothing changed. A machine without a battery opens no
+monitor and runs no command.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -369,6 +396,26 @@ seconds after that neither it nor Xwayland was running. The helper has no
 chance to tidy up when stopped and leaves its own socket and lock file
 (`xwls-1`) in the runtime directory; the next helper takes the same name,
 so they do not pile up.
+
+The headless backend's outputs have no modes, so no test changes a refresh
+rate: of that path only the choice is tested (`tw_refresh_saves()`, in the
+unit test), not the loop over an output's modes in `output_mode()`, nor
+`outputs_update_mode()`, nor the mode half of `output_set_power()`. And only
+the kernel can announce that a power supply changed, so `handle_change()`
+in `power.c` is untested; `tests/power.sh` covers what tw does with the
+state it finds as it starts. Seen on the owner's laptop (2026-11-14), in a
+headless tw whose supplies were made up (`TW_SYS`) but whose announcements
+were real: the battery and the charger each announced a change about
+every 35 seconds while charging, tw noticed the made-up charger going offline at
+the next announcement (33 s) and coming back (35 s), and ran `set
+power-saver` and `set balanced` once each. With the monitor open tw holds
+20 kB more of its own. `powerprofilesctl set power-saver` needs no
+password there and sets the CPUs' `energy_performance_preference` to
+`power` and the platform profile to `quiet`; the daemon behind it was
+already running in a session where tw never called it. Not seen yet: the
+panel changing mode (the first time the cable is pulled after an install),
+whether the screen blinks as it does, what the machine draws at 60 Hz, and
+whether a USB-C charger shows up as a supply that is online.
 
 ## Known noise
 
@@ -682,8 +729,8 @@ come, the daemon stays, with the 1.7 MB.
 ## Battery
 
 The owner called the memory "good now" (2026-11-14) and asked what tw
-should do next for battery life. Nothing is built yet; this is what was
-measured and what was put to them.
+should do next for battery life. This is what was measured, what was put
+to them, and what has been built since.
 
 Measured that evening on battery, 14 minutes after boot, the screen at 15%
 brightness and only the Claude app and a terminal open, by reading the
@@ -739,3 +786,13 @@ battery, off the same event; a warning and a suspend when the battery runs
 low, off the same events; one root reading of the floor; the worn battery
 and a charge limit of 80%; a test of which sleep mode drains less.
 Recommended: the first three as one change.
+
+Asked "Build 60 Hz and the power-saver profile on battery first?", the
+owner answered "Yes, build it", and those two are in (`power.c`,
+`battery_refresh_hz` and the two commands in `config.h`). What they cost
+when in use: a socket that wakes tw about four times a minute to read six
+small files, and 20 kB. What they save is still the estimate above until the
+owner has been on battery with the new build: `sh tools/power.sh` then
+shows the draw next to the frame rate, to set against 16.5 W animating and
+11.4 W still. The warning and suspend on a low battery are not built; they
+were left for the owner to decide.

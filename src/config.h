@@ -78,6 +78,27 @@ static const int suspend_after_seconds = 900;
 static const char suspend_command[] = "systemctl suspend";
 
 /*
+ * On battery. The kernel tells tw when the power cable goes in or out, so
+ * nothing is polled, and on a machine without a battery none of this exists.
+ *
+ * Every output then runs at the slowest rate it offers at its normal size
+ * that is not below battery_refresh_hz, and at its full rate again on mains.
+ * Whatever animates is drawn that many times a second and no more, which is
+ * the saving: on the 300 Hz panel this was written for, an animation took
+ * 16.5 W at 300 frames a second, against 11.4 W for a still screen. The
+ * screen may blink once as it changes. 0 keeps the full rate on battery.
+ */
+static const int battery_refresh_hz = 60;
+
+/*
+ * Run when the machine goes on battery and when it is back on mains, and
+ * once at startup for whichever of the two holds then. "" runs nothing, and
+ * so does a command that is not installed.
+ */
+static const char battery_command[] = "powerprofilesctl set power-saver";
+static const char mains_command[] = "powerprofilesctl set balanced";
+
+/*
  * Lock the session when the laptop lid closes, when the screen turns off
  * after blank_after_seconds, and before suspending. tw locks at once and by itself, so nothing is
  * visible or reachable even if the machine suspends before the locker is up;

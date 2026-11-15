@@ -9,6 +9,9 @@
 # tw's PATH is $bin_dir and nothing else, so it finds none of the programs
 # installed on this machine: no locker, no xwayland-satellite, no terminal.
 # A test that needs one puts a stand-in there with fake_program.
+#
+# Nor does it see this machine's battery or power cable: it reads the power
+# supplies from $run_dir/sys, which is empty unless a test fills it.
 
 tw_bin=$1
 # Absolute, because the stand-ins run it from wherever tw starts them.
@@ -62,6 +65,7 @@ start_tw() {
 	env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY \
 		PATH="$bin_dir" \
 		XDG_RUNTIME_DIR="$run_dir" \
+		TW_SYS="$run_dir/sys" \
 		WLR_BACKENDS=headless \
 		WLR_RENDERER=pixman \
 		"$tw_bin" "$@" >"$run_dir/tw.log" 2>&1 &

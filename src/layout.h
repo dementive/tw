@@ -59,4 +59,12 @@ void tw_spring_step(double *pos, double *vel, double target, double omega, doubl
 /* Whether a spring is close enough to its target to stop animating. */
 bool tw_spring_settled(double pos, double vel, double target);
 
+/*
+ * Whether an output on battery should use a mode that refreshes `candidate`
+ * mHz in place of one that refreshes `current` mHz: only a slower one, and
+ * none slower than `floor_hz`. Rates count in whole Hz, because what a
+ * monitor calls 60 Hz is 59.94 or 59.999.
+ */
+bool tw_refresh_saves(int candidate, int current, int floor_hz);
+
 #endif

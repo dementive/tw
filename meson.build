@@ -57,6 +57,7 @@ wayland_server = dependency('wayland-server')
 wayland_client = dependency('wayland-client')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput') # touchpad settings
+libudev = dependency('libudev')   # the power cable; wlroots uses it already
 libm = cc.find_library('m')
 
 # --- Protocols ---------------------------------------------------------------
@@ -124,10 +125,11 @@ tw = executable(
 	'src/idle.c',
 	'src/lock.c',
 	'src/x11.c',
+	'src/power.c',
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
-	dependencies: [wlroots, wayland_server, xkbcommon, libinput, libm],
+	dependencies: [wlroots, wayland_server, xkbcommon, libinput, libudev, libm],
 	install: true,
 )
 
@@ -277,6 +279,15 @@ test(
 test(
 	'x11',
 	find_program('tests/x11.sh'),
+	args: [tw, test_client],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# What tw does on battery and on mains, against made-up power supplies.
+test(
+	'power',
+	find_program('tests/power.sh'),
 	args: [tw, test_client],
 	is_parallel: false,
 	timeout: 120,

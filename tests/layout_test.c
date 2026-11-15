@@ -104,6 +104,19 @@ int main(void) {
 	tw_spring_step(&still_pos, &still_vel, target, omega, 0);
 	CHECK(still_pos == 123 && still_vel == 45);
 
+	/* On battery an output takes a slower mode, down to the floor. The panel
+	 * this was written for has 300 Hz and 59.999 Hz, which counts as 60. */
+	CHECK(tw_refresh_saves(59999, 300000, 60));
+	CHECK(tw_refresh_saves(59940, 144000, 60));
+	CHECK(tw_refresh_saves(120000, 300000, 60));
+	CHECK(tw_refresh_saves(60000, 120000, 60));
+	/* Never a faster one or the same again, and none below the floor. */
+	CHECK(!tw_refresh_saves(300000, 59999, 60));
+	CHECK(!tw_refresh_saves(60000, 60000, 60));
+	CHECK(!tw_refresh_saves(48000, 300000, 60));
+	CHECK(!tw_refresh_saves(59499, 300000, 60));
+	CHECK(tw_refresh_saves(48000, 300000, 48));
+
 	if (failures > 0) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

@@ -142,6 +142,10 @@ struct tw_server {
 	struct tw_x11 *x11; /* NULL when X11 support is off */
 	int x11_idle_ms;    /* 0 never stops the X11 helper */
 
+	/* power.c */
+	struct tw_power *power; /* NULL on a machine without a battery */
+	bool on_battery;        /* nothing but its battery supplies the machine */
+
 	/* input.c */
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
@@ -229,6 +233,19 @@ struct tw_output *output_adjacent(struct tw_output *output, int direction);
 /* `area` is what windows may use on the output, `full` the whole of it.
  * False if the output is NULL or has no room. */
 bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full);
+/*
+ * The mode an output should be in now: its preferred one, or on battery the
+ * slowest of that size that config.h allows. NULL for an output without
+ * modes (a nested or headless one).
+ */
+struct wlr_output_mode *output_mode(struct tw_output *output);
+/* Puts every output that is on into that mode. Call when on_battery changed. */
+void outputs_update_mode(struct tw_server *server);
+/*
+ * Turns an output on or off. One that comes on takes the mode it should have
+ * now, since the power cable may have gone in or out while it was off.
+ */
+bool output_set_power(struct tw_output *output, bool on);
 
 /* window.c */
 void window_init(struct tw_server *server);
@@ -330,6 +347,12 @@ void action_lock(struct tw_server *server, const union tw_arg *arg);
 /* A key was pressed. If the session is locked and has no lock screen (the
  * locker crashed), this starts one. */
 void lock_key_pressed(struct tw_server *server);
+
+/* power.c */
+/* Finds out what supplies the machine and acts on it. Call before the
+ * backend starts, so that the outputs come up in the right mode. */
+void power_init(struct tw_server *server);
+void power_finish(struct tw_server *server);
 
 /* x11.c */
 /* Sets DISPLAY for the programs tw starts, or removes it. Call before any. */

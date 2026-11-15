@@ -51,3 +51,7 @@ void tw_spring_step(double *pos, double *vel, double target, double omega, doubl
 bool tw_spring_settled(double pos, double vel, double target) {
 	return fabs(pos - target) < 0.5 && fabs(vel) < 10.0;
 }
+
+bool tw_refresh_saves(int candidate, int current, int floor_hz) {
+	return candidate < current && (candidate + 500) / 1000 >= floor_hz;
+}

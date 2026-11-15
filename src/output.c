@@ -9,6 +9,7 @@
 
 #include "tw.h"
 #include "config.h"
+#include "layout.h"
 
 /*
  * Several outputs. There are TW_WORKSPACES workspaces in all, and each output
@@ -73,6 +74,67 @@ static const struct tw_output_rule *output_rule(const char *name) {
 		}
 	}
 	return rest;
+}
+
+struct wlr_output_mode *output_mode(struct tw_output *output) {
+	struct wlr_output_mode *best = wlr_output_preferred_mode(output->wlr_output);
+	if (best == NULL || !output->server->on_battery || battery_refresh_hz <= 0) {
+		return best;
+	}
+	/* The same picture, drawn less often. */
+	int width = best->width, height = best->height;
+	struct wlr_output_mode *mode;
+	wl_list_for_each(mode, &output->wlr_output->modes, link) {
+		if (mode->width == width && mode->height == height &&
+				tw_refresh_saves(mode->refresh, best->refresh, battery_refresh_hz)) {
+			best = mode;
+		}
+	}
+	return best;
+}
+
+void outputs_update_mode(struct tw_server *server) {
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		struct wlr_output *wlr_output = output->wlr_output;
+		struct wlr_output_mode *mode = output_mode(output);
+		/* An output that is off takes no mode; it gets this one as it comes
+		 * back on. */
+		if (mode == NULL || mode == wlr_output->current_mode || !wlr_output->enabled) {
+			continue;
+		}
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		wlr_output_state_set_mode(&state, mode);
+		/* The scene redraws the output by itself after a change of mode. */
+		if (wlr_output_commit_state(wlr_output, &state)) {
+			wlr_log(WLR_INFO, "output %s: now at %d.%03d Hz",
+				wlr_output->name, mode->refresh / 1000, mode->refresh % 1000);
+		} else {
+			wlr_log(WLR_ERROR, "output %s: could not switch to %d.%03d Hz",
+				wlr_output->name, mode->refresh / 1000, mode->refresh % 1000);
+		}
+		wlr_output_state_finish(&state);
+	}
+}
+
+bool output_set_power(struct tw_output *output, bool on) {
+	struct wlr_output_mode *mode = on ? output_mode(output) : NULL;
+	for (;;) {
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		wlr_output_state_set_enabled(&state, on);
+		if (mode != NULL) {
+			wlr_output_state_set_mode(&state, mode);
+		}
+		bool done = wlr_output_commit_state(output->wlr_output, &state);
+		wlr_output_state_finish(&state);
+		if (done || mode == NULL) {
+			return done;
+		}
+		/* On in the mode it had beats staying dark. */
+		mode = NULL;
+	}
 }
 
 static void handle_frame(struct wl_listener *listener, void *data) {
@@ -163,11 +225,16 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, true);
 	wlr_output_state_set_scale(&state, rule->scale);
-	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
+	struct wlr_output_mode *mode = output_mode(output);
 	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
 	}
-	wlr_output_commit_state(wlr_output, &state);
+	if (!wlr_output_commit_state(wlr_output, &state) &&
+			mode != wlr_output_preferred_mode(wlr_output)) {
+		/* It refused the slower mode for running on battery. */
+		wlr_output_state_set_mode(&state, wlr_output_preferred_mode(wlr_output));
+		wlr_output_commit_state(wlr_output, &state);
+	}
 	wlr_output_state_finish(&state);
 
 	output->frame.notify = handle_frame;
