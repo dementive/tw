@@ -937,3 +937,22 @@ Where the draw stands on battery after all of this: 8.3 W with a still
 screen (11.4 W the day before) and about 12 W while the Claude app
 animates (16.5 W; read before the Ethernet controller was put to sleep,
 so probably lower now), on a battery that holds 54 Wh.
+
+Offered a measurement of what the laptop loses while suspended, the owner
+declined (2026-11-15): "it's not asleep most of the time I use it anyway
+most of the time I just have claude running for a long time. if it's
+asleep or locked nothing is getting done anyway so I don't care much about
+that". So the case to work on is the Claude app working for hours with the
+owner at the machine, and sleep modes are off the list. The journal agrees:
+no suspend in the last three boots. Nothing holds the idle suspend off
+while the app works (it has only a `delay` inhibitor), so a run left alone
+for 15 minutes would be suspended; that has not happened.
+
+Read again for that case with the Ethernet controller asleep: 10.0 to
+10.6 W while the app animates at 44 to 52 frames a second, and 9 to 9.5 W
+in the stretches where it drew 6 a second with Claude still working. So
+what the animation itself costs at 60 Hz is about 1 W, and the draw while
+Claude works has gone from 16.5 W to about 10.5 W. What is left in
+software is that 1 W (telling the app to reduce motion, or tw sending
+frame callbacks less often while nothing is typed). Larger, and not tw's:
+the battery's wear (54 of 90 Wh) and the system running from the USB disk.
