@@ -140,8 +140,8 @@ static const char screenshot_region[] = "grim -g \"$(slurp)\"";
  * short, and leave out what can start by itself when it is needed. One that
  * is not installed is skipped.
  *
- * The notification daemon (fnott) is not here for that reason: D-Bus starts
- * it when a program sends the first notification.
+ * No notification service is here for that reason: D-Bus starts tw-notify
+ * when a program sends a notification, and it exits after the last one.
  */
 static const char *const autostart[] = {
 	"wl-clip-persist --clipboard regular", /* keeps a copy when its program exits */

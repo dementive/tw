@@ -53,10 +53,14 @@ which GPUs it would use and starts nothing.
 | `src/output.c` | Outputs, which workspace each one shows, which mode each one runs in, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
+| `notify/notify.c` | `tw-notify`, a second program: shows notifications. The notification list, its window, the conversation with the session bus, leaving when nothing is left to show |
+| `notify/bus.c` | D-Bus messages taken apart and put together, with no library. Pure functions on bytes, unit tested |
+| `notify/bake.c` | Build tool: draws the characters `tw-notify` can show into `font.h`, with FreeType, so that the program itself needs no font library |
+| `notify/config.h` | `tw-notify`'s settings, compile-time: sizes, colours, how long a notification stays |
 | `data/tw-session` | Session start script: picks the GPUs, switches an unused NVIDIA GPU off, sets up the keyring, keeps the accessibility bus off |
 | `data/tw-gpu` | Switches the NVIDIA GPU on for the programs that want it and off after them |
 | `data/tw-gpu-root`, `tw-gpu@.service.in`, `tw-gpu.rules`, `tw-gpu-udev.rules` | What lets `tw-gpu` load and unload the driver: root helper, system unit, polkit rule, udev rule |
-| `data/` (rest) | The login-screen entry, the portal configuration |
+| `data/` (rest) | The login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify` |
 | `README.md` | For the owner: what a new machine needs. Packages, install steps, and fixes outside tw (the keyring, shell plugins that wake Xwayland). Add to it whenever a change needs a new program or a step done by hand |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/client.c` | Minimal Wayland client (window, layer surface, locker, ...) that prints what the compositor tells it |
@@ -68,6 +72,8 @@ which GPUs it would use and starts nothing.
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
 | `tests/x11.sh` | X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
 | `tests/power.sh` | What tw makes of the power supplies it finds as it starts, and the command it runs, against made-up ones |
+| `tests/bus_test.c` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
+| `tests/notify.sh` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
@@ -247,9 +253,66 @@ could come after the battery's: CLOCK_BOOTTIME runs during sleep and
 CLOCK_MONOTONIC does not, so their difference grows only then
 (`asleep_ms()`). tw does not look at the charge as it starts, because a
 notification sent before `tw-session` has told D-Bus where the session is
-would start fnott without a display; the battery's next announcement comes
-soon enough. The machine cannot hibernate (swap is zram), so suspending
+would start the notification service without a display, and it would be
+dropped; the battery's next announcement comes soon enough. The machine cannot hibernate (swap is zram), so suspending
 only buys hours.
+
+Notifications are not tw's business: `tw-notify` shows them, a program of
+its own in `notify/` that shares no code with tw and talks to it as any
+layer-shell client would. The owner asked for it because fnott, which did
+the job before, held 9.5 MB of its own for the whole session (27 MB in
+`btop`) from the moment a program first asked what it could do. `tw-notify`
+is built on three decisions, each of which is what makes it small.
+
+It runs only while there is something to show. Its D-Bus service file makes
+the session bus start it when a program sends a notification or asks for
+its capabilities, and it exits `linger_ms` (one second) after the last
+notification has closed or the last question was answered. Leaving must not
+lose a notification that is on its way, so it first gives up its name on
+the bus (`ReleaseName`) and exits when the answer to that arrives: whatever
+was sent before the bus took the name away has been delivered by then, and
+whatever is sent after starts a new `tw-notify`. One that arrived in between
+is shown, and the name asked for again. Ids start from the clock, so a
+program still holding the id of a notification from an earlier `tw-notify`
+cannot close somebody else's.
+
+It links against libc and the Wayland client library, nothing else. The
+D-Bus messages are read and written by `bus.c`: the login line, `Hello`,
+`RequestName`, the four methods of `org.freedesktop.Notifications`, `Ping`,
+an empty `GetAll`, `Introspect`, and the signals. Everything read off the
+socket is checked against the bytes that are there; `tests/bus_test.c` is
+mostly about messages that are cut short or damaged. Signals go to the
+program that sent the notification and to nobody else.
+
+It loads no font. `bake.c` runs when tw is built and draws the characters
+of one font (`-Dnotify_font`, by default what fontconfig calls sans-serif)
+at `font_size` for five screen scales into `font.h`: Latin with its accented
+letters, and common punctuation. They end up as read-only data in the
+program (320 kB of its 390 kB), which costs no memory of its own. What that
+gives up: any other character is drawn as the font's "missing" box, and
+there is no bold, no markup and no right-to-left text.
+
+The list is one layer surface on the overlay layer, top right, drawn into a
+shared-memory picture that `tw-notify` unmaps as soon as the compositor has
+it. On a screen with a fractional scale the picture is in the screen's own
+pixels (fractional-scale and viewporter), its size rounded up so that it is
+a whole number of logical pixels. The overlay layer is above fullscreen
+windows, so a game does not hide the battery warning, and below the lock
+screen, so a locked session shows none. A click closes the notification
+under it; a left click on one whose program listed the action `default`
+first gets an activation token from the compositor for that click and sends
+it on (`ActivationToken`, then `ActionInvoked`), which is what lets the
+program bring its window forward under tw's rule that only a token made
+from input may take the focus. `GetCapabilities` says `actions` for that
+reason and because Chromium falls back to drawing its own notifications
+when a service does not list it.
+
+For the first picture to be right, `layer.c` tells a new layer surface its
+screen's scale as it is created. wlroots' scene tells a surface its scale
+only once it is on screen, by which time a client has drawn it for scale 1
+and has to draw again: seen with `tw-notify` on a screen at 1.25, two
+pictures before the change and one after. That holds for the launcher too.
+Windows still learn their scale the late way.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event.
@@ -451,6 +514,38 @@ Not seen yet: the panel changing mode while tw runs (the cable pulled or
 plugged in), whether the screen blinks as it does, whether a USB-C charger
 shows up as a supply that is online, a real suspend from a low battery,
 and a wake-up being told from the clocks.
+
+`tests/notify.sh` runs `tw-notify` against dbus-daemon, with `busctl` as the
+program sending notifications. It reads what `tw-notify` says it does (`-d`)
+and what `dbus-monitor` sees on the bus, not the screen, so what a
+notification looks like is untested, and so is the text layout but for not
+crashing. The owner's session bus is dbus-broker, which starts services
+through systemd and has not started `tw-notify` yet. Its source says each
+start is a transient unit with a name of its own
+(`dbus-<launcher>-org.freedesktop.Notifications@<n>.service`), started
+without a look at the one before, so leaving and being started again a
+moment later do not collide; and that service files are read from
+`/usr/local/share` before `/usr/share` with the first to claim a name
+winning, so tw's entry beats fnott's and KDE's. Each start writes a line or
+two to the user's journal.
+
+Seen on the owner's laptop (2026-11-15). In a headless tw: notifications
+from `notify-send` (GLib), `busctl` (systemd) and `dbus-send` (libdbus), so
+three other implementations agree with `bus.c`; screenshots at scale 1 and
+1.25 with sharp text, wrapping and the urgent border; one picture drawn
+per change at 1.25 with the change to `layer.c` and two without. On the
+real screen, through a private bus: two notifications at 1.25, in place
+and gone after their time, `tw-notify` gone a second later. Measured there
+with two notifications showing: 168 kB of its own, 2.6 MB resident, which
+is what `btop` shows and is mostly the C library every program shares,
+451 kB by PSS. From sending a notification to the answer takes 9 ms when
+`tw-notify` has to be started and 5 ms when it runs, most of both being
+`busctl`; `tw-notify` uses 1.7 ms of processor time to start, read the
+notification and draw it. Not seen yet: a start by dbus-broker, a
+notification from the Claude app, its window coming forward after a click
+(its Electron has the call that reads the token), tw's entry winning over
+fnott's at a login, and a monitor going away while the list is on it.
+Breaking the code 18 ways, one at a time, each made a test fail.
 
 ## Known noise
 
@@ -760,15 +855,28 @@ wants it that way: offered a file in fish's vendor directory
 tw on the first console, they answered "I'll type it". Do not add an
 autostart for the session.
 
-fnott is no longer in `autostart[]`: its package ships a D-Bus service
-file, so the bus starts it when a program sends the first notification
-(tried on a private bus with a headless tw: started by `notify-send`,
-drew on the output, and served the second notification too). KDE's
-`org.kde.plasma.Notifications.service` claims the same name and loses:
-dbus-broker logs it as a duplicate at every login. The owner called this a
-"hack" that does not fix what they see ("i don't like fnott. why is it so
-much memory"), which is fair as far as it goes: once a notification has
-come, the daemon stays, with the 1.7 MB.
+fnott was taken out of `autostart[]` first: its package ships a D-Bus
+service file, so the bus started it when a program sent the first
+notification. The owner called that a "hack" that does not fix what they
+see ("i don't like fnott. why is it so much memory"), and a day later
+asked: "Can we write a lighterweight notification service than fnott???"
+Measured then, 54 minutes into a session in which fnott had been started
+13 seconds after login (most likely by the Claude app asking what the
+service can do): 9.5 MB of its own, 8.9 of it heap, 27.5 MB resident, 24
+libraries, fontconfig, FreeType, HarfBuzz and GLib among them. Before it
+had shown anything it had been 1.7 MB. `tw-notify` replaces it (see above
+for how and "Not covered by tests" for the figures); fnott's package can
+be removed (README step 13).
+
+In the same message they asked whether the text console could start bash
+instead of fish "so it uses slightly less memory there". The login shell
+stays for the whole session as tw's parent: fish, 2.5 MB of its own and
+13.2 MB resident. bash would be 0.16 and 4.6. Neither is needed:
+`tw-session` ends in `exec`, so typing `exec tw-session` leaves no shell at
+all, and a tw that exits or crashes then ends the login instead of
+dropping to a shell behind the lock screen. Put to them as that; changing
+the login shell would also change the shell their terminals start. Not
+tried on the machine.
 
 ## Battery
 

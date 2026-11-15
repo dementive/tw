@@ -15,14 +15,19 @@ To build:
 
 ```sh
 sudo pacman -S meson ninja gcc pkgconf wayland wayland-protocols libxkbcommon \
-    libinput pixman libdrm mesa libglvnd systemd-libs libdisplay-info hwdata
+    libinput pixman libdrm mesa libglvnd systemd-libs libdisplay-info hwdata \
+    freetype2 fontconfig noto-fonts
 ```
+
+The last three are for the notifications: their text is drawn from the
+system's sans-serif font, at build time, so nothing font-related is needed
+to run. Without them tw builds and `tw-notify` is left out.
 
 Programs tw starts or works with. None is required to build, but each key or
 feature does nothing without its program:
 
 ```sh
-sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
+sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
     libnotify \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
@@ -33,13 +38,12 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | foot | terminal (Mod+T) |
 | fuzzel | launcher (Mod+Space, Mod+D) |
 | swaylock | lock screen (Mod+Alt+L, lid close, idle) |
-| fnott | notifications; D-Bus starts it when the first one arrives |
 | wl-clip-persist | keeps what you copied when its program exits, started with the session |
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
 | brightnessctl, wireplumber | brightness and volume keys |
 | power-profiles-daemon | the power-saver CPU profile while on battery |
-| libnotify | `notify-send`, for the low-battery warning |
+| libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
@@ -282,6 +286,13 @@ the command its login-screen entry runs (not tried from a console).
 Log out of a console when you are done with it. One left logged in is a
 shell anyone at the keyboard reaches with Ctrl+Alt+F3, lock screen or not.
 
+Typed as `exec tw-session`, tw takes the login shell's place instead of
+running under it. The shell then is not left waiting for the whole session
+(fish: 13 MB in `btop`, 2.5 MB of them its own), and when tw exits, or
+crashes behind the lock screen, the console is back at the login prompt and
+not at a shell. The price: quitting tw logs you out. Not tried on this
+machine yet; plain `tw-session` is always there.
+
 ### 11. Let the wired network chip sleep
 
 With no cable plugged in, the Ethernet controller still stays fully powered,
@@ -319,6 +330,28 @@ and it is kept across logins. Scrolling in those programs may jump where it
 used to glide. To undo it:
 `gsettings reset org.gnome.desktop.interface enable-animations`.
 
+### 13. Notifications: remove the other service
+
+Notifications are shown by `tw-notify`, which is installed with tw. The
+session's D-Bus starts it when a program sends one and it exits when the last
+one has closed, so it is in memory only while there is something to read.
+Its entry is in `/usr/local`, which D-Bus reads before `/usr`, so it is
+used from the next login even while fnott (or KDE's service) is installed.
+fnott can go:
+
+```sh
+sudo pacman -Rns fnott
+```
+
+To check, after logging in again:
+
+```sh
+notify-send 'Hello' 'from tw-notify'
+```
+
+A box appears in the top right corner and goes after six seconds; a second
+later `pgrep -x tw-notify` prints nothing.
+
 ## Good to know
 
 - Monitor ports wired to the laptop's first GPU work whenever you plug in.
@@ -338,6 +371,15 @@ used to glide. To undo it:
   `battery_refresh_hz` (0 keeps the full rate) and the two commands below it.
   To use another profile until the cable next moves, run
   `powerprofilesctl set performance` (or `balanced`, `power-saver`).
+- A notification is a title and up to four lines of text, in the top right
+  corner, above a fullscreen window too. Clicking one closes it; a left
+  click also tells its program, which can then bring its window forward.
+  One marked urgent has a red border and stays
+  until clicked. There are no icons, buttons or sounds, and only Latin
+  letters and common punctuation can be shown: anything else, an emoji for
+  one, appears as a small box. Size, colours and how long one stays are in
+  [notify/config.h](notify/config.h); the font is picked when tw is built
+  (`meson configure build-release -Dnotify_font='DejaVu Sans'`).
 - There is no battery indicator. When the charge is down to 10% a
   notification says so, and it stays until you click it. At 5% the laptop
   locks and suspends, and it does so again for each further percent if you

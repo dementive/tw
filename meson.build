@@ -83,6 +83,7 @@ protocols = {
 	'ext-session-lock-v1': wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 	'idle-inhibit-unstable-v1': wl_protocol_dir / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
 	'xdg-activation-v1': wl_protocol_dir / 'staging/xdg-activation/xdg-activation-v1.xml',
+	'viewporter': wl_protocol_dir / 'stable/viewporter/viewporter.xml',
 	'fractional-scale-v1': wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	'pointer-constraints-unstable-v1': wl_protocol_dir / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
@@ -187,6 +188,62 @@ configure_file(
 	install_dir: get_option('datadir') / 'wayland-sessions',
 )
 
+# --- The notification service ------------------------------------------------
+
+# tw-notify shows notifications and is gone again when none is left. It runs
+# on libc and the Wayland client library alone: the characters it can show
+# are drawn here, at build time, by a tool that uses FreeType (notify/bake.c).
+freetype = dependency('freetype2', native: true, required: get_option('notify'))
+fc_match = find_program('fc-match', native: true, required: get_option('notify'))
+tw_notify = disabler()
+if freetype.found() and fc_match.found()
+	notify_font = run_command(
+		fc_match, '--format=%{file}', get_option('notify_font'),
+		check: true,
+	).stdout().strip()
+	notify_bake = executable(
+		'tw-notify-bake',
+		'notify/bake.c',
+		dependencies: freetype,
+		native: true,
+	)
+	notify_font_header = custom_target(
+		'font.h',
+		input: notify_font,
+		output: 'font.h',
+		command: [notify_bake, '@INPUT@'],
+		capture: true,
+	)
+	tw_notify = executable(
+		'tw-notify',
+		'notify/notify.c',
+		'notify/bus.c',
+		notify_font_header,
+		client_header['wlr-layer-shell-unstable-v1'],
+		protocol_code['wlr-layer-shell-unstable-v1'],
+		# The layer shell's code refers to xdg-shell's popups.
+		protocol_code['xdg-shell'],
+		client_header['viewporter'],
+		protocol_code['viewporter'],
+		client_header['fractional-scale-v1'],
+		protocol_code['fractional-scale-v1'],
+		client_header['xdg-activation-v1'],
+		protocol_code['xdg-activation-v1'],
+		dependencies: wayland_client,
+		install: true,
+	)
+	# How the session's D-Bus knows what to start for a notification. In
+	# /usr/local it is read before the files of other notification services
+	# in /usr/share, so it wins over them without their being removed.
+	configure_file(
+		input: 'data/org.freedesktop.Notifications.service.in',
+		output: 'org.freedesktop.Notifications.service',
+		configuration: {'bindir': get_option('prefix') / get_option('bindir')},
+		install: true,
+		install_dir: get_option('datadir') / 'dbus-1/services',
+	)
+endif
+
 # --- Tests -------------------------------------------------------------------
 
 # Pure layout maths: no compositor needed.
@@ -196,6 +253,14 @@ test('layout', executable(
 	'src/layout.c',
 	include_directories: 'src',
 	dependencies: libm,
+))
+
+# The D-Bus messages of tw-notify: reading ones that are cut short or wrong.
+test('bus', executable(
+	'bus-test',
+	'tests/bus_test.c',
+	'notify/bus.c',
+	include_directories: 'notify',
 ))
 
 # A minimal client that reports the state the compositor gives it, and a tool
@@ -292,6 +357,16 @@ test(
 	'power',
 	find_program('tests/power.sh'),
 	args: [tw, test_client],
+	is_parallel: false,
+	timeout: 120,
+)
+
+# tw-notify on a private session bus, showing its notifications on a headless
+# tw. Left out where tw-notify is not built.
+test(
+	'notify',
+	find_program('tests/notify.sh'),
+	args: [tw, test_client, test_keys, tw_notify],
 	is_parallel: false,
 	timeout: 120,
 )

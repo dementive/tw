@@ -4,3 +4,15 @@ option(
 	value: true,
 	description: 'Build the pinned wlroots in subprojects/ and link it statically',
 )
+option(
+	'notify',
+	type: 'feature',
+	value: 'auto',
+	description: 'Build tw-notify, the notification service (needs FreeType and fc-match to build, nothing to run)',
+)
+option(
+	'notify_font',
+	type: 'string',
+	value: 'sans-serif',
+	description: 'The font of tw-notify, as a fontconfig pattern; its characters are drawn into the program at build time',
+)
