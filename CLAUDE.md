@@ -538,13 +538,19 @@ registered its 21 endpoints with the new daemon. A WirePlumber started
 while Bluetooth is off logs one warning ("BlueZ system service is not
 available") and takes the daemon up when it appears.
 
-Not seen yet: Bluetooth going off by itself; a device connecting, and a
-connection ending and starting the timer over (the rule matches
-`DEVTYPE=link`, a name taken from the kernel module's strings); a boot
-with the blacklist, and whether anything loads the Bluetooth core without
-a driver (a program opening a Bluetooth socket would); the udev rule
-putting a driverless adapter to sleep after a boot. The owner has no
-device paired.
+A boot with the blacklist followed (14:08 that day), looked at six minutes
+in: no adapter, no Bluetooth module in the kernel, no `bluetoothd`, and
+the adapter's USB device asleep for 390 of its 395 seconds with
+`power/control` at `auto`, which this time only the udev rule can have
+set, no driver having been bound. Three seconds after the Claude app
+started the bus was asked for the Bluetooth service and systemd skipped
+it, so Chromium is another caller with auto-start on.
+
+Not seen yet: Bluetooth going off by itself (it was left on to watch for
+that, and the owner rebooted seven minutes before the timer was due); a
+device connecting, and a connection ending and starting the timer over
+(the rule matches `DEVTYPE=link`, a name taken from the kernel module's
+strings). The owner has no device paired.
 Checked without root: a blacklisted module loads by name and not the way
 udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
 `systemd-analyze verify` the unit and the timer, and a staged install puts
@@ -1218,6 +1224,46 @@ WirePlumber. Read after that: 24.7 MB resident where it was 37.1, 6.0 MB
 its own where it was 9.0, 12.7 MB by PSS where it was 20.3, and 82
 libraries mapped where there were 161. The built-in sink and source are
 there as before. It is README step 7 now.
+
+With Bluetooth and `alsa-plugins` gone the owner looked at what was left
+in `btop` and asked: "the rest of the processes seem to be systemd bloat
+slop is there anything we can do about that or is my only real option to
+just move to void linux". Measured for the answer (2026-11-15, six minutes
+after a boot, the Claude app open; resident memory as `btop` shows it,
+and `RssAnon` for what a process holds for itself, since the `smaps` of
+systemd's processes, the user manager included, cannot be read without
+root). Twelve processes are systemd's: 109 MB if `btop`'s lines are added
+up, 18 MB held. The difference is one library, `libsystemd-shared`, 6 MB
+on disk, which each of them maps and `btop` counts again in every line.
+By part: init 15.7 and 4.1, udevd 14.5 and 4.4, the user manager 13.6 and
+2.3 with its `(sd-pam)` 5.3 and 1.7, journald 12.2 and 0.9, logind 7.8
+and 0.9, resolved 8.7 and 0.9, timesyncd 7.2 and 0.7, and userdbd with
+its three workers 25.4 and 2.5. Everything running but the Claude app:
+411 MB of lines, 72 MB held, of which tw 19, the portals 11, sound 10,
+the login and its fish 3.5, D-Bus 2.9, polkit 2.4, oo7, iwd and
+wl-clip-persist 2.3, and under 1 each for bolt, power-profiles-daemon,
+avahi and the accessibility bus's launcher.
+
+What was put to them. Of systemd's own, only `systemd-userdbd` goes
+without a loss: nothing on the machine uses it (no homed, no JSON user
+records, sshd not running), only `sockets.target` wants its socket, and
+`nss-systemd` works without it. `systemd-timesyncd` can go at the price of
+a clock that drifts; `systemd-resolved` only with `openresolv` and
+`NameResolvingService=resolvconf` in iwd, which touches name resolution
+and so wants a trial first. The rest is what any systemd machine runs.
+Not systemd's and open to the same question: `bolt` (started by udev for
+the Thunderbolt controller at every boot; no device has ever been
+enrolled), the accessibility bus's launcher (the Claude app asks for it;
+masking `at-spi-dbus-bus.service` for the user, or a condition on that
+unit as for `bluetooth.service`, would refuse it), power-profiles-daemon
+(not enabled: started by tw's own `powerprofilesctl` at login, and it
+stays; a root helper writing the two sysfs files would do without it),
+avahi (KDE Connect), and the login shell (`exec tw-session`). A move to
+Void was sized as an estimate, nothing of it measured: runit in place of
+init, the journal and the user manager, with eudev and elogind being the
+same code as udevd and logind, would hold 9 to 12 MB less, against
+everything in `data/` that is built on systemd units, CachyOS's kernel and
+optimised packages, and the Claude app's package.
 
 ## Battery
 
