@@ -541,11 +541,19 @@ is what `btop` shows and is mostly the C library every program shares,
 451 kB by PSS. From sending a notification to the answer takes 9 ms when
 `tw-notify` has to be started and 5 ms when it runs, most of both being
 `busctl`; `tw-notify` uses 1.7 ms of processor time to start, read the
-notification and draw it. Not seen yet: a start by dbus-broker, a
-notification from the Claude app, its window coming forward after a click
-(its Electron has the call that reads the token), tw's entry winning over
-fnott's at a login, and a monitor going away while the list is on it.
-Breaking the code 18 ways, one at a time, each made a test fail.
+notification and draw it. Breaking the code 18 ways, one at a time, each
+made a test fail.
+
+Then installed, at a real login the same day: dbus-broker logged KDE's
+entry as the duplicate ("Ignoring duplicate name ... in service file
+'/usr/share/dbus-1/services/org.kde.plasma.Notifications.service'"), so
+tw's entry in `/usr/local` won, and two minutes later systemd started
+`dbus-:1.2-org.freedesktop.Notifications@0.service` for the first
+notification. The owner removed fnott and reported "that worked!", with
+`btop` at about 630 MB at startup. Not seen yet: a notification from the
+Claude app, its window coming forward after a click (its Electron has the
+call that reads the token), and a monitor going away while the list is on
+it.
 
 ## Known noise
 
@@ -877,6 +885,57 @@ all, and a tw that exits or crashes then ends the login instead of
 dropping to a shell behind the lock screen. Put to them as that; changing
 the login shell would also change the shell their terminals start. Not
 tried on the machine.
+
+With `tw-notify` in, the owner named the next two (2026-11-15): "ksecretd"
+and "NetworkManager", "I think we can get much cheaper alternatives that
+work the same", and added that they no longer mind "dropping KDE desktop
+environment entirely". Measured for the answer, with nothing changed.
+
+The keyring. `ksecretd` is 53 MB resident, 8.3 MB of it its own, and
+24.7 MB are pages of Qt and KDE libraries that no other process in a tw
+session maps, so about 33 MB leave memory with it. It is the largest
+helper left. The wallet file is 1.4 kB: its one user is the Claude app
+(the only process with libsecret mapped), and VS Code and `gh` would use
+it if signed in. The disk is not encrypted (XFS straight on the USB SSD),
+so the wallet is what keeps that token from whoever finds the disk; other
+sign-ins are on the same disk without it (`~/.claude/.credentials.json`,
+`~/.config/gh/hosts.yml`, an SSH key). In the repositories: gnome-keyring
+51.1 (needs `gcr` in addition to what is installed; its PAM lines for a
+console login are the documented ones) and oo7 0.7.1 (Rust, needs
+nothing, ships a PAM module). Neither could be measured without being
+installed, and the owner was told so. A keyring of our own was not
+offered: the service holds a key derived from the login password for the
+whole session by design, so it cannot leave when idle the way `tw-notify`
+does, and it is cryptography for credentials. Running with no keyring at
+all costs nothing and stores the app's token under a fixed key; whether
+the Claude app then stays signed in was never tried. Whichever replaces
+it, the app needs one fresh sign-in, the two `pam_kwallet5` lines in
+`/etc/pam.d/login` change, and the keyring part of `tw-session` (which
+runs `pam_kwallet_init` when the wallet is waiting) has to learn the new
+one.
+
+The network. NetworkManager is 28.6 MB resident and 3.8 MB its own,
+`wpa_supplicant`, which it starts, 13.0 and 1.9; `systemd-resolved` (8.9
+and 1.0) stays either way. NetworkManager also fetches
+`http://ping.archlinux.org/nm-check.txt` every five minutes to see whether
+the internet is reachable (`/usr/lib/NetworkManager/conf.d/20-connectivity.conf`).
+iwd 3.12 is installed and not enabled; with `EnableNetworkConfiguration=true`
+under `[General]` in `/etc/iwd/main.conf` (the directory does not exist
+yet) it gets addresses by itself and hands DNS to systemd-resolved, its
+default. What the machine has: two saved Wi-Fi networks, both with a
+password (WPA2/WPA3, nothing enterprise), one wired profile with no cable
+in, no VPN profile although the OpenVPN plugin is installed, ModemManager
+installed and not running, and only `networkmanager-qt` requires
+NetworkManager. iwd does nothing for a wired port: that would be
+systemd-networkd with one `.network` file. Not measured: iwd itself.
+
+KDE. Nothing of it runs in a tw session but `ksecretd`, so removing it
+frees disk and no memory. A dry run of removing the `plasma` group with
+what depends on it: 131 packages, 832 MB, among them dolphin, gwenview,
+spectacle, kwallet-pam and the Breeze themes. `kwallet` itself (where
+`ksecretd` comes from) stays as long as `kio` is installed, which kate,
+konsole and ark need; kdeconnect is not taken either. The session's
+`QT_STYLE_OVERRIDE` is `kvantum`.
 
 ## Battery
 
