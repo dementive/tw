@@ -1,0 +1,11 @@
+diff --git a/meson.build b/meson.build
+index 4012669..f95291a 100644
+--- a/meson.build
++++ b/meson.build
+@@ -99,6 +99,3 @@ di_dep = declare_dependency(
+ )
+ 
+ meson.override_dependency('libdisplay-info', di_dep)
+-
+-subdir('di-edid-decode')
+-subdir('test')

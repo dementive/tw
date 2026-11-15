@@ -115,8 +115,10 @@ Commands that come with it:
 
 ## After a system update
 
-tw is built against the system's libraries. If it does not start after an
-update, `tw-session` says so; build it again from clean:
+wlroots and the one library under it whose name changes from release to
+release are built into tw, so an update should not stop it starting. The
+rest of what it links has kept its names for years. If it ever does not
+start after an update, `tw-session` says so; build it again from clean:
 
 ```sh
 meson setup --wipe build-release

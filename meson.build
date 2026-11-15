@@ -29,9 +29,20 @@ add_project_arguments(
 # wlroots breaks its API on every 0.x release, so tw targets exactly one.
 # The default build compiles the pinned source in subprojects/wlroots and
 # links it statically: with -Db_lto=true everything tw does not use (unused
-# backends, renderers and protocols) is dropped from the binary.
+# backends, renderers and protocols) is dropped from the binary, and no
+# system update can change wlroots under an installed tw.
 wlroots_version = ['>=0.20.0', '<0.21.0']
 if get_option('vendored_wlroots')
+	# libdisplay-info, with which wlroots reads what a monitor says about
+	# itself, is the one library under tw whose file name changes with its
+	# releases (libdisplay-info.so.3). A system update that brings the next
+	# one would leave an installed tw unable to start until it is built
+	# again. So it is built in as well, from a source pinned like wlroots'.
+	# Set up first, it is the one wlroots finds.
+	subproject(
+		'libdisplay-info',
+		default_options: ['default_library=static', 'werror=false'],
+	)
 	wlroots = subproject(
 		'wlroots',
 		version: wlroots_version,
@@ -433,7 +444,7 @@ endforeach
 # figure that catches a regression.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
 budget_own_kb = 2800      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2713)
-budget_alloc_kb = 850     # of which allocated by tw itself (measured: 808 to 812)
+budget_alloc_kb = 850     # of which allocated by tw itself (measured: 800 to 812)
 if get_option('buildtype') == 'release'
 	test(
 		'budget',

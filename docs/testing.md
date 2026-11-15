@@ -65,7 +65,7 @@ client:
 | --- | --- | --- |
 | idle wakeups in 3 s | 0 | 0 |
 | own memory (PSS minus pixel buffers) | 2800 kB | 2445 to 2713 |
-| of which allocated by tw | 850 kB | 808 to 812 |
+| of which allocated by tw | 850 kB | 800 to 812 |
 
 They ratchet down; raising one needs a stated reason.
 
@@ -168,8 +168,17 @@ All on the G533ZW, CachyOS, November 2026.
   no launcher is running afterwards.
 - Lock and unlock with swaylock through the edited `/etc/pam.d/login`.
 
-Not seen yet: `exec tw-session`; the rebuild hint in `tw-session`; the
-post-install step run by a real `sudo meson install`.
+- `sudo meson install` ending with its reloads: systemd reloaded, polkit
+  restarted and the user's systemd reloaded within a third of a second,
+  with nothing said on the terminal.
+
+- The libdisplay-info built into tw gives the same make and model for the
+  panel's EDID as the system's library does (a small program linked
+  against each, reading `/sys/class/drm/card1-eDP-1/edid`).
+
+Not seen yet: `exec tw-session`; the rebuild hint in `tw-session`; a login
+on the build that has libdisplay-info built in. wlroots calls it as the DRM
+backend starts, which no test does.
 
 ### X11
 

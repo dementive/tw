@@ -24,8 +24,8 @@ Figures such as "7 MB in `btop`" were measured on one laptop
 To build:
 
 ```sh
-sudo pacman -S meson ninja gcc pkgconf wayland wayland-protocols libxkbcommon \
-    libinput pixman libdrm mesa libglvnd systemd-libs libdisplay-info hwdata \
+sudo pacman -S meson ninja gcc git pkgconf wayland wayland-protocols libxkbcommon \
+    libinput pixman libdrm mesa libglvnd systemd-libs hwdata \
     freetype2 fontconfig noto-fonts
 ```
 
@@ -89,7 +89,8 @@ laptop; look at Bluetooth before installing on a desktop.
 
 ### Build and install
 
-Meson downloads the pinned wlroots on the first `setup`.
+Meson downloads two pinned sources on the first `setup`, wlroots and
+libdisplay-info, and builds both into tw.
 
 ```sh
 meson setup build-release --buildtype=release -Db_lto=true
@@ -634,9 +635,12 @@ back.
 
 **tw does not start after a system update.** tw is built against the
 system's libraries, and an update can replace one with a version of another
-name (`libdisplay-info` does that about once a year). `tw-session` then
-says so and the loader names the library. Log in on a text console and
-build tw again from clean, in its source directory:
+name. The two that change with every release, wlroots and libdisplay-info,
+are built into tw for that reason; the rest (Wayland, libinput, xkbcommon,
+Mesa, libdrm, pixman, udev, libseat) have kept their names for years. If
+one ever does change, `tw-session` says so and the loader names the
+library. Log in on a text console and build tw again from clean, in its
+source directory:
 
 ```sh
 meson setup --wipe build-release
@@ -644,8 +648,8 @@ meson compile -C build-release
 sudo meson install -C build-release --no-rebuild --skip-subprojects
 ```
 
-`--wipe` keeps the build's options. wlroots itself is pinned in the source
-tree and built into tw, so an update never changes it under tw.
+`--wipe` keeps the build's options and needs no network: the two sources
+are already in `subprojects/`.
 
 **Something else is wrong.**
 

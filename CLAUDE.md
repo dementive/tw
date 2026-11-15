@@ -96,6 +96,9 @@ budget test, not by guessing.
 write wlroots calls from memory. The exact source is in
 `subprojects/wlroots`: read `include/wlr/` for signatures and
 `tinywl/tinywl.c` for usage. Bumping the pin is its own change.
+libdisplay-info, which wlroots needs, is pinned and built in the same way
+(`subprojects/libdisplay-info.wrap`): its library changes name with every
+release, and a system update would otherwise leave tw unable to start.
 
 **Every `wl_signal_add` needs a `wl_list_remove` before the listener's
 memory is freed or the signal's owner is destroyed.** wlroots asserts on
