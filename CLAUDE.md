@@ -69,6 +69,7 @@ which GPUs it would use and starts nothing.
 | `tests/gpu.sh` | `tw-gpu`, its root helper and the GPU choice in `tw-session`, against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
+| `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
 right. A column (`struct tw_column`) is a stack of windows, top to bottom,
@@ -394,8 +395,12 @@ the owner's 1920x1080 panel), which show up as shared memory (`Shmem`,
 there too, once, however many processes have them open.
 
 When the owner asks where the machine's memory goes, account for the whole
-machine before looking at tw: `/proc/meminfo`, `smaps_rollup` per process,
-and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. The first time
+machine before looking at tw: `sh tools/mem.sh` for the split of the figure
+they are looking at, then `/proc/meminfo`, `smaps_rollup` per process,
+and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. They have
+asked four times why `btop` shows 900 MB after login "if literally nothing
+is going on"; every answer so far was an estimate made with an application
+open, so get them to run the script at startup and work from that. The first time
 (2026-11-14, 2.7 GB in use) tw and everything its session starts came to
 under 200 MB; the rest was the one application running and 760 MB of kernel
 memory that no counter in `/proc/meminfo` explains. The NVIDIA driver held
