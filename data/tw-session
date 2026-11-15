@@ -150,4 +150,23 @@ fi
 # Prefer the tw installed next to this script.
 tw=$(dirname "$0")/tw
 [ -x "$tw" ] || tw=tw
+
+# A system update can take away a library tw was built against (the file's
+# name carries a version), and tw then cannot start until it is built again.
+# The loader names the library and nothing else; at a text console, with no
+# desktop to look things up on, say what to do about it.
+if command -v "$tw" >/dev/null 2>&1; then
+	"$tw" -h >/dev/null 2>&1
+	if [ $? = 127 ]; then
+		cat >&2 <<EOF
+tw-session: tw cannot start. A library it was built against is gone, most
+likely replaced by a newer version in a system update. Build tw again, in
+its source directory:
+    meson setup --wipe build-release
+    meson compile -C build-release
+    sudo meson install -C build-release --no-rebuild --skip-subprojects
+What the loader says:
+EOF
+	fi
+fi
 exec "$tw" -s "$startup"

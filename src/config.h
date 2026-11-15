@@ -3,6 +3,10 @@
  *
  * There is deliberately no config parser, so configuration costs no code,
  * no memory and no startup time.
+ *
+ * What depends on the machine (its screens, whether it wakes from sleep) is
+ * not in this file but in machines/<name>.h, one small file per machine;
+ * see machines/default.h.
  */
 #ifndef TW_CONFIG_H
 #define TW_CONFIG_H
@@ -13,6 +17,8 @@
 
 #include "tw.h"
 
+/* --- Layout ------------------------------------------------------------------ */
+
 /* Space between windows and around them, in logical pixels. 0: windows touch
  * each other and the screen edges. Windows have no borders either. */
 static const int gap = 0;
@@ -22,24 +28,18 @@ static const struct tw_fraction column_widths[] = {{1, 3}, {1, 2}, {2, 3}};
 static const size_t default_column_width = 1; /* index into column_widths */
 
 /*
- * Outputs, by connector name (`tw -d` logs the name as each one appears).
- * The entry with a NULL name applies to every output not listed. Scales may
- * be fractional. x and y are where the output's top left corner goes in the
- * combined screen area, in logical pixels; AUTO puts the output to the right
- * of the others, in the order they were plugged in.
+ * Stiffness of the spring that glides the strip to its place. Higher is
+ * snappier (niri uses 800); 0 turns the animation off and the strip jumps.
+ * Nothing is drawn or computed once the strip has arrived.
  */
-#define AUTO TW_AUTO
-static const struct tw_output_rule output_rules[] = {
-	/* name     scale   x     y */
-	{"eDP-1",   1.25f,  AUTO, AUTO}, /* the laptop's own screen */
-	{NULL,      1.0f,   AUTO, AUTO},
-};
+static const int scroll_stiffness = 800;
+
+/* --- Keyboard and touchpad --------------------------------------------------- */
 
 /* Keyboard layout comes from the XKB_DEFAULT_* environment variables. */
 static const int repeat_rate = 25;   /* keys per second */
 static const int repeat_delay = 600; /* milliseconds */
 
-/* Touchpads. */
 static const bool touchpad_tap = true;
 static const bool touchpad_natural_scroll = true;
 static const bool touchpad_disable_while_typing = true;
@@ -52,12 +52,7 @@ static const bool touchpad_disable_while_typing = true;
 static const unsigned swipe_fingers = 3;
 static const int swipe_workspace_distance = 60;
 
-/*
- * Stiffness of the spring that glides the strip to its place. Higher is
- * snappier (niri uses 800); 0 turns the animation off and the strip jumps.
- * Nothing is drawn or computed once the strip has arrived.
- */
-static const int scroll_stiffness = 800;
+/* --- Screen off, lock, sleep ------------------------------------------------- */
 
 /*
  * Turn the screen off after this many seconds without input; 0 never does.
@@ -67,31 +62,32 @@ static const int scroll_stiffness = 800;
 static const int blank_after_seconds = 300;
 
 /*
- * Suspend the machine after this many seconds without input; 0 never does.
- * The session is locked first (see lock_on_idle). A visible window that
- * inhibits idling holds it off, and so does anything holding a systemd sleep
- * inhibitor (`systemd-inhibit --what=sleep <command>` for a long build). If
- * the machine is still awake afterwards, tw tries again after the same time.
- * `tw -z` overrides this.
- *
- * 0, because the one time this ran out on the owner's laptop (2026-11-15,
- * after 900 seconds) the machine did not wake again and had to be switched
- * off. Give it a time only once a suspend and a wake-up have been seen to
- * work on the machine; README step 19.
+ * Lock the session when the laptop lid closes, and when nobody is there:
+ * as the screen turns off after blank_after_seconds, and before the machine
+ * is suspended. tw locks at once and by itself, so nothing is visible or
+ * reachable even if the machine suspends before the locker is up; the locker
+ * then draws the lock screen. Neither does anything unless the locker below
+ * is installed.
  */
-static const int suspend_after_seconds = 0;
+static const bool lock_on_lid_close = true;
+static const bool lock_on_idle = true;
+
+/* What suspends the machine. When that happens is the machine's business:
+ * suspend_after_seconds and battery_suspend_percent in machines/. */
 static const char suspend_command[] = "systemctl suspend";
 
+/* --- On battery -------------------------------------------------------------- */
+
 /*
- * On battery. The kernel tells tw when the power cable goes in or out, so
- * nothing is polled, and on a machine without a battery none of this exists.
+ * The kernel tells tw when the power cable goes in or out, so nothing is
+ * polled, and on a machine without a battery none of this exists.
  *
- * Every output then runs at the slowest rate it offers at its normal size
- * that is not below battery_refresh_hz, and at its full rate again on mains.
- * Whatever animates is drawn that many times a second and no more, which is
- * the saving: on the 300 Hz panel this was written for, an animation took
- * 16.5 W at 300 frames a second, against 11.4 W for a still screen. The
- * screen may blink once as it changes. 0 keeps the full rate on battery.
+ * On battery every output runs at the slowest rate it offers at its normal
+ * size that is not below battery_refresh_hz, and at its full rate again on
+ * mains. Whatever animates is drawn that many times a second and no more,
+ * which is the saving: on a 300 Hz panel an animation took 16.5 W at 300
+ * frames a second and about 12 W at 60. The screen may blink once as it
+ * changes. 0 keeps the full rate on battery.
  */
 static const int battery_refresh_hz = 60;
 
@@ -105,42 +101,30 @@ static const char mains_command[] = "tw-power balanced";
 
 /*
  * A battery running low. tw has no bar to show the charge, so when it is
- * down to battery_warn_percent tw runs battery_warn_command, once. When it is
- * down to battery_suspend_percent tw locks the session and suspends the
- * machine (suspend_command above) before it runs out, and does so again for
- * each further percent lost if you wake it and leave it unplugged. A charge
- * that was already that low when you pulled the cable, logged in or woke the
- * machine does not suspend it; only a fall from there does. Plugging in ends
- * all of it. 0 turns either part off.
+ * down to battery_warn_percent tw runs battery_warn_command, once. Plugging
+ * in resets it. 0 never warns.
  */
 static const int battery_warn_percent = 10;
 static const char battery_warn_command[] =
 	"notify-send --urgency=critical 'Battery low' 'Plug in the charger.'";
-/* 0 like suspend_after_seconds, and for its reason: this laptop does not
- * wake from a suspend, and the owner chose to leave sleep off (2026-11-15).
- * It was 5. */
-static const int battery_suspend_percent = 0;
 
-/*
- * Lock the session when the laptop lid closes, when the screen turns off
- * after blank_after_seconds, and before suspending. tw locks at once and by itself, so nothing is
- * visible or reachable even if the machine suspends before the locker is up;
- * the locker then draws the lock screen. Neither does anything unless the
- * locker below is installed.
- */
-static const bool lock_on_lid_close = true;
-static const bool lock_on_idle = true;
+/* --- Programs ---------------------------------------------------------------- */
 
-/* Programs. The launcher is any layer-shell client; fuzzel is small and fast.
- * It starts each program through `tw-gpu launch`, which switches the NVIDIA
- * GPU on for the ones whose desktop entry asks for the discrete GPU, and
- * otherwise just runs them. */
-/* foot takes about 8 MB a window, measured under tw; alacritty takes 42. */
+/* The launcher is any layer-shell client. It starts each program through
+ * `tw-gpu launch`, which switches the NVIDIA GPU on for the ones whose
+ * desktop entry asks for the discrete GPU, and otherwise just runs them. */
 static const char terminal[] = "foot";
 static const char launcher[] = "fuzzel --launch-prefix='tw-gpu launch'";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";
+
+static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
+static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
+static const char volume_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+static const char mic_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
+static const char brightness_up[] = "brightnessctl --class=backlight set 5%+";
+static const char brightness_down[] = "brightnessctl --class=backlight set 5%-";
 
 /*
  * Programs started with the session, as shell commands; the list ends with
@@ -148,23 +132,12 @@ static const char screenshot_region[] = "grim -g \"$(slurp)\"";
  * short, and leave out what can start by itself when it is needed. One that
  * is not installed is skipped.
  *
- * No notification service is here for that reason: D-Bus starts tw-notify
- * when a program sends a notification, and it exits after the last one.
- * Nor is a clipboard helper: tw keeps what was copied itself, see below.
+ * It is empty: D-Bus starts tw-notify when a program sends a notification,
+ * and tw keeps what was copied itself (clipboard_keep_bytes).
  */
 static const char *const autostart[] = {
 	NULL,
 };
-
-/*
- * What is copied stays in the program it was copied from, and would be gone
- * when that program exits. tw reads each copy as it is made and offers it in
- * the program's place once the program is gone. This is the most it holds
- * for one copy at any moment, in bytes: the formats it has read, those with
- * the same bytes held once, and the one it is reading. A larger copy is left
- * alone and goes with its program. 0 keeps nothing.
- */
-static const size_t clipboard_keep_bytes = 64 << 20;
 
 /*
  * X11 applications run through this helper, which starts Xwayland. tw starts
@@ -178,16 +151,30 @@ static const char x11_helper[] = "xwayland-satellite";
  * looks at this many seconds after starting them and after a window closed.
  * Starting them takes a moment, so this is long enough that a program asking
  * X11 one question after another does not restart them each time. 0 keeps
- * them for the rest of the session.
+ * them for the rest of the session. `tw -x` overrides this.
  */
 static const int x11_idle_seconds = 30;
 
-static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
-static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
-static const char volume_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
-static const char mic_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
-static const char brightness_up[] = "brightnessctl --class=backlight set 5%+";
-static const char brightness_down[] = "brightnessctl --class=backlight set 5%-";
+/*
+ * What is copied stays in the program it was copied from, and would be gone
+ * when that program exits. tw reads each copy as it is made and offers it in
+ * the program's place once the program is gone. This is the most it holds
+ * for one copy at any moment, in bytes: the formats it has read, those with
+ * the same bytes held once, and the one it is reading. A larger copy is left
+ * alone and goes with its program. 0 keeps nothing.
+ */
+static const size_t clipboard_keep_bytes = 64 << 20;
+
+/* --- The machine ------------------------------------------------------------- */
+
+/* The build names the file (-Dmachine=<name>, or by the machine's board). */
+#define AUTO TW_AUTO
+#ifndef TW_MACHINE_H
+#define TW_MACHINE_H "machines/default.h"
+#endif
+#include TW_MACHINE_H
+
+/* --- Key bindings ------------------------------------------------------------ */
 
 /*
  * Key bindings, following niri's defaults where tw has the feature.

@@ -672,6 +672,8 @@ mkdir -p "$tmp/session" "$tmp/session-bin"
 cp "$data/tw-session" "$tmp/session/tw-session"
 cat >"$tmp/session/tw" <<EOF
 #!/bin/sh
+[ ! -e '$tmp/no-library' ] || exit 127 # what the loader leaves when a library is missing
+[ "\$1" = -h ] && exit 0
 [ "\$1" = -s ] && WAYLAND_DISPLAY=wayland-9 PATH='$tmp/session-bin' exec /bin/sh -c "\$2"
 EOF
 cat >"$tmp/session-bin/dbus-update-activation-environment" <<EOF
@@ -705,6 +707,18 @@ got=$(told DISPLAY=:7)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session passed on a DISPLAY that is not tw's: $got"
 
+# A tw that cannot start for want of a library, as after a system update:
+# the session says how to build it again, and only then.
+session_says() { # what tw-session prints to the console
+	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" \
+		sh "$tmp/session/tw-session" 2>&1 >/dev/null
+}
+[ -z "$(session_says)" ] || fail "tw-session had something to say although tw started: $(session_says)"
+: >"$tmp/no-library"
+session_says | grep -q 'meson setup --wipe build-release' ||
+	fail "tw-session did not say how to build a tw again that cannot start: $(session_says)"
+rm "$tmp/no-library"
+
 # The accessibility bus's unit starts only where systemd has not been told
 # the variable that tw-session tells it: the two have to name the same one,
 # and the condition has to read the way it is meant.
@@ -719,4 +733,4 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 		fail "the accessibility bus would not start in a session that asked for it"
 fi
 
-echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice and the accessibility bus in tw-session"
+echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice, the accessibility bus and a tw that cannot start in tw-session"

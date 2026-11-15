@@ -60,6 +60,31 @@ libinput = dependency('libinput') # touchpad settings
 libudev = dependency('libudev')   # the power cable; wlroots uses it already
 libm = cc.find_library('m')
 
+# --- The machine ---------------------------------------------------------------
+
+# What depends on the machine is in src/machines/<name>.h, which config.h
+# includes. 'auto' takes the file named after this machine's board if there
+# is one, and default.h otherwise.
+fs = import('fs')
+machine = get_option('machine')
+if machine == 'auto'
+	machine = 'default'
+	# Read inside a shell command. Named to Meson as a file, by fs.read() or
+	# as an argument of its own, it would become something the build depends
+	# on: it looks new after every boot, and the first build after each one
+	# would set itself up again.
+	board = run_command('sh', '-c', 'cat /sys/class/dmi/id/board_name 2>/dev/null', check: false)
+	board = board.stdout().strip().to_lower().underscorify()
+	if board != '' and fs.is_file('src/machines' / board + '.h')
+		machine = board
+	endif
+endif
+if not fs.is_file('src/machines' / machine + '.h')
+	error('there is no src/machines/@0@.h; copy src/machines/default.h to make one'.format(machine))
+endif
+add_project_arguments('-DTW_MACHINE_H="machines/@0@.h"'.format(machine), language: 'c')
+summary('machine', 'src/machines/@0@.h'.format(machine), section: 'tw')
+
 # --- Protocols ---------------------------------------------------------------
 
 # Declared after wlroots, which can supply wayland-protocols as a subproject.
@@ -137,156 +162,97 @@ tw = executable(
 	install: true,
 )
 
-# Login-screen entry: `sudo meson install` makes "tw" selectable next to the
-# other sessions.
-install_data(
-	'data/tw-session',
-	install_dir: get_option('bindir'),
-	install_mode: 'rwxr-xr-x',
+# --- What is installed with it ---------------------------------------------------
+
+bindir = get_option('bindir')
+libexecdir = get_option('libexecdir')
+datadir = get_option('datadir')
+# systemd, udev and modprobe read these under the prefix too (/usr/local/lib).
+systemd_system_dir = get_option('prefix') / 'lib/systemd/system'
+systemd_user_dir = get_option('prefix') / 'lib/systemd/user'
+udev_rules_dir = get_option('prefix') / 'lib/udev/rules.d'
+modprobe_dir = get_option('prefix') / 'lib/modprobe.d'
+paths = {
+	'bindir': get_option('prefix') / bindir,
+	'libexecdir': get_option('prefix') / libexecdir,
+	'conf': modprobe_dir / 'tw-bluetooth.conf',
+}
+
+# The session: what the login screen lists, and what a console login types.
+install_data('data/tw-session', install_dir: bindir, install_mode: 'rwxr-xr-x')
+configure_file(
+	input: 'data/tw.desktop.in',
+	output: 'tw.desktop',
+	configuration: paths,
+	install: true,
+	install_dir: datadir / 'wayland-sessions',
 )
 # Tells xdg-desktop-portal which backends to use in a tw session.
-install_data(
-	'data/tw-portals.conf',
-	install_dir: get_option('datadir') / 'xdg-desktop-portal',
-)
-# tw-gpu keeps a laptop's NVIDIA GPU off and switches it on for the programs
-# that want it. The command itself, then the parts that let it load and
-# unload the driver: a root helper, the system unit that runs it, the polkit
-# rule that lets the user start that unit, and a udev rule that lets the GPU
-# power down once its driver is gone. All of it does nothing on a machine
-# without an NVIDIA GPU.
-install_data(
-	'data/tw-gpu',
-	install_dir: get_option('bindir'),
-	install_mode: 'rwxr-xr-x',
-)
-install_data(
-	'data/tw-gpu-root',
-	install_dir: get_option('libexecdir'),
-	install_mode: 'rwxr-xr-x',
-)
-configure_file(
-	input: 'data/tw-gpu@.service.in',
-	output: 'tw-gpu@.service',
-	configuration: {'libexecdir': get_option('prefix') / get_option('libexecdir')},
-	install: true,
-	install_dir: get_option('prefix') / 'lib/systemd/system',
-)
-install_data(
-	'data/tw-gpu.rules',
-	rename: '50-tw-gpu.rules',
-	install_dir: get_option('datadir') / 'polkit-1/rules.d',
-)
-install_data(
-	'data/tw-gpu-udev.rules',
-	rename: '72-tw-gpu.rules',
-	install_dir: get_option('prefix') / 'lib/udev/rules.d',
-)
-# tw-power sets the machine's power profile, which tw has it do when the
-# power cable goes in or out: the command, the root helper that writes the
-# settings, the system unit that runs it, and the polkit rule that lets the
-# user start that unit. It takes the place of a daemon.
-install_data(
-	'data/tw-power',
-	install_dir: get_option('bindir'),
-	install_mode: 'rwxr-xr-x',
-)
-install_data(
-	'data/tw-power-root',
-	install_dir: get_option('libexecdir'),
-	install_mode: 'rwxr-xr-x',
-)
-configure_file(
-	input: 'data/tw-power@.service.in',
-	output: 'tw-power@.service',
-	configuration: {'libexecdir': get_option('prefix') / get_option('libexecdir')},
-	install: true,
-	install_dir: get_option('prefix') / 'lib/systemd/system',
-)
-install_data(
-	'data/tw-power.rules',
-	rename: '50-tw-power.rules',
-	install_dir: get_option('datadir') / 'polkit-1/rules.d',
-)
+install_data('data/tw-portals.conf', install_dir: datadir / 'xdg-desktop-portal')
 # The line added to the accessibility bus's unit, which keeps the session
 # bus from starting it in a session that tw-session told to leave it alone.
 install_data(
 	'data/tw-a11y.conf',
 	rename: 'tw.conf',
-	install_dir: get_option('prefix') / 'lib/systemd/user/at-spi-dbus-bus.service.d',
+	install_dir: systemd_user_dir / 'at-spi-dbus-bus.service.d',
 )
-# tw-bluetooth keeps Bluetooth off and switches it on when asked. The command
-# itself, then what keeps the adapter's driver from loading as the machine
-# starts, and the parts that let the command load and unload it: a root
-# helper, the system unit that runs it, the polkit rule that lets the user
-# start that unit, the timer that switches Bluetooth off again when nothing
-# is connected, the udev rules that start that timer and let a driverless
-# adapter sleep, and the line added to the Bluetooth service that keeps the
-# system bus from starting it while Bluetooth is off. On a machine without
-# Bluetooth it does nothing.
+
+# Three commands that need root for what they do, each built the same way:
+# the command itself, a root helper, the system unit that runs the helper,
+# and the polkit rule that lets the user start that unit.
+#   tw-gpu        keeps a laptop's NVIDIA GPU off until a program wants it
+#   tw-power      sets the power profile when the power cable goes in or out
+#   tw-bluetooth  keeps Bluetooth off until asked for
+# Each does nothing on a machine without the hardware it is about.
+root_commands = ['gpu', 'power']
 if get_option('bluetooth')
-	bluetooth_conf = get_option('prefix') / 'lib/modprobe.d'
-	install_data(
-		'data/tw-bluetooth',
-		install_dir: get_option('bindir'),
-		install_mode: 'rwxr-xr-x',
-	)
-	install_data(
-		'data/tw-bluetooth-root',
-		install_dir: get_option('libexecdir'),
-		install_mode: 'rwxr-xr-x',
-	)
-	install_data(
-		'data/tw-bluetooth.conf',
-		install_dir: bluetooth_conf,
-	)
+	root_commands += 'bluetooth'
+endif
+foreach name : root_commands
+	install_data('data/tw-' + name, install_dir: bindir, install_mode: 'rwxr-xr-x')
+	install_data('data/tw-' + name + '-root', install_dir: libexecdir, install_mode: 'rwxr-xr-x')
 	configure_file(
-		input: 'data/tw-bluetooth@.service.in',
-		output: 'tw-bluetooth@.service',
-		configuration: {
-			'libexecdir': get_option('prefix') / get_option('libexecdir'),
-			'conf': bluetooth_conf / 'tw-bluetooth.conf',
-		},
+		input: 'data/tw-' + name + '@.service.in',
+		output: 'tw-' + name + '@.service',
+		configuration: paths,
 		install: true,
-		install_dir: get_option('prefix') / 'lib/systemd/system',
+		install_dir: systemd_system_dir,
 	)
 	install_data(
-		'data/tw-bluetooth-idle.timer',
-		install_dir: get_option('prefix') / 'lib/systemd/system',
+		'data/tw-' + name + '.rules',
+		rename: '50-tw-' + name + '.rules',
+		install_dir: datadir / 'polkit-1/rules.d',
 	)
+endforeach
+
+# Lets the NVIDIA GPU power down once its driver is gone.
+udev_rules = {'gpu': 'data/tw-gpu-udev.rules'}
+if get_option('bluetooth')
+	# What keeps the adapter's driver from loading as the machine starts, the
+	# timer that switches Bluetooth off again when nothing is connected, the
+	# line that keeps the system bus from starting the Bluetooth service
+	# while Bluetooth is off, and the udev rules that start that timer and
+	# let a driverless adapter sleep.
+	install_data('data/tw-bluetooth.conf', install_dir: modprobe_dir)
+	install_data('data/tw-bluetooth-idle.timer', install_dir: systemd_system_dir)
 	install_data(
 		'data/tw-bluetooth-service.conf',
 		rename: 'tw-bluetooth.conf',
-		install_dir: get_option('prefix') / 'lib/systemd/system/bluetooth.service.d',
+		install_dir: systemd_system_dir / 'bluetooth.service.d',
 	)
-	install_data(
-		'data/tw-bluetooth.rules',
-		rename: '50-tw-bluetooth.rules',
-		install_dir: get_option('datadir') / 'polkit-1/rules.d',
-	)
-	install_data(
-		'data/tw-bluetooth-udev.rules',
-		rename: '72-tw-bluetooth.rules',
-		install_dir: get_option('prefix') / 'lib/udev/rules.d',
-	)
+	udev_rules += {'bluetooth': 'data/tw-bluetooth-udev.rules'}
 endif
-# The udev rule that lets a Thunderbolt device in as it is plugged in, where
-# the kernel protects its memory from such devices. With it a dock works
-# without boltd, which otherwise runs from boot for the day one is plugged in.
 if get_option('thunderbolt')
-	install_data(
-		'data/tw-thunderbolt.rules',
-		rename: '72-tw-thunderbolt.rules',
-		install_dir: get_option('prefix') / 'lib/udev/rules.d',
-	)
+	# Lets a Thunderbolt device in as it is plugged in, where the kernel
+	# protects its memory from such devices: a dock without boltd.
+	udev_rules += {'thunderbolt': 'data/tw-thunderbolt.rules'}
 endif
-configure_file(
-	input: 'data/tw.desktop.in',
-	output: 'tw.desktop',
-	configuration: {'bindir': get_option('prefix') / get_option('bindir')},
-	install: true,
-	install_dir: get_option('datadir') / 'wayland-sessions',
-)
+foreach name, file : udev_rules
+	install_data(file, rename: '72-tw-' + name + '.rules', install_dir: udev_rules_dir)
+endforeach
+
+# After the files are in place, has systemd, udev and polkit read them.
+meson.add_install_script('data/post-install.sh')
 
 # --- The notification service ------------------------------------------------
 
@@ -404,142 +370,58 @@ test_keys = executable(
 	dependencies: [wayland_client, xkbcommon],
 )
 
-# End-to-end on the headless backend. In a sanitizer build this is also the
-# lifetime-bug and leak check.
-test(
-	'smoke',
-	find_program('tests/smoke.sh'),
-	args: [tw, test_client, test_keys],
-	is_parallel: false,
-	timeout: 120,
-)
+# End-to-end on the headless backend, one compositor per test. In a sanitizer
+# build these are also the lifetime-bug and leak check.
+headless_tests = {
+	# everything a client can observe: sizes, focus, bindings, workspaces, lock
+	'smoke': [tw, test_client, test_keys],
+	# windows sharing a column, floating dialogs
+	'columns': [tw, test_client, test_keys],
+	# the mouse: pointer focus, click to focus, pointer lock and confinement
+	'pointer': [tw, test_client, test_keys],
+	# two monitors: a workspace on each, focus and columns between them
+	'outputs': [tw, test_client, test_keys],
+	# screen blanking, inhibitors, locking on idle, with a two-second timeout
+	'idle': [tw, test_client, test_keys],
+	# X11 sockets, starting and stopping the helper, with a stand-in helper
+	'x11': [tw, test_client],
+	# a copy outlives the program it was made in
+	'clipboard': [tw, test_client, test_clip],
+	# what tw does on battery and on mains, against made-up power supplies
+	'power': [tw, test_client],
+	# tw-notify on a private session bus; skipped where it is not built
+	'notify': [tw, test_client, test_keys, tw_notify],
+}
+foreach name, args : headless_tests
+	test(
+		name,
+		find_program('tests' / name + '.sh'),
+		args: args,
+		is_parallel: false,
+		timeout: 120,
+	)
+endforeach
 
-# Windows sharing a column, and floating dialogs.
-test(
-	'columns',
-	find_program('tests/columns.sh'),
-	args: [tw, test_client, test_keys],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# The mouse: pointer focus, click to focus, pointer lock and confinement.
-test(
-	'pointer',
-	find_program('tests/pointer.sh'),
-	args: [tw, test_client, test_keys],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# Two monitors: a workspace on each, moving the focus and columns between them.
-test(
-	'outputs',
-	find_program('tests/outputs.sh'),
-	args: [tw, test_client, test_keys],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# Screen blanking and locking, with a two-second timeout so the test does not
-# take minutes.
-test(
-	'idle',
-	find_program('tests/idle.sh'),
-	args: [tw, test_client, test_keys],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# X11 sockets and starting the helper on demand, with a stand-in helper.
-test(
-	'x11',
-	find_program('tests/x11.sh'),
-	args: [tw, test_client],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# The clipboard: a copy outlives the program it was made in.
-test(
-	'clipboard',
-	find_program('tests/clipboard.sh'),
-	args: [tw, test_client, test_clip],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# What tw does on battery and on mains, against made-up power supplies.
-test(
-	'power',
-	find_program('tests/power.sh'),
-	args: [tw, test_client],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# tw-notify on a private session bus, showing its notifications on a headless
-# tw. Left out where tw-notify is not built.
-test(
-	'notify',
-	find_program('tests/notify.sh'),
-	args: [tw, test_client, test_keys, tw_notify],
-	is_parallel: false,
-	timeout: 120,
-)
-
-# tw-gpu and the GPU choice in tw-session, against a made-up machine: no GPU,
-# driver or root involved.
-test(
-	'gpu',
-	find_program('tests/gpu.sh'),
-	args: [meson.current_source_dir() / 'data'],
-	timeout: 120,
-)
-
-# tw-power and its root helper, against a made-up machine: no setting of the
-# real one is read or written.
-test(
-	'profile',
-	find_program('tests/profile.sh'),
-	args: [meson.current_source_dir() / 'data'],
-	timeout: 60,
-)
-
-# tw-bluetooth and its root helper, against a made-up machine: no adapter,
-# driver or root involved.
-test(
-	'bluetooth',
-	find_program('tests/bluetooth.sh'),
-	args: [meson.current_source_dir() / 'data'],
-	timeout: 60,
-)
-
-# The udev rule that lets Thunderbolt devices in: that udev accepts it.
-test(
-	'thunderbolt',
-	find_program('tests/thunderbolt.sh'),
-	args: [meson.current_source_dir() / 'data'],
-	timeout: 60,
-)
-
-# tools/iwd.sh, which moves Wi-Fi from NetworkManager to iwd and back,
-# against a made-up machine: no network or service involved.
-test(
-	'iwd',
-	find_program('tests/iwd.sh'),
-	args: [meson.current_source_dir() / 'tools'],
-	timeout: 60,
-)
-
-# tools/keyring.sh, which makes the login unlock oo7 in place of the KDE
-# wallet, against a made-up login file and session.
-test(
-	'keyring',
-	find_program('tests/keyring.sh'),
-	args: [meson.current_source_dir() / 'tools'],
-	timeout: 60,
-)
+# The scripts, each against a made-up machine: no hardware, service or root
+# is involved, and nothing of the real machine is read or written. The value
+# is the directory the scripts under test are in.
+script_tests = {
+	'gpu': 'data',         # tw-gpu, its root helper, and tw-session
+	'profile': 'data',     # tw-power and its root helper
+	'bluetooth': 'data',   # tw-bluetooth and its root helper
+	'thunderbolt': 'data', # the Thunderbolt udev rule
+	'install': 'data',     # the step that runs after `meson install`
+	'iwd': 'tools',        # tools/iwd.sh
+	'keyring': 'tools',    # tools/keyring.sh
+}
+foreach name, dir : script_tests
+	test(
+		name,
+		find_program('tests' / name + '.sh'),
+		args: [meson.current_source_dir() / dir],
+		timeout: 120,
+	)
+endforeach
 
 # Budgets only mean something for an optimized build. Ratchet these down as
 # the numbers improve; raising one needs a reason in the commit message.
