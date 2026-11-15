@@ -399,8 +399,9 @@ machine before looking at tw: `sh tools/mem.sh` for the split of the figure
 they are looking at, then `/proc/meminfo`, `smaps_rollup` per process,
 and `drm-total-*` in `/proc/<pid>/fdinfo/*` for GPU buffers. They have
 asked four times why `btop` shows 900 MB after login "if literally nothing
-is going on"; every answer so far was an estimate made with an application
-open, so get them to run the script at startup and work from that. The first time
+is going on". The split has been measured with nothing but a terminal open
+(below) and is what the estimates said, so answer from it: more than 700 MB
+is the kernel, and no program is behind it. The first time
 (2026-11-14, 2.7 GB in use) tw and everything its session starts came to
 under 200 MB; the rest was the one application running and 760 MB of kernel
 memory that no counter in `/proc/meminfo` explains. The NVIDIA driver held
@@ -422,7 +423,13 @@ Taking the Claude app out of a reading made with it open gives roughly:
 290 MB of that reserve, 340 MB of kernel memory outside every counter,
 130 MB of slab, kernel stacks and page tables, 45 MB of system daemons,
 35 MB of session helpers, 45 MB of tw with its screen buffers, and the
-terminal showing the figure.
+terminal showing the figure. Measured later that day with `tools/mem.sh`,
+the Claude app closed and only a terminal open: 893 MB, of which 285 held
+back, 302 kernel outside the counters (65 of it parked per CPU), 143 slab,
+stacks, page tables and per-CPU data, 57 shared buffers (tw's three and the
+terminal's), and 107 in programs (tw 19, the terminal and its shell 12).
+With the application open the kernel part outside the counters is about
+40 MB larger.
 
 The owner then ran a dump of what only root can read (`/proc/slabinfo`,
 `/proc/vmallocinfo`). Of the 340 MB outside every counter, 61 MB is the
