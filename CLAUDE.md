@@ -301,7 +301,7 @@ tests tw's PATH is a private, empty directory, so it never starts a program
 installed on the machine; a test that needs a locker or an X11 helper puts a
 stand-in there with `fake_program` (see `tests/lib.sh`).
 
-**Budgets ratchet down.** They are the two numbers at the bottom of
+**Budgets ratchet down.** They are the three numbers at the bottom of
 `meson.build`. Raising one needs a stated reason.
 
 ## Not covered by tests
@@ -444,7 +444,14 @@ previous commit too and run both budget tests back to back. After a reboot
 on 2026-11-14 the figure read 2320 to 2484 kB over 17 runs, against a budget
 of 2500, and the test failed once in a full run with nothing in tw changed:
 when it fails, run it again and look at the allocated figure before looking
-for a regression.
+for a regression. On the first boot without the login manager it read 2451
+to 2536 kB for the commit before the battery mode and 2483 to 2565 with it
+(six runs each, back to back; the binary's code had grown by 3.8 kB), over
+the budget half the time, while the allocated figure stayed at 808 to 812.
+The likely reason is that the login screen's compositor mapped the same
+libraries and no longer shares them. So that budget went from 2500 to
+2650, and the allocated figure got a budget of its own, 850, which is the
+one that means something.
 
 At a real login tw's private memory is 15 to 20 MB, not the budget test's
 0.8. The difference is the GPU driver (Mesa), which the tests' software

@@ -304,13 +304,23 @@ test(
 
 # Budgets only mean something for an optimized build. Ratchet these down as
 # the numbers improve; raising one needs a reason in the commit message.
+#
+# The PSS figure divides each library page among the processes that map it,
+# so it moves with what else runs on the machine: one and the same commit
+# read 2320 to 2484 kB with a login manager's compositor running and 2451 to
+# 2536 kB without one. What tw allocated does not move, so that is the
+# figure that catches a regression.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
-budget_own_kb = 2500      # PSS minus pixel buffers, 3 clients mapped (measured: ~1950)
+budget_own_kb = 2650      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2572)
+budget_alloc_kb = 850     # of which allocated by tw itself (measured: 808 to 812)
 if get_option('buildtype') == 'release'
 	test(
 		'budget',
 		find_program('tests/budget.sh'),
-		args: [tw, test_client, budget_idle_wakeups.to_string(), budget_own_kb.to_string()],
+		args: [
+			tw, test_client, budget_idle_wakeups.to_string(),
+			budget_own_kb.to_string(), budget_alloc_kb.to_string(),
+		],
 		suite: 'budget',
 		is_parallel: false,
 		timeout: 60,
