@@ -525,17 +525,26 @@ adapter's USB device asleep with no driver bound (`power/control` was
 still `auto` from the driver, so that was not the udev rule's doing). The
 made-up machine had not known about the bus: the first two switch-offs
 failed as described above, and the model and the condition came out of
-that. Not seen yet: a switch-off with the condition in place, and with it
-the core unloading (WirePlumber has one socket that is neither a Unix nor
-a netlink one, most likely the listening socket for headsets, which
-PipeWire's source closes when BlueZ leaves the bus); what the bus tells a
-caller when the condition refuses the start; a boot with the blacklist,
-and whether anything loads the Bluetooth core without a driver (a program
-opening a Bluetooth socket would); `on`, with systemd starting `bluetoothd`
-for the new adapter and the block staying lifted; a connection ending and
-starting the timer over (the rule matches `DEVTYPE=link`, a name taken from
-the kernel module's strings); the udev rule putting a driverless adapter
-to sleep after a boot.
+that. With the condition installed, the same day: `off` stopped the
+service, the bus asked for it twice within 18 ms and systemd skipped both
+("unmet condition check ConditionPathExists=/run/tw-bluetooth"), and the
+core was out of the kernel 46 ms after the stop, in the first pass; all of
+`off` took 0.13 s, and nothing of Bluetooth was back a quarter of an hour
+later. `on` took 1.25 s: the core and `btusb` loaded, systemd started
+`bluetoothd` for the new adapter by itself 17 ms after the driver had
+registered, the radio came up unblocked and powered although systemd had
+it down as blocked, the timer was set for ten minutes on, and WirePlumber
+registered its 21 endpoints with the new daemon. A WirePlumber started
+while Bluetooth is off logs one warning ("BlueZ system service is not
+available") and takes the daemon up when it appears.
+
+Not seen yet: Bluetooth going off by itself; a device connecting, and a
+connection ending and starting the timer over (the rule matches
+`DEVTYPE=link`, a name taken from the kernel module's strings); a boot
+with the blacklist, and whether anything loads the Bluetooth core without
+a driver (a program opening a Bluetooth socket would); the udev rule
+putting a driverless adapter to sleep after a boot. The owner has no
+device paired.
 Checked without root: a blacklisted module loads by name and not the way
 udev asks (`modprobe -b`), `udevadm verify` accepts the rules,
 `systemd-analyze verify` the unit and the timer, and a staged install puts
@@ -1204,8 +1213,11 @@ by PSS, 2.6 MB of WirePlumber's own 9 MB. `alsa-plugins` was installed on
 purpose by somebody, nothing requires it, removing it takes nothing else
 along, ALSA programs reach PipeWire through `pipewire-audio`'s own files,
 and no other process has the plugin loaded. Put to the owner as
-`sudo pacman -Rns alsa-plugins`; the saving is what is mapped now, not a
-reading after the removal.
+`sudo pacman -Rns alsa-plugins`, which they ran at once, and restarted
+WirePlumber. Read after that: 24.7 MB resident where it was 37.1, 6.0 MB
+its own where it was 9.0, 12.7 MB by PSS where it was 20.3, and 82
+libraries mapped where there were 161. The built-in sink and source are
+there as before. It is README step 7 now.
 
 ## Battery
 

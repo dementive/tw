@@ -179,7 +179,7 @@ plugged in when you log in after a boot. If you have logged out and in since,
 the GPU is still switched off and tw cannot see the monitor: run `tw-gpu on`,
 then log out and in.
 
-### 7. Services tw has no use for
+### 7. Services and a package tw has no use for
 
 Two services that CachyOS enables can go:
 
@@ -195,6 +195,22 @@ sudo systemctl disable --now switcheroo-control.service
 
 Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
 through it.
+
+And one package:
+
+```sh
+sudo pacman -Rns alsa-plugins
+```
+
+It holds extras for programs that talk to ALSA directly. One of them, an
+AC-3 encoder for an S/PDIF output, is loaded by the sound service
+(WirePlumber) at every login and brings FFmpeg along, 79 libraries in all.
+Without the package WirePlumber is 25 MB in `btop` instead of 37 (6 MB its
+own instead of 9), and sound works as before: programs reach PipeWire
+through PipeWire's own ALSA files. What goes with it is AC-3 to an S/PDIF
+receiver, and ALSA's own bridges to JACK, OSS and PulseAudio. It takes
+effect when WirePlumber next starts: at the next login, or with
+`systemctl --user restart wireplumber`.
 
 ### 8. The kernel's memory reserves
 
