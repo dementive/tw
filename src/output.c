@@ -9,7 +9,6 @@
 
 #include "tw.h"
 #include "config.h"
-#include "layout.h"
 
 /*
  * Several outputs. There are TW_WORKSPACES workspaces in all, and each output
@@ -200,6 +199,11 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		wlr_log(WLR_ERROR, "out of memory, ignoring output %s", wlr_output->name);
 		return;
 	}
+	if (!wlr_output_init_render(wlr_output, server->allocator, server->renderer)) {
+		wlr_log(WLR_ERROR, "cannot draw on output %s, ignoring it", wlr_output->name);
+		free(output);
+		return;
+	}
 	output->server = server;
 	output->wlr_output = wlr_output;
 	wlr_output->data = output;
@@ -218,8 +222,6 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 			}
 		}
 	}
-
-	wlr_output_init_render(wlr_output, server->allocator, server->renderer);
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);

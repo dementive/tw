@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <libudev.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ struct tw_power {
 /* One attribute of a power supply without its newline, or "" if it has none. */
 static void attribute(const char *dir, const char *supply, const char *name,
 		char *value, size_t size) {
-	char path[4096];
+	char path[PATH_MAX];
 	value[0] = '\0';
 	if (snprintf(path, sizeof(path), "%s/%s/%s", dir, supply, name) >= (int)sizeof(path)) {
 		return;
@@ -96,24 +97,11 @@ static void supplies_read(const char *dir, bool *battery, bool *mains, int *char
 	closedir(supplies);
 }
 
-/* Runs a command from config.h, unless it is "" or its program is missing. */
-static void run(const char *command) {
-	char path[4096];
-	if (command[0] == '\0') {
-		return;
-	}
-	if (program_find(command, path, sizeof(path))) {
-		spawn(command);
-	} else {
-		wlr_log(WLR_INFO, "not installed: %s", command);
-	}
-}
-
 /* Brings the outputs and the machine in line with server->on_battery. */
 static void apply(struct tw_server *server) {
 	wlr_log(WLR_INFO, "running on %s", server->on_battery ? "battery" : "mains");
 	outputs_update_mode(server);
-	run(server->on_battery ? battery_command : mains_command);
+	spawn_installed(server->on_battery ? battery_command : mains_command);
 }
 
 /*
@@ -164,19 +152,11 @@ static int handle_change(int fd, uint32_t mask, void *data) {
 	power->fresh = false;
 	if (due & TW_BATTERY_WARN) {
 		wlr_log(WLR_INFO, "battery at %d%%, warning", charge);
-		run(battery_warn_command);
+		spawn_installed(battery_warn_command);
 	}
 	if (due & TW_BATTERY_SUSPEND) {
-		char path[4096];
-		if (program_find(suspend_command, path, sizeof(path))) {
-			wlr_log(WLR_INFO, "battery at %d%%, suspending", charge);
-			if (lock_on_idle) {
-				lock_now(server);
-			}
-			spawn(suspend_command);
-		} else {
-			wlr_log(WLR_INFO, "not installed: %s", suspend_command);
-		}
+		wlr_log(WLR_INFO, "battery at %d%%, suspending", charge);
+		suspend_now(server);
 	}
 	return 0;
 }
@@ -189,7 +169,7 @@ void power_init(struct tw_server *server) {
 	if (server->session == NULL && sys == NULL) {
 		return;
 	}
-	char dir[4096];
+	char dir[PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/class/power_supply", sys != NULL ? sys : "/sys");
 
 	bool battery, mains;

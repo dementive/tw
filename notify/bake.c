@@ -2,7 +2,7 @@
  * Build tool: draws the characters tw-notify shows, once, as tw is built, and
  * prints them as C. So tw-notify needs no font library when it runs, which is
  * where a notification service's memory goes: fnott, which loads fontconfig,
- * FreeType and HarfBuzz, held 9.5 MB of its own on the owner's laptop.
+ * FreeType and HarfBuzz, held 9.5 MB of its own once it had shown something.
  *
  * What that costs: only the characters listed below can be shown, anything
  * else appears as the font's "missing" box; and the text is as large as

@@ -93,14 +93,23 @@ static int handle_idle_timer(void *data) {
 		/* If the machine is still awake after this (something holds a sleep
 		 * inhibitor), the next attempt is one more period away. */
 		server->suspend_tries++;
-		if (lock_on_idle) {
-			lock_now(server);
-		}
 		wlr_log(WLR_INFO, "no input for %d seconds, suspending", (int)(idle_ms / 1000));
-		spawn(suspend_command);
+		suspend_now(server);
 	}
 	idle_timer_start(server);
 	return 0;
+}
+
+void suspend_now(struct tw_server *server) {
+	if (!program_installed(suspend_command)) {
+		wlr_log(WLR_INFO, "not installed: %s", suspend_command);
+		return;
+	}
+	/* Locked first, so that whoever wakes the machine finds the lock screen. */
+	if (lock_on_idle) {
+		lock_now(server);
+	}
+	spawn(suspend_command);
 }
 
 void idle_activity(struct tw_server *server) {
@@ -203,9 +212,8 @@ void idle_init(struct tw_server *server) {
 	wl_signal_add(&server->idle_inhibit_manager->events.new_inhibitor,
 		&server->new_idle_inhibitor);
 
-	char path[4096];
-	if (server->suspend_after_ms > 0 && !program_find(suspend_command, path, sizeof(path))) {
-		wlr_log(WLR_INFO, "not suspending when idle: cannot find %s", suspend_command);
+	if (server->suspend_after_ms > 0 && !program_installed(suspend_command)) {
+		wlr_log(WLR_INFO, "not suspending when idle: not installed: %s", suspend_command);
 		server->suspend_after_ms = 0;
 	}
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);

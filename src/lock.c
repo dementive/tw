@@ -174,11 +174,10 @@ static void locker_start(struct tw_server *server) {
 }
 
 void lock_now(struct tw_server *server) {
-	char path[4096];
 	if (server->locked) {
 		return;
 	}
-	if (!program_find(locker, path, sizeof(path))) {
+	if (!program_installed(locker)) {
 		wlr_log(WLR_ERROR, "not locking: the locker (%s) is not installed", locker);
 		return;
 	}

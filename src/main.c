@@ -1,4 +1,6 @@
+#include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +95,23 @@ bool program_find(const char *command, char *path, size_t size) {
 	return false;
 }
 
+bool program_installed(const char *command) {
+	char path[PATH_MAX];
+	return program_find(command, path, sizeof(path));
+}
+
+bool spawn_installed(const char *cmd) {
+	if (cmd[0] == '\0') {
+		return false;
+	}
+	if (!program_installed(cmd)) {
+		wlr_log(WLR_INFO, "not installed: %s", cmd);
+		return false;
+	}
+	spawn(cmd);
+	return true;
+}
+
 void action_spawn(struct tw_server *server, const union tw_arg *arg) {
 	spawn(arg->s);
 }
@@ -120,6 +139,24 @@ static void usage(const char *name) {
 		name, blank_after_seconds, suspend_after_seconds, x11_idle_seconds);
 }
 
+/* A number of seconds given on the command line: digits and nothing else. */
+static bool parse_seconds(const char *text, int *seconds) {
+	char *end;
+	errno = 0;
+	long value = strtol(text, &end, 10);
+	if (end == text || *end != '\0' || errno != 0 || value < 0 || value > INT_MAX) {
+		return false;
+	}
+	*seconds = (int)value;
+	return true;
+}
+
+/* A timeout in seconds as the milliseconds a timer takes. 0 stays 0, which
+ * is never; a day is the most, so that the result fits. */
+static int seconds_to_ms(int seconds) {
+	return seconds <= 0 ? 0 : (seconds > 86400 ? 86400 : seconds) * 1000;
+}
+
 int main(int argc, char *argv[]) {
 	const char *startup_cmd = NULL;
 	enum wlr_log_importance verbosity = WLR_ERROR;
@@ -129,15 +166,16 @@ int main(int argc, char *argv[]) {
 
 	int c;
 	while ((c = getopt(argc, argv, "b:ds:x:z:h")) != -1) {
+		int *seconds = NULL;
 		switch (c) {
 		case 'b':
-			blank_after = atoi(optarg);
+			seconds = &blank_after;
 			break;
 		case 'x':
-			x11_idle = atoi(optarg);
+			seconds = &x11_idle;
 			break;
 		case 'z':
-			suspend_after = atoi(optarg);
+			seconds = &suspend_after;
 			break;
 		case 'd':
 			verbosity = WLR_DEBUG;
@@ -149,6 +187,10 @@ int main(int argc, char *argv[]) {
 			usage(argv[0]);
 			return c == 'h' ? 0 : 1;
 		}
+		if (seconds != NULL && !parse_seconds(optarg, seconds)) {
+			fprintf(stderr, "%s: -%c takes a number of seconds, not '%s'\n", argv[0], c, optarg);
+			return 1;
+		}
 	}
 	if (optind < argc) {
 		usage(argv[0]);
@@ -157,12 +199,9 @@ int main(int argc, char *argv[]) {
 	wlr_log_init(verbosity, NULL);
 
 	struct tw_server server = {0};
-	/* Capped so the values fit a millisecond timer. */
-	server.blank_after_ms = blank_after <= 0 ? 0 :
-		(blank_after > 86400 ? 86400 : blank_after) * 1000;
-	server.suspend_after_ms = suspend_after <= 0 ? 0 :
-		(suspend_after > 86400 ? 86400 : suspend_after) * 1000;
-	server.x11_idle_ms = x11_idle <= 0 ? 0 : (x11_idle > 86400 ? 86400 : x11_idle) * 1000;
+	server.blank_after_ms = seconds_to_ms(blank_after);
+	server.suspend_after_ms = seconds_to_ms(suspend_after);
+	server.x11_idle_ms = seconds_to_ms(x11_idle);
 
 	/* Inside another session the host compositor owns Super, so use Alt.
 	 * Checked before we overwrite WAYLAND_DISPLAY with our own socket. */
@@ -174,6 +213,7 @@ int main(int argc, char *argv[]) {
 	 * the writer unless this signal is ignored. */
 	signal(SIGPIPE, SIG_IGN);
 
+	int status = 1;
 	server.display = wl_display_create();
 	server.loop = wl_display_get_event_loop(server.display);
 	server.sigint = wl_event_loop_add_signal(server.loop, SIGINT, handle_signal, &server);
@@ -184,12 +224,12 @@ int main(int argc, char *argv[]) {
 	server.backend = wlr_backend_autocreate(server.loop, &server.session);
 	if (server.backend == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the backend");
-		return 1;
+		goto teardown_base;
 	}
 	server.renderer = wlr_renderer_autocreate(server.backend);
 	if (server.renderer == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the renderer");
-		return 1;
+		goto teardown_base;
 	}
 	/* Shared-memory buffers always; GPU buffers when the renderer has a GPU.
 	 * This is wlr_renderer_init_wl_display() spelled out, to keep the
@@ -203,7 +243,7 @@ int main(int argc, char *argv[]) {
 	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
 	if (server.allocator == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the allocator");
-		return 1;
+		goto teardown_base;
 	}
 
 	/*
@@ -238,7 +278,6 @@ int main(int argc, char *argv[]) {
 
 	/* From here on listeners are attached, so every exit goes through the
 	 * full teardown below. */
-	int status = 1;
 	const char *socket = wl_display_add_socket_auto(server.display);
 	if (socket == NULL) {
 		wlr_log(WLR_ERROR, "failed to open a Wayland socket (is XDG_RUNTIME_DIR set?)");
@@ -255,12 +294,7 @@ int main(int argc, char *argv[]) {
 		spawn(startup_cmd);
 	}
 	for (size_t i = 0; autostart[i] != NULL; i++) {
-		char path[4096];
-		if (program_find(autostart[i], path, sizeof(path))) {
-			spawn(autostart[i]);
-		} else {
-			wlr_log(WLR_INFO, "autostart: not installed: %s", autostart[i]);
-		}
+		spawn_installed(autostart[i]);
 	}
 
 	wlr_log(WLR_INFO, "running on WAYLAND_DISPLAY=%s", socket);
@@ -280,9 +314,13 @@ teardown:
 	window_finish(&server);
 	layer_finish(&server);
 	output_finish(&server);
+	wlr_scene_node_destroy(&server.scene->tree.node);
+
+teardown_base:
+	/* What exists before any listener does. A start that failed early has
+	 * only some of it; wlroots takes NULL for the rest. */
 	wl_event_source_remove(server.sigint);
 	wl_event_source_remove(server.sigterm);
-	wlr_scene_node_destroy(&server.scene->tree.node);
 	wlr_allocator_destroy(server.allocator);
 	wlr_renderer_destroy(server.renderer);
 	wlr_backend_destroy(server.backend);

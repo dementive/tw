@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -517,7 +518,7 @@ void x11_init(struct tw_server *server) {
 	if (x11_helper[0] == '\0') {
 		return;
 	}
-	char program[4096];
+	char program[PATH_MAX];
 	if (!program_find(x11_helper, program, sizeof(program))) {
 		wlr_log(WLR_INFO, "%s is not installed, X11 applications will not start", x11_helper);
 		return;

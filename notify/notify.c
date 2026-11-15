@@ -16,6 +16,7 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <limits.h>
 #include <linux/input-event-codes.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -1066,16 +1067,24 @@ int main(int argc, char *argv[]) {
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-d") == 0) {
 			verbose = true;
-		} else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
-			timeout_ms = atoi(argv[++i]);
-		} else {
-			fprintf(stderr, "usage: %s [-d] [-t <milliseconds>]\n"
-				"Shows desktop notifications. The session's D-Bus starts it when a\n"
-				"program sends one; it is not meant to be started by hand.\n"
-				"  -d  say what it does\n"
-				"  -t  how long a notification stays if its program does not say\n", argv[0]);
-			return 1;
+			continue;
 		}
+		if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+			/* Digits and nothing else: read as 0, a typo would mean "stay
+			 * until clicked". */
+			char *end;
+			long value = strtol(argv[++i], &end, 10);
+			if (end != argv[i] && *end == '\0' && value >= 0 && value <= INT_MAX) {
+				timeout_ms = (int)value;
+				continue;
+			}
+		}
+		fprintf(stderr, "usage: %s [-d] [-t <milliseconds>]\n"
+			"Shows desktop notifications. The session's D-Bus starts it when a\n"
+			"program sends one; it is not meant to be started by hand.\n"
+			"  -d  say what it does\n"
+			"  -t  how long a notification stays if its program does not say\n", argv[0]);
+		return 1;
 	}
 	/* Ids start where no earlier tw-notify of this boot left off. */
 	last_id = (uint32_t)(now_ms() / 64);

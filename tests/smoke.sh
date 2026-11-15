@@ -12,6 +12,35 @@ keys_bin=$3
 on='activated=1 suspended=0'      # focused and visible
 off_screen='activated=0 suspended=1'
 
+# --- Options -------------------------------------------------------------------
+# A timeout that is not a number of seconds is refused. Read as 0 it would
+# mean "never", and a typo would switch the screen blanking off unnoticed.
+"$tw_bin" -h >/dev/null || fail "tw -h failed"
+for bad in '-b five' '-z 1h' '-x -3' '-b 2.5' '-b'; do
+	# shellcheck disable=SC2086 # two words on purpose
+	if "$tw_bin" $bad >/dev/null 2>"$run_dir/options.log"; then
+		fail "tw took '$bad' for an option"
+	fi
+done
+if "$tw_bin" -z soon 2>&1 | grep -q "takes a number of seconds, not 'soon'"; then :; else
+	fail "tw did not say what is wrong with '-z soon'"
+fi
+rm -f "$run_dir/options.log"
+
+# A start that cannot work says why and ends with status 1: not with a
+# crash on the way out, where only some of what a running tw has exists.
+status=0
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY PATH="$bin_dir" \
+	XDG_RUNTIME_DIR="$run_dir" WLR_BACKENDS=no-such-backend \
+	"$tw_bin" >"$run_dir/start.log" 2>&1 || status=$?
+[ "$status" = 1 ] || fail "a tw without a backend exited with status $status, not 1"
+grep -q 'failed to create the backend' "$run_dir/start.log" ||
+	fail "tw did not say why it could not start"
+if grep -q 'Sanitizer\|runtime error' "$run_dir/start.log"; then
+	fail "sanitizer report from a start that failed"
+fi
+rm -f "$run_dir/start.log"
+
 # --- Autostart -----------------------------------------------------------------
 # config.h's autostart list is empty: tw starts no helper with the session.
 # These two are installed and must not be started. D-Bus starts a

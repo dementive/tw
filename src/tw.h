@@ -24,6 +24,7 @@
 struct tw_clipboard;
 struct tw_layer_surface;
 struct tw_lock;
+struct tw_power;
 struct tw_server;
 struct tw_window;
 struct tw_x11;
@@ -107,7 +108,7 @@ struct tw_server {
 	/* Index of the workspace with the focus. The output showing it is the
 	 * focused output: new windows open there. */
 	size_t active;
-	struct tw_window *focused; /* the window currently drawn as active */
+	struct tw_window *focused; /* the window whose client is told it is active */
 
 	/* layer.c */
 	struct wlr_layer_shell_v1 *layer_shell;
@@ -215,12 +216,17 @@ struct tw_output_rule {
 /* main.c */
 /* Monotonic clock in milliseconds. */
 int64_t now_ms(void);
+/* Runs a shell command, detached from tw. */
 void spawn(const char *cmd);
 /*
  * Looks up the program a shell command starts (its first word) on PATH,
  * without running anything. On success `path` holds where it is.
  */
 bool program_find(const char *command, char *path, size_t size);
+bool program_installed(const char *command);
+/* spawn(), unless the command is "" or its program is not installed, which
+ * is logged. True if it was started. For the commands in config.h. */
+bool spawn_installed(const char *cmd);
 void action_spawn(struct tw_server *server, const union tw_arg *arg);
 void action_quit(struct tw_server *server, const union tw_arg *arg);
 
@@ -263,9 +269,9 @@ struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 /* Makes the window the focused one of its workspace. Follow with strip_arrange(). */
 void window_focus(struct tw_server *server, struct tw_window *window);
 /*
- * Re-derives which window is drawn active and which surface has the keyboard,
- * from the active workspace and server->keyboard_layer. Call after changing
- * either.
+ * Re-derives which window is the active one and which surface has the
+ * keyboard, from the active workspace, server->keyboard_layer and the lock.
+ * Call after changing any of them; nothing else sends focus events.
  */
 void focus_update(struct tw_server *server);
 /* Scrolls the focused column into view and places every window. */
@@ -331,6 +337,8 @@ void idle_finish(struct tw_server *server);
 void idle_activity(struct tw_server *server);
 /* Re-checks whether a visible surface is keeping the screen on. */
 void idle_update_inhibited(struct tw_server *server);
+/* Locks the session (if lock_on_idle) and runs suspend_command. */
+void suspend_now(struct tw_server *server);
 /* Powers the outputs off until the next input. */
 void action_blank(struct tw_server *server, const union tw_arg *arg);
 

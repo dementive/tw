@@ -17,6 +17,17 @@ command -v dbus-daemon >/dev/null 2>&1 && command -v busctl >/dev/null 2>&1 || {
 	exit 77
 }
 
+# A time that is not a number is refused: read as 0 it would mean "until
+# clicked" for every notification.
+# (With no bus to reach, so that one that takes the option ends there.)
+for bad in '-t soon' '-t 2s' '-t -5' '-t' '-x'; do
+	# shellcheck disable=SC2086 # two words on purpose
+	if env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$run_dir" "$notify_bin" $bad 2>&1 |
+		grep -q '^usage:'; then :; else
+		fail "tw-notify took '$bad' for an option"
+	fi
+done
+
 bus=unix:path=$run_dir/bus
 bus_pid=
 
