@@ -20,9 +20,9 @@ unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
 export XDG_CURRENT_DESKTOP=tw
 export XDG_SESSION_DESKTOP=tw
 export XDG_SESSION_TYPE=wayland
-# X11 applications work, but the first one starts Xwayland and
-# xwayland-satellite, which then stay in memory for the rest of the session.
-# Ask toolkits that would default to X11 to use Wayland instead.
+# X11 applications work, but each needs Xwayland and xwayland-satellite
+# started, and those stay for as long as it runs. Ask toolkits that would
+# default to X11 to use Wayland instead.
 export ELECTRON_OZONE_PLATFORM_HINT=auto
 export MOZ_ENABLE_WAYLAND=1
 # Chromium and Electron programs (the Claude app, VS Code) pick their keyring

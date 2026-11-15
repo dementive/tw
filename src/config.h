@@ -111,10 +111,19 @@ static const char *const autostart[] = {
 
 /*
  * X11 applications run through this helper, which starts Xwayland. tw starts
- * it when the first X11 application connects and not before; from then on
- * the two stay in memory. "" turns X11 support off.
+ * it when the first X11 application connects and not before. "" turns X11
+ * support off.
  */
 static const char x11_helper[] = "xwayland-satellite";
+
+/*
+ * The two are stopped again once no X11 application is connected, which tw
+ * looks at this many seconds after starting them and after a window closed.
+ * Starting them takes a moment, so this is long enough that a program asking
+ * X11 one question after another does not restart them each time. 0 keeps
+ * them for the rest of the session.
+ */
+static const int x11_idle_seconds = 30;
 
 static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
 static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";

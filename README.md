@@ -34,7 +34,7 @@ sudo pacman -S foot fuzzel swaylock fnott wl-clip-persist xwayland-satellite \
 | swaylock | lock screen (Mod+Alt+L, lid close, idle) |
 | fnott | notifications, started with the session |
 | wl-clip-persist | keeps what you copied when its program exits, started with the session |
-| xwayland-satellite | X11 programs; started only when one runs |
+| xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
 | brightnessctl, wireplumber | brightness and volume keys |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
@@ -78,14 +78,16 @@ To check: `busctl --user list | grep secrets` should show a line for
 
 ### 5. Keep the shell from starting Xwayland
 
-tw starts Xwayland only when a program talks to X11, and Xwayland then stays
-in memory (about 30 MB) for the rest of the session. A program that merely
-asks X11 a question is enough, and CachyOS's fish setup ships one: the `done`
-plugin runs `xprop` every time a shell starts and around every command. Its
-notifications do not work under Wayland anyway, so remove it.
+tw starts Xwayland when a program talks to X11, and stops it again half a
+minute after the last such program has gone. While it runs it takes about
+25 MB. A program that merely asks X11 a question is enough to start it, and
+CachyOS's fish setup ships one: the `done` plugin runs `xprop` every time a
+shell starts and around every command, so Xwayland would start and stop all
+day. Its notifications do not work under Wayland anyway, so remove it.
 
-To check: open a terminal, then run `pgrep -x Xwayland`. If that prints a
-number although you have no X11 program open, something woke it.
+To check: open a terminal, wait a minute, then run `pgrep -x Xwayland`. If
+that prints a number although you have no X11 program open, something keeps
+waking it.
 
 The plugin can be loaded from two places:
 
@@ -101,8 +103,7 @@ If the `grep` prints a `source /usr/share/cachyos-fish-config/cachyos-config.fis
 line, that file loads the plugin on its second line. Replace the `source` line
 with the parts of that file you want to keep, leaving out the `done.fish` line.
 
-Then close every terminal that was already open, and free the memory with
-`pkill xwayland-satellite`. tw starts it again when an X11 program needs it.
+Then close every terminal that was already open.
 
 To find some other program doing this, look for X11 tools in your shell's
 startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
@@ -167,6 +168,23 @@ The HDMI port belongs to the NVIDIA GPU. A monitor on it works if it is
 plugged in when you log in after a boot. If you have logged out and in since,
 the GPU is still switched off and tw cannot see the monitor: run `tw-gpu on`,
 then log out and in.
+
+### 7. Services tw has no use for
+
+Two services that CachyOS enables can go:
+
+```sh
+sudo systemctl disable --now ananicy-cpp.service
+sudo systemctl disable --now switcheroo-control.service
+```
+
+| Service | What it is | Why it can go |
+| --- | --- | --- |
+| ananicy-cpp | CachyOS's daemon that adjusts process priorities by a rule list | about 7 MB, and with only a couple of programs running there is little for it to sort out |
+| switcheroo-control | tells GNOME and KDE which GPU is the discrete one | `tw-gpu` does that job here |
+
+Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
+through it.
 
 ## Good to know
 

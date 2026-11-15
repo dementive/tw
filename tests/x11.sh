@@ -4,8 +4,9 @@
 #
 # A stand-in plays xwayland-satellite (tests/client.c --x11-serve), so this
 # checks tw's side of the hand-over: the display it announces, the arguments
-# and sockets it passes, and what it does when the helper dies or never
-# starts. The real helper and Xwayland are not involved.
+# and sockets it passes, what it does when the helper dies or never starts,
+# and that it stops a helper no X11 client is connected to. The real helper
+# and Xwayland are not involved.
 set -eu
 . "$(dirname "$0")/lib.sh"
 
@@ -19,6 +20,13 @@ helpers() { [ "$(count "$run_dir/helper.log" '^serve')" = "$1" ]; }  # helpers t
 attempts() { [ "$(count "$run_dir/attempts" .)" = "$1" ]; }          # times tw started one
 deaths() { [ "$(count "$run_dir/tw.log" 'was killed by signal')" = "$1" ]; }
 gone() { ! kill -0 "$1" 2>/dev/null; }
+hung_up() { [ "$(count "$run_dir/helper.log" '^hung up')" = "$1" ]; }  # clients that left
+# A window opens and closes: the moment tw looks whether X11 is still in use.
+window_closes() {
+	start_client "$1"
+	expect_keyboard "$1" enter "window $1 to be shown"
+	kill "$last_client_pid"
+}
 helper_pid() { sed -n 's/^serve pid=\([0-9]*\) .*/\1/p' "$run_dir/helper.log" | tail -n 1; }
 
 # --- Helper not installed: no X11, and no DISPLAY that leads nowhere ----------
@@ -33,9 +41,11 @@ rm "$run_dir/display"
 fake_program xwayland-satellite "
 echo attempt >>'$run_dir/attempts'
 [ -e '$run_dir/broken' ] && exit 1
+[ -e '$run_dir/stranger' ] && set -- \"\$@\" -stranger
 exec '$client_bin' --x11-serve \"\$@\" >>'$run_dir/helper.log' 2>&1"
 
-start_tw -s "$startup"
+# -x 2: look two seconds after the helper started or a window closed.
+start_tw -x 2 -s "$startup"
 wait_until "the startup command to run" test -s "$run_dir/display"
 display=$(cat "$run_dir/display")
 number=${display#:}
@@ -81,8 +91,41 @@ attempts $((before + 1)) || fail "tw kept restarting a helper that fails to star
 
 rm "$run_dir/broken"
 spawn_client x6 --x11 path "$display"
+x6_pid=$last_client_pid
 expect_line x6 "x11 served" "X11 to work again once the helper does"
+
+# --- No X11 client left: the helper is stopped, the next client starts one -----
+# While one is connected the helper stays, whatever windows come and go.
+helper=$(helper_pid)
+window_closes w1
+sleep 2.6
+gone "$helper" && fail "the helper was stopped although an X11 client was connected"
+
+kill "$x6_pid"
+wait_until "the helper to notice that its client left" hung_up 1
+window_closes w2
+wait_until "the unused helper to be stopped" gone "$helper"
+deaths 2 || fail "stopping an unused helper was logged as the helper dying"
+
+# A program that only asks X11 a question: nothing closes a window, so the
+# look after the helper's start is what catches it.
+before=$(count "$run_dir/helper.log" '^serve')
+spawn_client x7 --x11 abstract "$display"
+expect_line x7 "x11 served" "a client to be answered after the helper was stopped"
+helpers $((before + 1)) || fail "expected one new helper, got: $(cat "$run_dir/helper.log")"
+helper=$(helper_pid)
+kill "$last_client_pid"
+wait_until "a helper nobody uses any more to be stopped" gone "$helper"
+
+# A connection tw cannot place counts as a client. One from a sandbox with a
+# network of its own looks like that: it is in no list tw can read.
+touch "$run_dir/stranger"
+spawn_client x8 --x11 path "$display"
+expect_line x8 "x11 served" "X11 to work after the helper was stopped twice"
 last_helper=$(helper_pid)
+kill "$last_client_pid"
+sleep 2.6
+gone "$last_helper" && fail "the helper was stopped although it had a connection tw cannot place"
 
 # --- Exit: nothing is left behind ----------------------------------------------
 stop_tw
@@ -90,4 +133,4 @@ stop_tw
 [ ! -e "/tmp/.X$number-lock" ] || fail "the X11 lock file was left behind"
 wait_until "the helper to be stopped with tw" gone "$last_helper"
 
-echo "ok: X11 display $display, helper on demand, restart, failure, cleanup"
+echo "ok: X11 display $display, helper on demand, restart, failure, stopped when unused, cleanup"

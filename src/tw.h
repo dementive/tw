@@ -140,6 +140,7 @@ struct tw_server {
 
 	/* x11.c */
 	struct tw_x11 *x11; /* NULL when X11 support is off */
+	int x11_idle_ms;    /* 0 never stops the X11 helper */
 
 	/* input.c */
 	struct wlr_seat *seat;
@@ -334,6 +335,8 @@ void lock_key_pressed(struct tw_server *server);
 /* Sets DISPLAY for the programs tw starts, or removes it. Call before any. */
 void x11_init(struct tw_server *server);
 void x11_finish(struct tw_server *server);
+/* A window closed: its program may have been the last X11 application. */
+void x11_window_closed(struct tw_server *server);
 
 /* input.c */
 void input_init(struct tw_server *server);

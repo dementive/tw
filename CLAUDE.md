@@ -30,7 +30,8 @@ subprojects' own tests.
 
 `-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per window
 and an `output <name>` line per monitor. `-b <seconds>` and `-z <seconds>`
-override the screen-blanking and suspend timeouts from `config.h`.
+override the screen-blanking and suspend timeouts from `config.h`, and
+`-x <seconds>` how long after the last X11 program the X server is stopped.
 
 Never run `data/tw-session` from inside a desktop session to try it out: it
 publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
@@ -47,7 +48,7 @@ which GPUs it would use and starts nothing.
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up |
 | `src/lock.c` | Session lock for `swaylock`; locking by itself (`lock_now()`) and starting the locker |
-| `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects |
+| `src/x11.c` | X11 display sockets; starts xwayland-satellite when the first X11 client connects, and stops it when none is left |
 | `src/output.c` | Outputs, which workspace each one shows, scene layers, the frame handler |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
 | `src/main.c` | Startup, autostart, teardown, `spawn()`, `program_find()` |
@@ -64,7 +65,7 @@ which GPUs it would use and starts nothing.
 | `tests/pointer.sh` | The mouse: pointer focus, click to focus, pointer lock, confinement |
 | `tests/outputs.sh` | Two monitors: a workspace on each, focus and columns between them |
 | `tests/idle.sh` | Screen blanking and inhibitors, with a two-second timeout; locking on idle; suspend |
-| `tests/x11.sh` | X11 sockets and starting the helper on demand, with a stand-in helper |
+| `tests/x11.sh` | X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
 | `tests/gpu.sh` | `tw-gpu`, its root helper and the GPU choice in `tw-session`, against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH |
@@ -134,6 +135,24 @@ display sockets, sets `DISPLAY` for the programs tw starts, and on the first
 connection hands the sockets to xwayland-satellite, whose windows then arrive
 as ordinary xdg-shell windows. While the helper runs tw does not watch the
 sockets; when it exits (a pidfd tells us) tw watches them again.
+
+The helper and Xwayland are stopped again when no X11 program is connected,
+because many programs only ask X11 a question as they start (the Claude app
+does) and would leave 25 MB of X server behind for the session. tw cannot
+ask the server who is connected, and neither Xwayland's own `-terminate`
+nor anything else can be passed through the helper, so `clients_connected()`
+reads it off the kernel: it lists the sockets the helper and its child have
+open (`/proc/<pid>/fd`) and looks each one up in `/proc/net/unix`. A
+connection that came in through the display's sockets bears their name; one
+that is not in that list at all came from another network namespace (a
+sandbox) and counts as a client too; the rest are the helper's own. If
+anything cannot be read, the helper stays. There is no event for an X11
+client leaving, and looking now and then would be polling, so tw looks at
+two moments only, `x11_idle_seconds` after each: the helper's start, and
+any window closing (`x11_window_closed()`). A client that leaves with no
+window closing is therefore noticed at the next window that does. A client
+queued behind a helper tw stopped is served by the next one, not turned
+away like one queued behind a helper that died.
 
 The NVIDIA GPU of a laptop that also has an Intel one is handled like X11:
 off until something needs it, and none of it is in tw's C code. Off means its
@@ -319,8 +338,17 @@ waiting (after which that daemon owns `org.freedesktop.secrets`), and it sets
 no keyring at all (their `safeStorage` reports `basic_text`).
 
 `tests/x11.sh` uses a stand-in for xwayland-satellite. It proves tw's half of
-the hand-over (display, arguments, sockets, restart, cleanup), not that the
-real helper works with tw.
+the hand-over (display, arguments, sockets, restart, cleanup, stopping when
+unused), not that the real helper works with tw. Stopping it was seen with
+the real one (2026-11-14, xwayland-satellite 0.8.3, Xwayland 24.1, in a
+headless tw run with `-x 5`): after `xdpyinfo` both were gone five seconds
+later, Xwayland along with the helper, and the next `xdpyinfo` started them
+again; `xprop -spy` kept them up, through a window closing too, and they
+went after it had left and the next window closed; the same from inside
+`bwrap --unshare-net`, whose connection is indeed missing from
+`/proc/net/unix`; and `vkcube --wsi xcb` kept them up while its window was
+open and they went five seconds after it closed. Not seen yet: the real
+session, where the Claude app is what starts them.
 
 ## Known noise
 
@@ -328,15 +356,18 @@ With a GPU renderer, LeakSanitizer reports small leaks at exit from inside the
 GPU driver (seen with the NVIDIA driver and the libdbus it loads). They are not
 ours. The tests use the software renderer, where the report must be empty.
 
-Xwayland running although no X11 window is open means something only asked
-X11 a question, which is enough to start it. Two culprits are known. A shell
-plugin: fish's `done` runs `xprop` each time a shell starts when `DISPLAY` is
-set (README.md says how to remove it). And the Claude desktop app, which
+A program that only asks X11 a question starts Xwayland, which tw stops
+again half a minute later. Two such programs are known. A shell plugin:
+fish's `done` runs `xprop` each time a shell starts when `DISPLAY` is set,
+which now means a start and a stop of the X server with every command
+(README.md says how to remove it). And the Claude desktop app, which
 connects to X11 for a moment as it starts (seen with the plugin gone: the
 helper started in the same second as the app's GPU process, and no X11
 client was left afterwards). To find one, open a terminal in a
 private headless tw run with `-d`, giving it the environment of a terminal
 from the real session, and look for "started xwayland-satellite" in its log.
+Xwayland still running with no X11 window open means a program without a
+window is connected, or one left and no window has closed since.
 
 The memory figure of the budget test moves by 100 to 200 kB with what else is
 running on the machine, because shared library pages are divided among the
@@ -412,7 +443,8 @@ pages available, so do not propose it again.
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
 connected to 19, plus 6 MB of buffers (the Claude app asks X11 a question
-as it starts; `ss -x` showed no socket on the display); PipeWire and
+as it starts; `ss -x` showed no socket on the display; tw stops it since);
+PipeWire and
 WirePlumber 13; the portals 11; systemd, D-Bus, udev, polkit and the
 journal 23; CachyOS's `ananicy-cpp` 7; the login manager, which stays
 loaded all session, 6; NetworkManager and wpa_supplicant 6; the keyring 5;

@@ -788,6 +788,7 @@ static void window_unmap(struct tw_window *window) {
 	}
 	window->mapped = false;
 	wlr_scene_node_set_enabled(&window->scene_tree->node, false);
+	x11_window_closed(server);
 
 	/* If the client maps again it starts from a fresh initial commit. */
 	window->width = window->height = 0;

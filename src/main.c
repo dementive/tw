@@ -106,14 +106,16 @@ static int handle_signal(int signo, void *data) {
 }
 
 static void usage(const char *name) {
-	printf("Usage: %s [-d] [-b seconds] [-z seconds] [-s startup-command]\n"
+	printf("Usage: %s [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -z  suspend the machine after this long without input (0: never;\n"
 		"      default %d)\n"
+		"  -x  stop the X11 server when no X11 program has been connected for\n"
+		"      this long (0: never; default %d)\n"
 		"  -d  log debug output\n"
 		"  -s  run a shell command once the compositor is up\n",
-		name, blank_after_seconds, suspend_after_seconds);
+		name, blank_after_seconds, suspend_after_seconds, x11_idle_seconds);
 }
 
 int main(int argc, char *argv[]) {
@@ -121,12 +123,16 @@ int main(int argc, char *argv[]) {
 	enum wlr_log_importance verbosity = WLR_ERROR;
 	int blank_after = blank_after_seconds;
 	int suspend_after = suspend_after_seconds;
+	int x11_idle = x11_idle_seconds;
 
 	int c;
-	while ((c = getopt(argc, argv, "b:ds:z:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:ds:x:z:h")) != -1) {
 		switch (c) {
 		case 'b':
 			blank_after = atoi(optarg);
+			break;
+		case 'x':
+			x11_idle = atoi(optarg);
 			break;
 		case 'z':
 			suspend_after = atoi(optarg);
@@ -154,6 +160,7 @@ int main(int argc, char *argv[]) {
 		(blank_after > 86400 ? 86400 : blank_after) * 1000;
 	server.suspend_after_ms = suspend_after <= 0 ? 0 :
 		(suspend_after > 86400 ? 86400 : suspend_after) * 1000;
+	server.x11_idle_ms = x11_idle <= 0 ? 0 : (x11_idle > 86400 ? 86400 : x11_idle) * 1000;
 
 	/* Inside another session the host compositor owns Super, so use Alt.
 	 * Checked before we overwrite WAYLAND_DISPLAY with our own socket. */

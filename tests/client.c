@@ -647,32 +647,69 @@ static int x11_serve(int argc, char *argv[]) {
 	/* Never outlive the compositor that started us. */
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-	struct pollfd sockets[2];
-	nfds_t count = 0;
+	/* The listening sockets first, then the clients that are connected. */
+	struct pollfd sockets[2 + 16];
+	nfds_t listening = 0;
+	bool stranger = false;
 	printf("serve pid=%d", (int)getpid());
 	for (int i = 0; i < argc; i++) {
 		printf(" %s", argv[i]);
-		if (strcmp(argv[i], "-listenfd") == 0 && i + 1 < argc && count < 2) {
-			sockets[count++] = (struct pollfd){.fd = atoi(argv[i + 1]), .events = POLLIN};
+		if (strcmp(argv[i], "-listenfd") == 0 && i + 1 < argc && listening < 2) {
+			sockets[listening++] = (struct pollfd){.fd = atoi(argv[i + 1]), .events = POLLIN};
 		}
+		stranger = stranger || strcmp(argv[i], "-stranger") == 0;
 	}
 	say("");
+
+	/* The real helper holds a connection with a name that is no X11 client:
+	 * it runs a Wayland socket of its own for Xwayland. So do we. */
+	struct sockaddr_un own = {.sun_family = AF_UNIX};
+	snprintf(own.sun_path, sizeof(own.sun_path), "%s/x11-serve-%d",
+		getenv("XDG_RUNTIME_DIR"), (int)getpid());
+	int own_server = socket(AF_UNIX, SOCK_STREAM, 0);
+	int own_client = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (bind(own_server, (struct sockaddr *)&own, sizeof(own)) < 0 ||
+			listen(own_server, 1) < 0 ||
+			connect(own_client, (struct sockaddr *)&own, sizeof(own)) < 0 ||
+			accept(own_server, NULL, NULL) < 0) {
+		say("serve error");
+		return 1;
+	}
+	unlink(own.sun_path);
+	/* -stranger: also a socket that is in no list of Unix sockets, as a
+	 * connection from a sandbox with a network of its own would be. */
+	if (stranger && socket(AF_INET, SOCK_DGRAM, 0) < 0) {
+		say("serve error");
+		return 1;
+	}
 
 	/* Xwayland takes a while to come up. A compositor that kept watching the
 	 * sockets meanwhile would start a second helper for the same client. */
 	nanosleep(&(struct timespec){.tv_nsec = 300000000}, NULL);
 
+	nfds_t count = listening;
 	while (poll(sockets, count, -1) > 0) {
-		for (nfds_t i = 0; i < count; i++) {
+		/* Like an X server, let go of a client that has hung up. */
+		for (nfds_t i = count; i-- > listening;) {
+			char byte;
+			if (sockets[i].revents != 0 && read(sockets[i].fd, &byte, 1) <= 0) {
+				close(sockets[i].fd);
+				sockets[i] = sockets[--count];
+				say("hung up");
+			}
+		}
+		for (nfds_t i = 0; i < listening; i++) {
 			if (!(sockets[i].revents & POLLIN)) {
 				continue;
 			}
-			/* Kept open: the client stays connected until we exit. */
+			/* Kept open: the client stays connected until it or we exit. */
 			int client = accept(sockets[i].fd, NULL, NULL);
-			if (client < 0 || write(client, "x", 1) != 1) {
+			if (client < 0 || count == sizeof(sockets) / sizeof(sockets[0]) ||
+					write(client, "x", 1) != 1) {
 				say("serve error");
 				return 1;
 			}
+			sockets[count++] = (struct pollfd){.fd = client, .events = POLLIN};
 			say("accepted");
 		}
 	}

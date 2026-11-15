@@ -7,12 +7,16 @@
  * display sockets, watches them, and hands them to the helper when a client
  * turns up.
  *
- * Cost while no X11 application has run: two listening sockets and two
- * entries in the event loop. No process, no wakeups. Once one has run, the
- * helper and Xwayland stay until they exit or the session ends, and tw is told
- * of that exit through a pidfd: one wakeup, no polling, no SIGCHLD handler.
+ * Cost while no X11 application runs: two listening sockets and two entries
+ * in the event loop. No process, no wakeups. The helper and Xwayland run for
+ * as long as an X11 application is connected, and tw stops them again when
+ * the last one has gone: plenty of programs only ask X11 a question as they
+ * start, and would otherwise leave an X server behind for the whole session.
+ * tw is told of the helper's exit through a pidfd: one wakeup, no polling, no
+ * SIGCHLD handler.
  */
 #define _GNU_SOURCE /* syscall(), for pidfd_open */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -49,6 +53,11 @@ struct tw_x11 {
 	pid_t pid; /* the running helper, or 0 */
 	int pidfd;
 	struct wl_event_source *exit_source;
+	/* Fires once, some time after the helper started or a window closed, to
+	 * see whether any X11 application is left. NULL if the helper is never
+	 * stopped. */
+	struct wl_event_source *idle_timer;
+	bool stopping; /* we asked the helper to exit */
 };
 
 /* --- The display sockets ------------------------------------------------------ */
@@ -196,13 +205,14 @@ static void unwatch(struct tw_x11 *x11) {
 	}
 }
 
-static void watch(struct tw_x11 *x11) {
+/* turn_away: whoever is still queued was waiting for a helper that died or
+ * never started. Starting another helper for them would repeat for as long
+ * as it keeps failing, so they are refused. A client queued behind a helper
+ * that we stopped ourselves is served by the next one instead. */
+static void watch(struct tw_x11 *x11, bool turn_away) {
 	for (size_t i = 0; i < LENGTH(x11->watch); i++) {
-		/* Whoever is still queued was waiting for a helper that died or
-		 * never started. Turn them away: starting another helper for them
-		 * would repeat for as long as it keeps failing. */
 		struct pollfd pending = {.fd = x11->fds[i], .events = POLLIN};
-		while (poll(&pending, 1, 0) > 0 && (pending.revents & POLLIN)) {
+		while (turn_away && poll(&pending, 1, 0) > 0 && (pending.revents & POLLIN)) {
 			int client = accept(x11->fds[i], NULL, NULL);
 			if (client < 0) {
 				break;
@@ -219,8 +229,10 @@ static int handle_helper_exit(int fd, uint32_t mask, void *data) {
 	int status = 0;
 	while (waitpid(x11->pid, &status, 0) < 0 && errno == EINTR) {
 	}
-	/* X11 applications go down with it, so this is worth a line in the log. */
-	if (WIFEXITED(status)) {
+	if (x11->stopping) {
+		wlr_log(WLR_DEBUG, "%s stopped", x11_helper);
+	} else if (WIFEXITED(status)) {
+		/* X11 applications go down with it, so this is worth a line in the log. */
 		wlr_log(WLR_ERROR, "%s exited with status %d", x11_helper, WEXITSTATUS(status));
 	} else {
 		wlr_log(WLR_ERROR, "%s was killed by signal %d", x11_helper, WTERMSIG(status));
@@ -229,9 +241,184 @@ static int handle_helper_exit(int fd, uint32_t mask, void *data) {
 	x11->exit_source = NULL;
 	close(x11->pidfd);
 	x11->pid = 0;
+	if (x11->idle_timer != NULL) {
+		wl_event_source_timer_update(x11->idle_timer, 0);
+	}
 	/* The next X11 application starts a new one. */
-	watch(x11);
+	watch(x11, !x11->stopping);
+	x11->stopping = false;
 	return 0;
+}
+
+/* --- Stopping a helper nobody uses ---------------------------------------- */
+
+/* The helper and Xwayland hold a handful of sockets when idle; an X11
+ * application adds one. Far more than this means applications are connected. */
+#define MAX_SOCKETS 48
+#define MAX_CHILDREN 8
+
+/* Adds the inodes of the sockets a process has open. False if they cannot
+ * be read or do not fit. */
+static bool sockets_of(pid_t pid, unsigned long *inodes, size_t *count) {
+	char path[40], target[64];
+	snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+	DIR *dir = opendir(path);
+	if (dir == NULL) {
+		return false;
+	}
+	bool ok = true;
+	struct dirent *entry;
+	while (ok && (entry = readdir(dir)) != NULL) {
+		ssize_t length = readlinkat(dirfd(dir), entry->d_name, target, sizeof(target) - 1);
+		if (length <= 0) {
+			continue; /* "." and "..", or closed meanwhile */
+		}
+		target[length] = '\0';
+		unsigned long inode;
+		if (sscanf(target, "socket:[%lu]", &inode) == 1) {
+			ok = *count < MAX_SOCKETS;
+			if (ok) {
+				inodes[(*count)++] = inode;
+			}
+		}
+	}
+	closedir(dir);
+	return ok;
+}
+
+/* Lists the helper's child processes: Xwayland. False if that cannot be read
+ * (the kernel may be built without the file). */
+static bool children_of(pid_t pid, pid_t *children, size_t *count) {
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/task", (int)pid);
+	DIR *dir = opendir(path);
+	if (dir == NULL) {
+		return false;
+	}
+	bool ok = true;
+	struct dirent *entry;
+	while (ok && (entry = readdir(dir)) != NULL) {
+		if (entry->d_name[0] == '.') {
+			continue;
+		}
+		/* A child is listed under the thread that started it. */
+		snprintf(path, sizeof(path), "/proc/%d/task/%.20s/children", (int)pid, entry->d_name);
+		FILE *file = fopen(path, "re");
+		if (file == NULL) {
+			ok = false;
+			continue;
+		}
+		int child;
+		while (ok && fscanf(file, "%d", &child) == 1) {
+			ok = *count < MAX_CHILDREN;
+			if (ok) {
+				children[(*count)++] = (pid_t)child;
+			}
+		}
+		fclose(file);
+	}
+	closedir(dir);
+	return ok;
+}
+
+/*
+ * Whether an X11 application is connected to our display, or about to be.
+ *
+ * tw speaks no X11, so it cannot ask the server. The kernel knows, though: a
+ * connection that came in through one of the display's sockets carries that
+ * socket's name, and /proc/net/unix lists every Unix socket with its name.
+ * So look at the sockets the helper and Xwayland have open. One that bears
+ * the display's name is an application. One the list does not show at all
+ * came from a sandbox with a network of its own, and is taken for one too.
+ * The rest are theirs: the sockets they listen on, and the pairs they talk
+ * to each other and to us through.
+ *
+ * Whenever something cannot be read the answer is yes, and the helper stays.
+ */
+static bool clients_connected(struct tw_x11 *x11) {
+	unsigned long inodes[MAX_SOCKETS];
+	bool ours[MAX_SOCKETS] = {false};
+	pid_t children[MAX_CHILDREN];
+	size_t count = 0, child_count = 0;
+	if (!sockets_of(x11->pid, inodes, &count) ||
+			!children_of(x11->pid, children, &child_count)) {
+		return true;
+	}
+	for (size_t i = 0; i < child_count; i++) {
+		if (!sockets_of(children[i], inodes, &count)) {
+			return true;
+		}
+	}
+
+	FILE *table = fopen("/proc/net/unix", "re");
+	if (table == NULL) {
+		return true;
+	}
+	char name[40];
+	snprintf(name, sizeof(name), SOCKET_DIR "/X%d", x11->display);
+	bool connected = false;
+	char *line = NULL;
+	size_t size = 0;
+	while (!connected && getline(&line, &size, table) > 0) {
+		/* "<address>: <references> <protocol> <flags> <type> <state> <inode>
+		 * <name>", the name being absent for most, and starting with @ for
+		 * an abstract socket. State 1 listens, 2 waits to be accepted, 3 is
+		 * connected. */
+		unsigned state;
+		unsigned long inode;
+		int offset = -1;
+		if (sscanf(line, "%*s %*x %*x %*x %*x %x %lu %n", &state, &inode, &offset) < 2 ||
+				offset < 0) {
+			continue; /* the heading */
+		}
+		char *path = line + offset;
+		path[strcspn(path, "\n")] = '\0';
+		bool display = strcmp(path[0] == '@' ? path + 1 : path, name) == 0;
+		if (display && state == 2) {
+			connected = true; /* in the queue; no process holds it yet */
+		}
+		for (size_t i = 0; i < count; i++) {
+			if (inodes[i] == inode) {
+				ours[i] = true;
+				connected = connected || (display && state != 1);
+			}
+		}
+	}
+	free(line);
+	fclose(table);
+	for (size_t i = 0; i < count; i++) {
+		connected = connected || !ours[i];
+	}
+	return connected;
+}
+
+static int handle_idle_check(void *data) {
+	struct tw_x11 *x11 = data;
+	if (x11->pid != 0 && !x11->stopping && !clients_connected(x11)) {
+		wlr_log(WLR_DEBUG, "no X11 application is connected, stopping %s", x11_helper);
+		/* Xwayland goes with it; handle_helper_exit() sees to the rest. */
+		x11->stopping = true;
+		kill(x11->pid, SIGTERM);
+	}
+	return 0;
+}
+
+/* Applications come and go without tw hearing of it, and looking now and then
+ * would be polling. So look once after the helper started, which catches a
+ * program that only asked a question, and once after any window closed,
+ * which is when an application tends to exit. One that leaves with no window
+ * to close is noticed the next time a window does. */
+static void check_later(struct tw_x11 *x11) {
+	if (x11->idle_timer != NULL) {
+		wl_event_source_timer_update(x11->idle_timer, x11->server->x11_idle_ms);
+	}
+}
+
+void x11_window_closed(struct tw_server *server) {
+	struct tw_x11 *x11 = server->x11;
+	if (x11 != NULL && x11->pid != 0) {
+		check_later(x11);
+	}
 }
 
 static bool helper_start(struct tw_x11 *x11) {
@@ -306,6 +493,7 @@ static bool helper_start(struct tw_x11 *x11) {
 	x11->pid = pid;
 	x11->pidfd = pidfd;
 	x11->exit_source = source;
+	check_later(x11);
 	wlr_log(WLR_DEBUG, "started %s for display %s", x11_helper, x11->display_name);
 	return true;
 }
@@ -314,7 +502,7 @@ static int handle_client(int fd, uint32_t mask, void *data) {
 	struct tw_x11 *x11 = data;
 	unwatch(x11);
 	if (!helper_start(x11)) {
-		watch(x11);
+		watch(x11, true);
 	}
 	return 0;
 }
@@ -344,7 +532,11 @@ void x11_init(struct tw_server *server) {
 		free(x11);
 		return;
 	}
-	watch(x11);
+	if (server->x11_idle_ms > 0) {
+		/* Without the timer the helper just stays, as it would with 0. */
+		x11->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_check, x11);
+	}
+	watch(x11, true);
 	setenv("DISPLAY", x11->display_name, true);
 	server->x11 = x11;
 	wlr_log(WLR_INFO, "X11 applications use DISPLAY=%s", x11->display_name);
@@ -356,6 +548,9 @@ void x11_finish(struct tw_server *server) {
 		return;
 	}
 	unwatch(x11);
+	if (x11->idle_timer != NULL) {
+		wl_event_source_remove(x11->idle_timer);
+	}
 	if (x11->pid != 0) {
 		wl_event_source_remove(x11->exit_source);
 		close(x11->pidfd);
