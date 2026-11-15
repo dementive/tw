@@ -474,6 +474,20 @@ the owner wants to keep), `cgroup_disable=memory` (5 to 10 MB estimated, and
 the per-service memory accounting goes). The rest of the kernel's share
 (slab, per-CPU data, modules in use, the drivers' own pages) has no setting.
 
+The owner tried the first two with `sysctl -w` (they last until a reboot).
+The part held back went from 285 to 140 MB, exactly as computed. The pages
+parked per CPU followed within a minute, from 65 to 97 MB down to 39 to
+54 MB: their lower limit is tied to the low watermark, and the limit in
+force drifts down to it while the machine is quiet. Together about 170 MB
+off the figure. `thp_fault_fallback` was still 0 just after; it only means
+something after days of use. To make any of it permanent: the two sysctls
+go in `/etc/sysctl.d/`, the swap size in a zram-generator drop-in; the NVMe
+queue depth and the `xe` blacklist have to reach the initramfs, either as
+files in `/etc/modprobe.d/` (the `modconf` hook copies them) followed by
+`mkinitcpio -P`, or on the kernel command line, which on this machine is
+`KERNEL_CMDLINE` in `/etc/default/limine` (Limine with CachyOS's entry
+tool). `/etc/sysctl.d` and `/etc/modprobe.d` were empty before.
+
 Userspace outside the one application was 122 MB of private memory at that
 reading (`RssAnon` of every process): tw 19; an Xwayland nobody was
 connected to 19, plus 6 MB of buffers (the Claude app asks X11 a question
