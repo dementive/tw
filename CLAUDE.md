@@ -332,8 +332,9 @@ did no harm. A real login followed: the first two tries were refused ("in
 use by kwin_wayland systemd systemd-logind", the login screen), the login
 screen stopped five seconds after tw started, and the GPU was off the bus
 three seconds later; `fastfetch` and `btop`, run by the owner in those same
-seconds, were refused and it stayed off. Still not seen: a login while the
-GPU is off, and suspend while it is off.
+seconds, were refused and it stayed off. A login while the GPU is off has
+been seen since (logging out and in again from a text console): it stayed
+off. Still not seen: suspend while it is off.
 
 A GPU appearing while tw runs with `WLR_DRM_DEVICES` unset (tw started
 without `tw-session`) makes wlroots open it (`backend/drm/monitor.c`); that
@@ -634,6 +635,22 @@ authenticates through the same file (`/etc/pam.d/swaylock` has
 the lock screen; `sudo` and plasmalogin use other files and stay as a way
 back. A console login made while a session is running leaves a second
 `ksecretd --pam-login` waiting for an environment nobody sends.
+
+The owner then went further than the test asked (2026-11-14, without a
+reboot): logged in on tty3, logged out of the session plasmalogin had
+started, logged in on tty2's text console and typed `tw-session`. Seen in
+the log and on the machine: the console login ran the wallet module
+("final socket path"), tw started as a child of the login shell, logind
+shows the session as type wayland and active, `ksecretd` owns
+`org.freedesktop.secrets` and the `kdewallet` collection is unlocked, the
+Claude app kept its login, and the NVIDIA GPU, off since boot, stayed off
+through the new login. So tw from a console login works, keyring
+included; KDE from a console has still not been tried. Two things to know
+about that state: plasmalogin puts its login screen back up on tty1 when
+its session ends, and that screen holds 221 MB for itself (kwin_wayland
+100, the greeter 61, its wallpaper 44, its own PipeWire) for as long as
+plasmalogin runs; and a console left logged in, as tty3 was, is a shell
+anyone at the keyboard reaches past the lock screen.
 
 fnott is no longer in `autostart[]`: its package ships a D-Bus service
 file, so the bus starts it when a program sends the first notification
