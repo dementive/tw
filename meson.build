@@ -389,6 +389,15 @@ test(
 	timeout: 60,
 )
 
+# tools/keyring.sh, which makes the login unlock oo7 in place of the KDE
+# wallet, against a made-up login file and session.
+test(
+	'keyring',
+	find_program('tests/keyring.sh'),
+	args: [meson.current_source_dir() / 'tools'],
+	timeout: 60,
+)
+
 # Budgets only mean something for an optimized build. Ratchet these down as
 # the numbers improve; raising one needs a reason in the commit message.
 #

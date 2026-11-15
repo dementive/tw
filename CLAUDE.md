@@ -75,12 +75,14 @@ which GPUs it would use and starts nothing.
 | `tests/bus_test.c` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
 | `tests/notify.sh` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
 | `tests/iwd.sh` | `tools/iwd.sh` against a made-up machine: which networks are copied and how, and that every failed or interrupted trial ends on NetworkManager |
+| `tests/keyring.sh` | `tools/keyring.sh` against a made-up login file and session: the file comes out and goes back exactly, and what `start` does when oo7 is open, locked or broken |
 | `tests/gpu.sh` | `tw-gpu`, its root helper, and `tw-session` (the GPU choice, what it passes on to services), against a made-up `/sys` and stand-ins for `systemctl` and `modprobe` |
 | `tests/budget.sh` | Idle-wakeup and memory budgets (release build only) |
 | `tests/lib.sh` | Shared by the shell tests: starts tw headless with a private runtime directory and PATH, and no power supplies |
 | `tools/power.sh` | Battery draw every two seconds next to frames shown and CPU in use. For telling what an animation or a refresh rate costs |
 | `tools/power-root.sh` | What only root can read about the draw at idle: watts by part (RAPL), how deep the package sleeps, the display's power saving, PCIe link states, what the kernel said. The owner runs it with sudo |
 | `tools/iwd.sh` | Moves Wi-Fi from NetworkManager to iwd for a trial, and back by itself if the internet is not reachable; `keep` and `back` make either permanent. The owner runs it with sudo |
+| `tools/keyring.sh` | Makes the login unlock oo7 in place of the KDE wallet (edits `/etc/pam.d/login`, keeps the old file), switches the running session over and checks it; `kwallet` goes back. The owner runs it |
 | `tools/mem.sh` | Splits the "used" figure of `btop` and `free` into parts that add up to it: held back by the kernel, kernel, shared buffers, each program. For when the owner asks where the memory goes |
 
 There are `TW_WORKSPACES` workspaces, each a strip: a list of columns, left to
@@ -952,13 +954,20 @@ systemd-resolved's stub, and is left as it is. Checked on the machine
 without root: both saved networks are in
 `/etc/NetworkManager/system-connections/*.nmconnection` with their
 password in the file (`psk-flags` 0), one `sae` and one `wpa-psk`, neither
-hidden, both on DHCP. Not run yet: the switch itself, so everything about
-iwd on this card (WPA3, how long it takes to connect, its memory, the
-interface coming back) is still to be seen. Breaking the script 16 ways,
-one at a time, each made `tests/iwd.sh` fail.
+hidden, both on DHCP. Breaking the script 16 ways, one at a time, each
+made `tests/iwd.sh` fail.
+
+The owner ran `try` and then `keep` the same day ("iwd worked"). Seen
+afterwards: iwd running and enabled, NetworkManager and `wpa_supplicant`
+gone, connected seven seconds after it started (the WPA3 network), an
+address, DNS set in systemd-resolved, power save on, and the wired chip
+still suspended with its port down. iwd is 14.8 MB resident and 0.4 MB its
+own, where the two before it were 41.6 and 5.7. Not seen: the way back
+(`back`, and with it the interface being given back to the card), a boot
+on iwd, and roaming to the second saved network.
 
 For the keyring they picked oo7 ("that sounds fun"). How it is packaged
-(Arch file list and upstream's sources, read 2026-11-15; none of it tried):
+(Arch file list and upstream's sources, read 2026-11-15):
 the daemon is `/usr/lib/oo7-daemon`, a user unit `oo7-daemon.service` of
 `Type=dbus` that nothing enables on install, with no D-Bus service file
 for `org.freedesktop.secrets`, so installing it changes nothing while
@@ -974,6 +983,46 @@ is not used under tw (`tw-portals.conf` names gtk). For Dolphin they want
 "some alternative like thunar": Thunar 4.20 needs exo, libxfce4util and
 libxfce4ui in addition; gvfs is not installed, so it would have no trash
 and mount no drives by itself.
+
+With oo7 0.7.1 installed, tried on a private bus with a made-up password
+and keyring directory (`XDG_DATA_HOME`, `OO7_PAM_SOCKET` pointed away from
+the real ones). Started with `--login` it makes a keyring called Login,
+open and the default, and `secret-tool` stores and reads through it, so
+libsecret programs work unprompted. It is 8.4 MB resident, 1.2 MB its own
+and 4.7 MB of its own binary's pages, in 22 threads that do not wake when
+idle. Started again with the right password the keyring is open; with a
+wrong one or none it is locked, and a lookup or a store fails at once (it
+looks for a prompter on the bus, `org.freedesktop.secrets.CliPrompter`, and
+finds none) and nothing hangs. The hand-over the login module uses works:
+`oo7-daemon-login`, given the password on stdin, waits on
+`/run/user/<uid>/oo7-daemon-login.sock` (mode 600), the daemon fetches it as
+it starts, the keyring is open, and helper and socket are gone. The helper
+waits for as long as nobody fetches (it sat for two minutes when started
+by mistake). The daemon's strings also speak of taking a KDE wallet over
+("KWallet migration requires a secret"); whether that brings the Claude
+app's entry across was not tried, since the real wallet opens only with the
+owner's password.
+
+`tools/keyring.sh` does the switch (README step 15). `oo7`, as root,
+rewrites `/etc/pam.d/login` (the wallet's two lines out, three for oo7 in:
+`-auth optional`, `-session optional ... auto_start`, `-password optional`),
+keeps the old file as `login.before-oo7`, checks that nothing else changed
+before moving the new file into place, and enables the unit for every user
+(`systemctl --global`). The file is also what swaylock authenticates
+through, and a login module that crashed would shut the owner out of
+console and lock screen alike, with no login manager left as a way round.
+So the script tells them to log in on a second console at once, with the
+session open, and `kwallet` restores the file. That login also leaves the
+helper waiting with the password, which `start` (no root) then uses: it
+keeps a copy of `~/.local/share/kwalletd`, stops `ksecretd`, starts the
+unit, and reports whether the keyring is open and whether a secret can be
+stored and read back. `tw-session` needs no change: its wallet step runs
+only when the wallet's login module has set `PAM_KWALLET5_LOGIN`. Applied
+to a copy of the real login file the change is exactly those lines, and
+going back gives the file byte for byte. Not seen: `pam_oo7.so` inside a
+real login or inside swaylock, the unit under systemd with its sandboxing,
+a boot with oo7, and the Claude app against it. Breaking the script 16
+ways, one at a time, each made `tests/keyring.sh` fail.
 
 KDE. Nothing of it runs in a tw session but `ksecretd`, so removing it
 frees disk and no memory. A dry run of removing the `plasma` group with

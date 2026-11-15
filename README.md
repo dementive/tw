@@ -29,7 +29,7 @@ feature does nothing without its program:
 ```sh
 sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber power-profiles-daemon \
-    libnotify iwd iw \
+    libnotify iwd iw oo7 libsecret \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr socat
 ```
 
@@ -45,6 +45,7 @@ sudo pacman -S foot fuzzel swaylock wl-clip-persist xwayland-satellite \
 | power-profiles-daemon | the power-saver CPU profile while on battery |
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | iwd, iw | Wi-Fi without NetworkManager, see step 14 |
+| oo7, libsecret | the keyring without KDE's wallet, see step 15 |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 | socat | hands the session to the KDE wallet, see step 4 |
 
@@ -85,6 +86,8 @@ KDE's.
 
 To check: `busctl --user list | grep secrets` should show a line for
 `org.freedesktop.secrets`.
+
+Step 15 replaces the KDE wallet with oo7, which is a sixth of its size.
 
 ### 5. Keep the shell from starting Xwayland
 
@@ -393,6 +396,39 @@ handled with `iwctl` where it was `nmcli`:
 iwd does nothing for the wired port, VPNs or mobile broadband. A cable
 plugged in is ignored until something is set up for it (systemd-networkd
 with one small file does it).
+
+### 15. The keyring: oo7 in place of the KDE wallet
+
+The KDE wallet (`ksecretd`) is the largest helper in a tw session: 53 MB in
+`btop`, 8 MB of its own, and it keeps 25 MB of Qt and KDE libraries in
+memory that nothing else uses. oo7 does the same job in 8 MB, 1.2 MB of it
+its own. It is unlocked by your login password, like the wallet.
+
+```sh
+sudo sh tools/keyring.sh oo7
+```
+
+That changes `/etc/pam.d/login`: the two lines for the KDE wallet (step 10)
+go out and three for oo7 come in. The old file is kept as
+`/etc/pam.d/login.before-oo7`. The lock screen checks your password through
+this same file, so test it at once, with your session still open:
+
+1. Press Ctrl+Alt+F3, log in, type `exit`, and come back with Ctrl+Alt+F1.
+   If the login is refused, `sudo sh tools/keyring.sh kwallet` puts the file
+   back. Do not log out or reboot before this login has worked.
+2. Switch the running session over, which also checks that oo7 got your
+   password from that login and can store a secret:
+
+   ```sh
+   sh tools/keyring.sh start
+   ```
+
+3. Lock the screen (Mod+Alt+L) and unlock it.
+4. Quit the Claude app and open it again. It may ask you to sign in once
+   more: its sign-in was kept in the wallet.
+
+`sh tools/keyring.sh` says which keyring is running and whether it is open.
+To go back: `sudo sh tools/keyring.sh kwallet`, then log out and in.
 
 ## Good to know
 
