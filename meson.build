@@ -26,43 +26,39 @@ add_project_arguments(
 	language: 'c',
 )
 
-# wlroots breaks its API on every 0.x release, so tw targets exactly one.
-# The default build compiles the pinned source in subprojects/wlroots and
-# links it statically: with -Db_lto=true everything tw does not use (unused
-# backends, renderers and protocols) is dropped from the binary, and no
-# system update can change wlroots under an installed tw.
-wlroots_version = ['>=0.20.0', '<0.21.0']
-if get_option('vendored_wlroots')
-	# libdisplay-info, with which wlroots reads what a monitor says about
-	# itself, is the one library under tw whose file name changes with its
-	# releases (libdisplay-info.so.3). A system update that brings the next
-	# one would leave an installed tw unable to start until it is built
-	# again. So it is built in as well, from a source pinned like wlroots'.
-	# Set up first, it is the one wlroots finds.
-	subproject(
-		'libdisplay-info',
-		default_options: ['default_library=static', 'werror=false'],
-	)
-	wlroots = subproject(
-		'wlroots',
-		version: wlroots_version,
-		default_options: [
-			'default_library=static',
-			'werror=false',
-			'examples=false',
-			'xwayland=disabled',
-			'xcb-errors=disabled',
-			'backends=drm,libinput',
-			'renderers=gles2',
-			'allocators=gbm',
-			'session=enabled',
-			'color-management=disabled',
-			'libliftoff=disabled',
-		],
-	).get_variable('wlroots')
-else
-	wlroots = dependency('wlroots-0.20', version: wlroots_version)
-endif
+# wlroots breaks its API on every 0.x release, so tw targets exactly one:
+# the pinned source in subprojects/wlroots, linked statically. With
+# -Db_lto=true everything tw does not use (unused backends, renderers and
+# protocols) is dropped from the binary, and no system update can change
+# wlroots under an installed tw.
+#
+# libdisplay-info, with which wlroots reads what a monitor says about itself,
+# is the one library under tw whose file name changes with its releases
+# (libdisplay-info.so.3). A system update that brings the next one would
+# leave an installed tw unable to start until it is built again. So it is
+# built in as well, from a source pinned like wlroots'. Set up first, it is
+# the one wlroots finds.
+subproject(
+	'libdisplay-info',
+	default_options: ['default_library=static', 'werror=false'],
+)
+wlroots = subproject(
+	'wlroots',
+	version: ['>=0.20.0', '<0.21.0'],
+	default_options: [
+		'default_library=static',
+		'werror=false',
+		'examples=false',
+		'xwayland=disabled',
+		'xcb-errors=disabled',
+		'backends=drm,libinput',
+		'renderers=gles2',
+		'allocators=gbm',
+		'session=enabled',
+		'color-management=disabled',
+		'libliftoff=disabled',
+	],
+).get_variable('wlroots')
 
 wayland_server = dependency('wayland-server')
 wayland_client = dependency('wayland-client')
@@ -158,14 +154,14 @@ tw = executable(
 	'tw',
 	'src/main.c',
 	'src/output.c',
-	'src/input.c',
-	'src/window.c',
 	'src/layer.c',
+	'src/window.c',
+	'src/input.c',
 	'src/clipboard.c',
 	'src/idle.c',
 	'src/lock.c',
-	'src/x11.c',
 	'src/power.c',
+	'src/x11.c',
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
@@ -262,8 +258,6 @@ foreach name, file : udev_rules
 	install_data(file, rename: '72-tw-' + name + '.rules', install_dir: udev_rules_dir)
 endforeach
 
-# After the files are in place, has systemd, udev and polkit read them.
-meson.add_install_script('data/post-install.sh')
 
 # --- The notification service ------------------------------------------------
 
@@ -297,11 +291,42 @@ if fontconfig.found() and freetype.found()
 	configure_file(
 		input: 'data/org.freedesktop.Notifications.service.in',
 		output: 'org.freedesktop.Notifications.service',
-		configuration: {'bindir': get_option('prefix') / get_option('bindir')},
+		configuration: paths,
 		install: true,
-		install_dir: get_option('datadir') / 'dbus-1/services',
+		install_dir: datadir / 'dbus-1/services',
 	)
 endif
+
+# --- After the install ---------------------------------------------------------
+
+# meson install never removes a file, so one an earlier install put there
+# for an option that is now off would stay and keep working: Bluetooth
+# kept off, another notification service shadowed. These are removed, and
+# then systemd, udev and polkit read what is there.
+prefix = get_option('prefix')
+left_over = []
+if not get_option('bluetooth')
+	left_over += [
+		prefix / bindir / 'tw-bluetooth',
+		prefix / libexecdir / 'tw-bluetooth-root',
+		systemd_system_dir / 'tw-bluetooth@.service',
+		systemd_system_dir / 'tw-bluetooth-idle.timer',
+		systemd_system_dir / 'bluetooth.service.d/tw-bluetooth.conf',
+		prefix / datadir / 'polkit-1/rules.d/50-tw-bluetooth.rules',
+		modprobe_dir / 'tw-bluetooth.conf',
+		udev_rules_dir / '72-tw-bluetooth.rules',
+	]
+endif
+if not get_option('thunderbolt')
+	left_over += udev_rules_dir / '72-tw-thunderbolt.rules'
+endif
+if not (fontconfig.found() and freetype.found())
+	left_over += [
+		prefix / bindir / 'tw-notify',
+		prefix / datadir / 'dbus-1/services/org.freedesktop.Notifications.service',
+	]
+endif
+meson.add_install_script('data/post-install.sh', left_over)
 
 # --- Tests -------------------------------------------------------------------
 
@@ -415,15 +440,12 @@ endforeach
 
 # Budgets only mean something for an optimized build. Ratchet these down as
 # the numbers improve; raising one needs a reason in the commit message.
-#
-# The PSS figure divides each library page among the processes that map it,
-# so it moves with what else runs on the machine: one and the same commit
-# read 2320 to 2484 kB with a login manager's compositor running and 2451 to
-# 2536 kB without one. What tw allocated does not move, so that is the
-# figure that catches a regression.
+# The PSS figure moves by 100 to 200 kB with what else runs on the machine;
+# what tw allocated does not, so that is the figure that catches a
+# regression. docs/testing.md has the measured ranges.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
-budget_own_kb = 2800      # PSS minus pixel buffers, 3 clients mapped (measured: 2445 to 2713)
-budget_alloc_kb = 850     # of which allocated by tw itself (measured: 800 to 812)
+budget_own_kb = 2800      # PSS minus pixel buffers, 3 clients mapped
+budget_alloc_kb = 850     # of which allocated by tw itself
 if get_option('buildtype') == 'release'
 	test(
 		'budget',

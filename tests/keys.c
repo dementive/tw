@@ -13,6 +13,9 @@
  *   move:X,Y:W,H   put the cursor at X,Y on a screen area W wide and H high
  *   rel:DX,DY      move the mouse by DX,DY
  *   click          press and release the left button
+ *   down, up       press the left button, let it go: a drag in between
+ *   pause:MS       wait, holding what is held, as a hand does; the button
+ *                  is let go when this program exits
  */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -33,6 +36,7 @@
 static struct wl_seat *seat;
 static struct zwp_virtual_keyboard_manager_v1 *manager;
 static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
+static struct zwlr_virtual_pointer_v1 *pointer; /* made with the first mouse action */
 
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version) {
@@ -49,11 +53,12 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 
 /* Carries out a mouse action; false if `action` is not one. */
 static bool mouse_action(struct wl_display *display, const char *action, uint32_t *time) {
-	static struct zwlr_virtual_pointer_v1 *pointer;
 	int x, y, width, height;
 	bool move = sscanf(action, "move:%d,%d:%d,%d", &x, &y, &width, &height) == 4;
 	bool rel = !move && sscanf(action, "rel:%d,%d", &x, &y) == 2;
-	if (!move && !rel && strcmp(action, "click") != 0) {
+	bool click = strcmp(action, "click") == 0;
+	bool down = strcmp(action, "down") == 0, up = strcmp(action, "up") == 0;
+	if (!move && !rel && !click && !down && !up) {
 		return false;
 	}
 	if (pointer_manager == NULL) {
@@ -70,11 +75,17 @@ static bool mouse_action(struct wl_display *display, const char *action, uint32_
 		zwlr_virtual_pointer_v1_motion(pointer, (*time)++,
 			wl_fixed_from_int(x), wl_fixed_from_int(y));
 	} else {
-		zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
-			WL_POINTER_BUTTON_STATE_PRESSED);
-		zwlr_virtual_pointer_v1_frame(pointer);
-		zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
-			WL_POINTER_BUTTON_STATE_RELEASED);
+		if (click || down) {
+			zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+				WL_POINTER_BUTTON_STATE_PRESSED);
+		}
+		if (click) {
+			zwlr_virtual_pointer_v1_frame(pointer);
+		}
+		if (click || up) {
+			zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+				WL_POINTER_BUTTON_STATE_RELEASED);
+		}
 	}
 	zwlr_virtual_pointer_v1_frame(pointer);
 	wl_display_roundtrip(display);
@@ -144,6 +155,12 @@ int main(int argc, char *argv[]) {
 		if (mouse_action(display, argv[i], &time)) {
 			continue;
 		}
+		int ms;
+		if (sscanf(argv[i], "pause:%d", &ms) == 1) {
+			usleep((useconds_t)ms * 1000);
+			wl_display_roundtrip(display);
+			continue;
+		}
 		uint32_t mods = 0;
 		char *combo = strdup(argv[i]);
 		char *key = combo;
@@ -184,6 +201,10 @@ int main(int argc, char *argv[]) {
 	wl_display_roundtrip(display);
 	xkb_keymap_unref(keymap);
 	xkb_context_unref(context);
+	if (pointer != NULL) {
+		zwlr_virtual_pointer_v1_destroy(pointer);
+	}
+	wl_registry_destroy(registry);
 	wl_display_disconnect(display);
 	return 0;
 }

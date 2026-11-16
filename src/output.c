@@ -2,6 +2,9 @@
 #include <string.h>
 #include <time.h>
 #include <wlr/backend.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -244,8 +247,10 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		}
 	}
 
-	if (!output_commit(output, true, rule->scale)) {
-		wlr_log(WLR_ERROR, "output %s: could not be turned on", wlr_output->name);
+	/* While the screens are off a new one stays off with them, until the
+	 * next input turns them all on (idle.c). */
+	if (!output_commit(output, !server->blanked, rule->scale)) {
+		wlr_log(WLR_ERROR, "output %s: could not be set up", wlr_output->name);
 	}
 
 	output->frame.notify = handle_frame;
@@ -270,6 +275,40 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		return;
 	}
 	wlr_scene_output_layout_add_output(server->scene_layout, layout_output, scene_output);
+}
+
+/*
+ * The GPU was reset (a driver hang, a bad wake-up), and the renderer and all
+ * it made are gone. A new renderer takes over, or every screen would stay
+ * black until tw was started again. The scene drops the textures of the old
+ * one by itself and clients' buffers are imported again as they are drawn.
+ */
+static void handle_renderer_lost(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, renderer_lost);
+	wlr_log(WLR_INFO, "the GPU was reset; starting the renderer again");
+	struct wlr_renderer *renderer = wlr_renderer_autocreate(server->backend);
+	struct wlr_allocator *allocator = renderer != NULL ?
+		wlr_allocator_autocreate(server->backend, renderer) : NULL;
+	if (allocator == NULL) {
+		wlr_log(WLR_ERROR, "could not start the renderer again; restart tw");
+		wlr_renderer_destroy(renderer);
+		return;
+	}
+	struct wlr_renderer *old_renderer = server->renderer;
+	struct wlr_allocator *old_allocator = server->allocator;
+	server->renderer = renderer;
+	server->allocator = allocator;
+	wl_list_remove(&server->renderer_lost.link);
+	wl_signal_add(&renderer->events.lost, &server->renderer_lost);
+	wlr_compositor_set_renderer(server->compositor, renderer);
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (!wlr_output_init_render(output->wlr_output, allocator, renderer)) {
+			wlr_log(WLR_ERROR, "output %s: cannot draw on it again", output->wlr_output->name);
+		}
+	}
+	wlr_allocator_destroy(old_allocator);
+	wlr_renderer_destroy(old_renderer);
 }
 
 static void handle_layout_change(struct wl_listener *listener, void *data) {
@@ -302,14 +341,18 @@ void output_init(struct tw_server *server) {
 	server->float_tree = wlr_scene_tree_create(root);
 	server->layer_trees[3] = wlr_scene_tree_create(root);
 	server->lock_tree = wlr_scene_tree_create(root);
+	server->drag_icon_tree = wlr_scene_tree_create(root);
 
 	server->new_output.notify = handle_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);
 	server->layout_change.notify = handle_layout_change;
 	wl_signal_add(&server->output_layout->events.change, &server->layout_change);
+	server->renderer_lost.notify = handle_renderer_lost;
+	wl_signal_add(&server->renderer->events.lost, &server->renderer_lost);
 }
 
 void output_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_output.link);
 	wl_list_remove(&server->layout_change.link);
+	wl_list_remove(&server->renderer_lost.link);
 }

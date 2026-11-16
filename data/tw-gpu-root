@@ -61,17 +61,16 @@ on)
 		echo "tw-gpu: the driver is not on the disk for the running kernel; reboot after a kernel update" >&2
 		exit 1
 	fi
-	if [ -e "$flag" ]; then
+	if [ -e "$flag" ] && ! gpu_device >/dev/null; then
 		port=$(cat "$flag")
-		rm -f "$flag"
-		if ! gpu_device >/dev/null; then
-			case $port in
-			"$sys"/devices/*) [ -e "$port/rescan" ] && echo 1 >"$port/rescan" ;;
-			esac
-		fi
+		case $port in
+		"$sys"/devices/*) [ -e "$port/rescan" ] && echo 1 >"$port/rescan" ;;
+		esac
 	fi
 	# The port puts the GPU back at once; allow a slow one two seconds, and
-	# then look everywhere.
+	# then look everywhere. The note stays until the GPU is back: without
+	# it, tw-gpu and tw-session would take the machine for one without an
+	# NVIDIA GPU.
 	tries=0
 	until gpu_device >/dev/null; do
 		tries=$((tries + 1))
@@ -82,6 +81,7 @@ on)
 		fi
 		sleep 0.2
 	done
+	rm -f "$flag"
 	# The kernel announces the GPU before a driver can be bound to it, and
 	# udev answers the announcement by loading the driver at once. That
 	# load fails ("probe routine was not called"), and one made here can

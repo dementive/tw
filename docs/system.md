@@ -68,6 +68,12 @@ close every terminal that was already open.
 
 To find some other program doing this, look for X11 tools in your shell's
 startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
+Failing that, run a second tw headless with `-d`, start a terminal in it
+with the environment of one from the real session, and watch its log for
+"started xwayland-satellite". Another known one is the Claude desktop
+app, which connects to X11 for a moment as it starts. Xwayland still running
+with no X11 window open means a program without a window is connected, or
+one left and no X11 window has closed since.
 
 ### The kernel's memory reserves
 
@@ -89,7 +95,8 @@ sudo sysctl --system
 | `vm.lowmem_reserve_ratio` | how much of the first 4 GB is kept for devices that can only use that part: 58 MB by default, 14 MB with this | nothing found |
 
 On a machine with a different amount of RAM, take the square root of 16
-times the RAM in kB for the first value (22600 for 32 GB).
+times `MemTotal` from `/proc/meminfo` (in kB) for the first value: about
+23000 for 32 GB.
 
 To see whether huge pages suffer, look at
 `grep thp_fault_fallback /proc/vmstat` after a few days of use: it counts
@@ -164,7 +171,7 @@ next one takes away the way back.
 ### The keyring: oo7
 
 Programs such as the Claude app and VS Code need a keyring to stay signed
-in. oo7 is a small one (8 MB in `btop`, 1.2 MB of its own) that your login
+in. oo7 is a small one (8 MB in `btop`, 1.3 MB of its own) that your login
 password unlocks as you log in. On a machine that came with KDE it takes
 the place of the KDE wallet (`ksecretd`, 53 MB in `btop`), and takes the
 wallet's entries over by itself.
@@ -237,8 +244,7 @@ Typed as `exec tw-session`, tw takes the login shell's place instead of
 running under it. The shell then is not left waiting for the whole session
 (fish: 13 MB in `btop`), and when tw exits, or crashes behind the lock
 screen, the console is back at the login prompt and not at a shell. The
-price: quitting tw logs you out. Not tried yet; plain `tw-session` is
-always there.
+price: quitting tw logs you out. Plain `tw-session` is always there.
 
 ### Wi-Fi through iwd instead of NetworkManager
 

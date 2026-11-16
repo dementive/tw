@@ -10,6 +10,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <wlr/backend.h>
+#include <wlr/backend/multi.h>
+#include <wlr/backend/wayland.h>
+#include <wlr/config.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_buffer.h>
@@ -40,6 +43,16 @@ int64_t now_ms(void) {
 	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
+void child_reset_signals(void) {
+	/* The event loop blocks SIGINT/SIGTERM for its signalfd, and a blocked
+	 * signal mask survives exec. */
+	sigset_t set;
+	sigemptyset(&set);
+	sigprocmask(SIG_SETMASK, &set, NULL);
+	/* So does a signal that is ignored, see main(). */
+	signal(SIGPIPE, SIG_DFL);
+}
+
 void spawn(const char *cmd) {
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -47,13 +60,7 @@ void spawn(const char *cmd) {
 		return;
 	}
 	if (pid == 0) {
-		/* The event loop blocks SIGINT/SIGTERM for its signalfd, and a
-		 * blocked signal mask survives exec. Children must start clean. */
-		sigset_t set;
-		sigemptyset(&set);
-		sigprocmask(SIG_SETMASK, &set, NULL);
-		/* So does a signal that is ignored, see main(). */
-		signal(SIGPIPE, SIG_DFL);
+		child_reset_signals();
 		setsid();
 		/* Fork twice so the command is reparented to init: no zombies to
 		 * reap, so no SIGCHLD handler and no wakeups when children exit. */
@@ -157,6 +164,12 @@ static int seconds_to_ms(int seconds) {
 	return seconds <= 0 ? 0 : (seconds > 86400 ? 86400 : seconds) * 1000;
 }
 
+static void backend_nested(struct wlr_backend *backend, void *data) {
+	if (wlr_backend_is_wl(backend)) {
+		*(bool *)data = true;
+	}
+}
+
 int main(int argc, char *argv[]) {
 	const char *startup_cmd = NULL;
 	enum wlr_log_importance verbosity = WLR_ERROR;
@@ -203,11 +216,6 @@ int main(int argc, char *argv[]) {
 	server.suspend_after_ms = seconds_to_ms(suspend_after);
 	server.x11_idle_ms = seconds_to_ms(x11_idle);
 
-	/* Inside another session the host compositor owns Super, so use Alt.
-	 * Checked before we overwrite WAYLAND_DISPLAY with our own socket. */
-	bool nested = getenv("WAYLAND_DISPLAY") != NULL || getenv("DISPLAY") != NULL;
-	server.mod = nested ? WLR_MODIFIER_ALT : WLR_MODIFIER_LOGO;
-
 	/* A program that pastes may close its end before tw has written all
 	 * of a copy it keeps (clipboard.c), and writing to a closed pipe kills
 	 * the writer unless this signal is ignored. */
@@ -226,6 +234,12 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create the backend");
 		goto teardown_base;
 	}
+	/* In a window inside another session the host compositor owns Super,
+	 * so Mod is Alt there. Told from the backend, not from the environment,
+	 * which a console login may have inherited a DISPLAY into. */
+	bool nested = false;
+	wlr_multi_for_each_backend(server.backend, backend_nested, &nested);
+	server.mod = nested ? WLR_MODIFIER_ALT : WLR_MODIFIER_LOGO;
 	server.renderer = wlr_renderer_autocreate(server.backend);
 	if (server.renderer == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the renderer");
@@ -253,7 +267,7 @@ int main(int argc, char *argv[]) {
 	 * Globals wlroots implements entirely on its own. Each one is a few
 	 * hundred bytes and does nothing until a client uses it.
 	 */
-	wlr_compositor_create(server.display, 6, server.renderer);
+	server.compositor = wlr_compositor_create(server.display, 6, server.renderer);
 	wlr_subcompositor_create(server.display);
 	wlr_data_device_manager_create(server.display);
 	wlr_viewporter_create(server.display);
@@ -321,9 +335,13 @@ teardown:
 
 teardown_base:
 	/* What exists before any listener does. A start that failed early has
-	 * only some of it; wlroots takes NULL for the rest. */
-	wl_event_source_remove(server.sigint);
-	wl_event_source_remove(server.sigterm);
+	 * only some of it; wlroots takes NULL for all but the event sources. */
+	if (server.sigint != NULL) {
+		wl_event_source_remove(server.sigint);
+	}
+	if (server.sigterm != NULL) {
+		wl_event_source_remove(server.sigterm);
+	}
 	wlr_allocator_destroy(server.allocator);
 	wlr_renderer_destroy(server.renderer);
 	wlr_backend_destroy(server.backend);

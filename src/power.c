@@ -185,7 +185,9 @@ void power_init(struct tw_server *server) {
 	strcpy(power->dir, dir);
 	server->power = power;
 
-	power->udev = udev_new();
+	/* What the kernel announces is about the real machine, not a made-up
+	 * one: a test that heard the real battery would act on its own. */
+	power->udev = sys == NULL ? udev_new() : NULL;
 	if (power->udev != NULL) {
 		power->monitor = udev_monitor_new_from_netlink(power->udev, "udev");
 	}
@@ -196,7 +198,7 @@ void power_init(struct tw_server *server) {
 		power->source = wl_event_loop_add_fd(server->loop,
 			udev_monitor_get_fd(power->monitor), WL_EVENT_READABLE, handle_change, server);
 	}
-	if (power->source == NULL) {
+	if (power->source == NULL && sys == NULL) {
 		/* What holds now is still acted on below. */
 		wlr_log(WLR_ERROR, "cannot watch the power supplies: "
 			"plugging the power cable in or out will go unnoticed");

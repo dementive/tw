@@ -37,6 +37,12 @@ performance)
 	;;
 esac
 
+# The power cable pulled and put back at once starts two of these units,
+# which systemd runs side by side; one at a time, the last one's profile is
+# the one that holds, whole.
+exec 9>"${TW_RUN:-/run}/tw-power.lock"
+flock 9
+
 failed=0
 # put <file> <value>: writes the value, unless the file is not there or says
 # so already.

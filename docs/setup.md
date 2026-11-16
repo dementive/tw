@@ -22,7 +22,7 @@ To build:
 
 ```sh
 sudo pacman -S meson ninja gcc git pkgconf wayland wayland-protocols libxkbcommon \
-    libinput pixman libdrm mesa libglvnd systemd-libs hwdata \
+    libinput pixman libdrm mesa libglvnd systemd-libs seatd hwdata \
     freetype2 fontconfig noto-fonts
 ```
 
@@ -50,7 +50,7 @@ sudo pacman -S foot fuzzel swaylock xwayland-satellite \
 | libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 
-Two more are named where a check below needs them: `bluez` and
+A few more are named where a check below needs them: `bluez` and
 `bluez-utils` (Bluetooth), `vulkan-tools` (the NVIDIA GPU).
 
 ### This machine's settings
@@ -80,6 +80,9 @@ laptop; look at Bluetooth before installing on a desktop.
 | `-Dbluetooth=false` | on | the machine needs Bluetooth from boot: a Bluetooth keyboard or mouse. Left on, Bluetooth is off until `tw-bluetooth on` |
 | `-Dthunderbolt=false` | on | you want to be asked before a Thunderbolt device is let in |
 | `-Dnotify=disabled` | on where FreeType and fontconfig are installed | you use another notification service |
+
+Turning one off after an install is safe: the next install removes the
+files the earlier one put there for it, and says which.
 
 ### Build and install
 
@@ -278,12 +281,13 @@ stay for the session. With tw installed those can go:
 
 ```sh
 sudo pacman -Rns power-profiles-daemon
-sudo pacman -Rns fnott          # or whichever notification service is installed
+sudo pacman -Rns <notification service>   # mako, dunst, fnott: whichever is installed
 ```
 
-tw sets a profile only on a machine with a battery, as the power cable
-goes in or out. `tw-power performance` (or `balanced`, `saver`) sets one by
-hand, on any machine, until the cable next moves.
+tw sets a profile only on a machine with a battery: as it starts, and as
+the power cable goes in or out. `tw-power performance` (or `balanced`,
+`saver`) sets one by hand, on any machine, until the cable next moves or
+tw next starts.
 
 `tw-notify`'s entry is in `/usr/local`, which D-Bus reads before `/usr`, so
 it is the one used from the next login even while another service is still
@@ -329,7 +333,9 @@ back.
 system's libraries, and an update can replace one with a version of another
 name. The two that change with every release, wlroots and libdisplay-info,
 are built into tw for that reason; the rest (Wayland, libinput, xkbcommon,
-Mesa, libdrm, pixman, udev, libseat) have kept their names for years. If
+Mesa, libdrm, pixman, udev, libseat) have kept their names for years. A
+CachyOS that moves to a new wlroots changes nothing for tw: it never uses
+the system's. If
 one ever does change, `tw-session` says so and the loader names the
 library. Log in on a text console and build tw again from clean, in its
 source directory:

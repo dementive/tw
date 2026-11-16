@@ -7,7 +7,7 @@
 # Off: the Bluetooth service is stopped and every Bluetooth module is
 # unloaded, the adapter's driver among them. With no driver there is no
 # adapter, so nothing starts the service again, and the radio has no power.
-# On: the adapter's driver is loaded. systemd starts the service by itself
+# On: the adapter's driver is loaded, and any other this helper unloaded. systemd starts the service by itself
 # when the adapter appears, as it does on any machine that boots with one.
 # Idle: off, if it was this helper that switched Bluetooth on and nothing
 # is connected.
@@ -23,8 +23,19 @@ conf=${TW_BLUETOOTH_CONF:-/usr/local/lib/modprobe.d/tw-bluetooth.conf}
 # not in $conf is there from boot, but its service waits for `on` all the
 # same.
 flag=${TW_RUN:-/run}/tw-bluetooth
+# The modules this helper has unloaded since the machine started, one name
+# a line. An adapter on another bus than USB may have a driver $conf does
+# not name, which is there from boot; once unloaded, it has to be loaded
+# again by name.
+unloaded=${TW_RUN:-/run}/tw-bluetooth-unloaded
 service=bluetooth.service
 timer=tw-bluetooth-idle.timer
+
+# on, off and idle are three units, which systemd would run side by side:
+# the timer running out during an `on` would switch Bluetooth off again
+# halfway. One at a time.
+exec 9>"${TW_RUN:-/run}/tw-bluetooth.lock"
+flock 9
 
 # True if there is an adapter: hci0 and so on.
 adapter() {
@@ -52,9 +63,13 @@ unblock() {
 	done
 }
 
-# The drivers to load: every "blacklist" line of $conf names one.
+# The drivers to load: every "blacklist" line of $conf names one, and so
+# does every line of $unloaded.
 drivers() {
-	sed -n 's/^[[:space:]]*blacklist[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$conf" 2>/dev/null | tr '\n' ' '
+	{
+		sed -n 's/^[[:space:]]*blacklist[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$conf"
+		cat "$unloaded"
+	} 2>/dev/null | awk '!seen[$0]++' | tr '\n' ' '
 }
 
 switch_off() {
@@ -74,7 +89,10 @@ switch_off() {
 	passes=0
 	while :; do
 		for holder in "$sys"/module/bluetooth/holders/*; do
-			[ -e "$holder" ] && modprobe -r "${holder##*/}" 2>/dev/null
+			[ -e "$holder" ] || continue
+			module=${holder##*/}
+			modprobe -r "$module" 2>/dev/null || continue
+			grep -qx "$module" "$unloaded" 2>/dev/null || echo "$module" >>"$unloaded"
 		done
 		modprobe -r bluetooth 2>/dev/null
 		[ -d "$sys/module/bluetooth" ] || return 0
@@ -107,10 +125,10 @@ on)
 		tries=$((tries + 1))
 		if [ "$tries" -ge 25 ]; then
 			echo "tw-bluetooth: no Bluetooth adapter appeared after loading: $drivers" >&2
-		for driver in $drivers; do
-			modinfo "$driver" >/dev/null 2>&1 ||
-				echo "tw-bluetooth: $driver is not on the disk for the running kernel; reboot after a kernel update" >&2
-		done
+			for driver in $drivers; do
+				modinfo "$driver" >/dev/null 2>&1 ||
+					echo "tw-bluetooth: $driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+			done
 			switch_off
 			exit 1
 		fi

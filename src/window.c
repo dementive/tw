@@ -83,6 +83,7 @@ struct tw_popup {
 	struct tw_server *server;
 	struct wlr_xdg_popup *xdg_popup;
 	struct wl_listener commit;
+	struct wl_listener reposition;
 	struct wl_listener destroy;
 };
 
@@ -546,6 +547,8 @@ bool strip_animate(struct tw_output *output) {
 	}
 	workspace_place(server, workspace, &area, &full, true);
 	idle_update_inhibited(server);
+	/* The windows moved under the pointer. */
+	pointer_refocus(server);
 	return output->animating;
 }
 
@@ -592,6 +595,7 @@ void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec)
 
 	workspace_place(server, workspace, &area, &full, screen_on(server));
 	idle_update_inhibited(server);
+	pointer_refocus(server);
 }
 
 /*
@@ -692,9 +696,13 @@ void focus_update(struct tw_server *server) {
 		return;
 	}
 	/* An open menu holds the keyboard and the pointer (a grab), and would
-	 * keep them through the change, through a lock too. It closes. */
-	wlr_seat_keyboard_end_grab(server->seat);
-	wlr_seat_pointer_end_grab(server->seat);
+	 * keep them through the change, through a lock too. It closes. So does
+	 * a drag, but only for a lock: a window opening during one (a download
+	 * finishing) should not make the user drop what they carry. */
+	if (server->seat->drag == NULL || server->locked) {
+		wlr_seat_keyboard_end_grab(server->seat);
+		wlr_seat_pointer_end_grab(server->seat);
+	}
 	if (surface == NULL) {
 		wlr_seat_keyboard_notify_clear_focus(server->seat);
 	} else {
@@ -1080,33 +1088,50 @@ static struct tw_window *popup_window(struct wlr_xdg_popup *popup) {
 	return NULL;
 }
 
-static void handle_popup_commit(struct wl_listener *listener, void *data) {
-	struct tw_popup *popup = wl_container_of(listener, popup, commit);
+/*
+ * Keeps the popup on its output: hands wlroots the output's box, in the
+ * coordinates of the surface the popup chain hangs from. For a window,
+ * popup_tree is at the window's geometry, which a client with a shadow drawn
+ * around its window puts away from the surface's corner.
+ */
+static void popup_unconstrain(struct tw_popup *popup) {
 	struct wlr_xdg_popup *xdg_popup = popup->xdg_popup;
-	if (!xdg_popup->base->initial_commit) {
-		return;
-	}
-
-	/* Keep the popup on the output: hand wlroots the output box, expressed
-	 * in the coordinates of the window's surface. popup_tree is at the
-	 * window's geometry, which a client with a shadow drawn around its
-	 * window puts away from the surface's corner. */
 	struct tw_window *window = popup_window(xdg_popup);
 	struct wlr_box area, full;
 	int lx, ly;
-	if (window != NULL && window->workspace != NULL &&
-			workspace_boxes(popup->server, window->workspace, &area, &full) &&
-			wlr_scene_node_coords(&window->popup_tree->node, &lx, &ly)) {
-		area.x -= lx - window->xdg_toplevel->base->geometry.x;
-		area.y -= ly - window->xdg_toplevel->base->geometry.y;
+	if (window != NULL) {
+		if (window->workspace != NULL &&
+				workspace_boxes(popup->server, window->workspace, &area, &full) &&
+				wlr_scene_node_coords(&window->popup_tree->node, &lx, &ly)) {
+			area.x -= lx - window->xdg_toplevel->base->geometry.x;
+			area.y -= ly - window->xdg_toplevel->base->geometry.y;
+			wlr_xdg_popup_unconstrain_from_box(xdg_popup, &area);
+		}
+	} else if (layer_popup_box(popup->server, xdg_popup, &area)) {
 		wlr_xdg_popup_unconstrain_from_box(xdg_popup, &area);
 	}
-	wlr_xdg_surface_schedule_configure(xdg_popup->base);
+}
+
+static void handle_popup_commit(struct wl_listener *listener, void *data) {
+	struct tw_popup *popup = wl_container_of(listener, popup, commit);
+	if (popup->xdg_popup->base->initial_commit) {
+		popup_unconstrain(popup);
+		wlr_xdg_surface_schedule_configure(popup->xdg_popup->base);
+	}
+}
+
+static void handle_popup_reposition(struct wl_listener *listener, void *data) {
+	/* The client moved it (a menu that follows what it belongs to): wlroots
+	 * has taken the new place as asked and is about to send it, so the
+	 * place is checked against the output again first. */
+	struct tw_popup *popup = wl_container_of(listener, popup, reposition);
+	popup_unconstrain(popup);
 }
 
 static void handle_popup_destroy(struct wl_listener *listener, void *data) {
 	struct tw_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->commit.link);
+	wl_list_remove(&popup->reposition.link);
 	wl_list_remove(&popup->destroy.link);
 	free(popup);
 }
@@ -1133,6 +1158,8 @@ static void handle_new_popup(struct wl_listener *listener, void *data) {
 
 	popup->commit.notify = handle_popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
+	popup->reposition.notify = handle_popup_reposition;
+	wl_signal_add(&xdg_popup->events.reposition, &popup->reposition);
 	popup->destroy.notify = handle_popup_destroy;
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }

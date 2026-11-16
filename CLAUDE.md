@@ -27,7 +27,8 @@ meson test -C build --suite tw
 meson setup build-release --buildtype=release -Db_lto=true
 meson test -C build-release --suite tw
 
-# Run in a window inside the current session (Mod is Alt when nested).
+# The owner's way to try it: a window inside their session (Mod is Alt
+# there). You run it headless instead; see "Working with the owner".
 ./build/tw -d -s foot
 
 # Install (the owner runs this themself, never you).
@@ -54,18 +55,18 @@ what it would do and starts nothing.
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: layout, input, timeouts, programs, key bindings |
 | `src/machines/*.h` | What depends on the machine: its outputs, and whether tw may suspend it. One file per machine; the build takes the one named after the board (`-Dmachine`), else `default.h` |
-| `src/tw.h` | The server struct and every function shared between files |
-| `src/layout.c` | Strip maths: column widths, stacking, scrolling, the spring; which refresh rate on battery; what a falling charge calls for. Pure functions, no wlroots, unit tested |
+| `src/tw.h` | The server struct and every function shared between files, grouped by file in the order `main()` starts them, as below |
+| `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
+| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler, a new renderer after a GPU reset |
+| `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
 | `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
-| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler |
-| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, touchpad settings and gestures, lid switch, seat |
-| `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars |
+| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, touchpad settings and gestures, lid switch, seat |
+| `src/clipboard.c` | Keeps what was copied for when its program exits |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
 | `src/lock.c` | Session lock for swaylock; locking by itself (`lock_now()`) and starting the locker |
-| `src/clipboard.c` | Keeps what was copied for when its program exits |
-| `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
 | `src/power.c` | On battery: learns from udev when the power cable moves, slows the outputs, runs the power-profile command, warns and suspends on a low battery |
-| `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
+| `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
+| `src/layout.c` | Strip maths: column widths, stacking, scrolling, the spring; which refresh rate on battery; what a falling charge calls for. Pure functions, no wlroots, unit tested |
 | `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation, text through fontconfig and FreeType), `bus.c` (D-Bus messages with no library; pure, unit tested), `config.h` |
 | `data/tw-session` | Session start script: picks the GPUs, points programs at the keyring, keeps the accessibility bus off, says what to do when tw cannot start |
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |
@@ -115,7 +116,11 @@ records a timestamp, the one timer sorts out blanking and suspending when it
 fires), and must stop when it has nothing left to do. Waiting for something
 that may never happen has to be free: the wake-up watch in `idle.c` is a
 timer that never expires and that the kernel cancels when the clock jumps.
-The budget test enforces 0.
+The budget test enforces 0. The one wakeup tw cannot refuse is the kernel's:
+on a machine with a battery, batteries and chargers announce themselves
+every minute or so with nothing changed, and `power.c` has to look
+([docs/design.md](docs/design.md#on-battery)). The tests run without a
+battery, so the budget does not see it; keep that handler cheap.
 
 **Do not send what has not changed.** A redundant configure wakes a client
 and a redundant scene update causes a repaint. Cache the last value sent and

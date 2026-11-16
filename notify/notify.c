@@ -562,7 +562,7 @@ static struct {
 } advances[256];
 
 static void font_close(void) {
-	for (int i = 0; fonts != NULL && i < fonts->nfont; i++) {
+	for (int i = 0; fonts != NULL && faces != NULL && i < fonts->nfont; i++) {
 		if (faces[i] != NULL) {
 			FT_Done_Face(faces[i]);
 		}
@@ -932,8 +932,8 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer, uin
 }
 
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
-	/* The screen it was on is gone. The list comes back, wherever the
-	 * compositor then puts it, with the next change to it. */
+	/* The screen it was on is gone. The list comes back with the next
+	 * change to it, or when a screen is plugged in (registry_global). */
 	window_close();
 }
 
@@ -1124,6 +1124,12 @@ static void registry_global(void *data, struct wl_registry *wl_registry, uint32_
 			&wp_fractional_scale_manager_v1_interface, 1);
 	} else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
 		activation = wl_registry_bind(wl_registry, name, &xdg_activation_v1_interface, 1);
+	} else if (strcmp(interface, wl_output_interface.name) == 0 && note_count > 0 &&
+			surface == NULL) {
+		/* A screen to show the list on again, after the compositor closed
+		 * it with the one it was on: a notification that does not expire
+		 * would otherwise stay out of sight until the next one. */
+		dirty = true;
 	}
 }
 

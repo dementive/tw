@@ -117,11 +117,59 @@ expect_line locker unlocked "the lock client to unlock"
 # locks with one open, the lock screen still gets the keys: the menu closes.
 start_client menu --menu
 expect_line menu "menu shown" "the menu to open"
+# Moved by its client to far off the screen, it is kept on it. The window
+# is no wider than the screen, so a menu kept on it starts left of 1280.
+wait_until "the moved menu to be placed again" test "$(grep -c '^menu at' "$run_dir/menu.log")" -ge 2
+grep '^menu at' "$run_dir/menu.log" | tail -n 1 | awk '{ exit !($3 + 100 <= 1280) }' ||
+	fail "a menu its client moved went off the screen: $(grep '^menu at' "$run_dir/menu.log" | tail -n 1)"
 start_client locker2 --lock
 expect_line locker2 locked "the session to lock with a menu open"
 expect_line menu "menu closed" "the lock to close the menu"
 press Return
 expect_line locker2 unlocked "the lock screen to get the keyboard although a menu was open"
 
+# --- The strip glides under a resting pointer -----------------------------------
+# The pointer goes to whatever the glide brings under it, without moving: a
+# scroll right after Mod+End reaches the window now under it.
+press super+End
+start_client p1
+start_client p2
+expect_state p2 "$on" "the newest window to be focused"
+press super+Home
+pointer_to 100 100
+expect_line a "pointer enter 100 100" "the pointer to enter the first window"
+press super+End
+wait_until "the window the strip glides under the pointer to get it" \
+	grep -q '^pointer enter' "$run_dir/p1.log"
+expect_line p1 "pointer motion 100 100" "the pointer to follow the glide to its end"
+last_line_matches a pointer leave || fail "the first window kept the pointer after the glide"
+
+# --- Drag and drop ---------------------------------------------------------------
+# Text dragged from one window to the one beside it arrives there. The two
+# share the screen: the drop window on the left, the drag window, newest
+# and focused, on the right.
+start_client drop --drop
+start_client drag --drag
+expect_state drag "$on" "the drag window to open focused"
+pointer_to 900 100
+wait_until "the strip to come to rest with the drag window under the pointer" \
+	grep -Eq '^pointer (enter|motion) 260 100$' "$run_dir/drag.log"
+# A hand's pace: the drag window asks for the drag in answer to the press,
+# and the drop window says it takes text on entering, both while the button
+# is still down.
+press down pause:300 "move:300,120:$screen_size" pause:300 up
+expect_line drag "drag started" "a press in the drag window to start a drag"
+expect_line drop "drop enter" "the drag to reach the window beside it"
+expect_line drop "drop" "the drop to arrive"
+expect_line drag "drag dropped" "the drag window to hear that it was dropped"
+expect_line drag "drag finished" "the drop window to finish the drag"
+
+# A drag carried to an empty workspace lands on nothing there, not on the
+# window it was last over, now out of sight.
+pointer_to 900 100
+press down pause:300 "move:300,120:$screen_size" pause:300 super+9 pause:300 up
+expect_line drag "drag cancelled" "a drag let go over an empty workspace to come to nothing"
+[ "$(grep -c '^drop$' "$run_dir/drop.log")" = 1 ] || fail "a drag let go over an empty workspace landed on a hidden window"
+
 stop_tw
-echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session"
+echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer"

@@ -100,9 +100,9 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 	fi
 fi
 
-# The accessibility bus. GTK programs start it as they start: two daemons
-# that then stay for the session, for a screen reader or another aid to
-# listen on. With none in use, tell the toolkits to leave it alone. Programs
+# The accessibility bus. GTK programs start it as they start: three
+# processes that then stay for the session, for a screen reader or another
+# aid to listen on. With none in use, tell the toolkits to leave it alone. Programs
 # tw starts inherit that. The ones D-Bus and systemd start do not (the
 # portal that shows file dialogs is one, and is what starts the bus at
 # login), so they are told once tw is up, along with where the session is.
@@ -111,17 +111,30 @@ fi
 # bus whatever the toolkits were told, and the session bus would start it
 # for them. Its unit therefore starts only where systemd has not been told
 # NO_AT_BRIDGE (tw-a11y.conf).
+#
+# What D-Bus and systemd are told, and what they are told to forget: a
+# session before this one may have told them otherwise, and systemd
+# remembers for as long as the user is logged in anywhere.
 service_env='WAYLAND_DISPLAY XDG_CURRENT_DESKTOP'
-a11y_step=
+forget=
 if [ -z "${TW_A11Y:-}" ]; then
 	export NO_AT_BRIDGE=1 # GTK 3
 	export GTK_A11Y=none  # GTK 4
 	service_env="$service_env NO_AT_BRIDGE GTK_A11Y"
 else
-	# A session before this one may have told systemd otherwise, and
-	# systemd remembers for as long as the user is logged in anywhere.
-	a11y_step='command -v systemctl >/dev/null 2>&1 && systemctl --user unset-environment NO_AT_BRIDGE GTK_A11Y'
+	forget="$forget NO_AT_BRIDGE GTK_A11Y"
 fi
+# The GPU the programs are kept on, above, holds for the portals too: one
+# started while the NVIDIA GPU is on for another program would otherwise
+# open it and keep it on.
+if [ -n "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
+	service_env="$service_env __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE"
+else
+	forget="$forget __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE"
+fi
+forget_step=
+[ -z "$forget" ] ||
+	forget_step="command -v systemctl >/dev/null 2>&1 && systemctl --user unset-environment$forget"
 
 if [ -n "${TW_SESSION_PRINT:-}" ]; then
 	echo "WLR_DRM_DEVICES=${WLR_DRM_DEVICES-}"
@@ -130,6 +143,7 @@ if [ -n "${TW_SESSION_PRINT:-}" ]; then
 	echo "once tw is up=$gpu_step"
 	echo "NO_AT_BRIDGE=${NO_AT_BRIDGE-} GTK_A11Y=${GTK_A11Y-}"
 	echo "told to services=$service_env"
+	echo "taken back=$forget"
 	exit 0
 fi
 
@@ -140,7 +154,7 @@ if command -v dbus-update-activation-environment >/dev/null 2>&1; then
 	dbus-update-activation-environment --systemd '"$service_env"' \
 		${DISPLAY:+DISPLAY}
 fi
-'"$a11y_step"'
+'"$forget_step"'
 '"$gpu_step"'
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/tw/autostart"
 if [ -x "$autostart" ]; then

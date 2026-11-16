@@ -1,7 +1,9 @@
 #!/bin/sh
-# Run by `meson install` once the files are in place: has systemd, udev and
-# polkit read what was installed, so that nothing has to be reloaded by hand
-# before the new units, rules and drop-ins count.
+# Run by `meson install` once the files are in place: removes what an
+# earlier install put there for an option that is now off (the arguments,
+# each under the install prefix), then has systemd, udev and polkit read
+# what is there, so that nothing has to be reloaded by hand before the
+# new units, rules and drop-ins count.
 #
 # Does nothing for a staged install (DESTDIR), a dry run, or an install made
 # without root, and never fails the install: what it could not do is said,
@@ -11,6 +13,19 @@ set -u
 [ -z "${DESTDIR:-}" ] || exit 0
 [ -z "${MESON_INSTALL_DRY_RUN:-}" ] || exit 0
 [ "$(id -u)" = 0 ] || exit 0
+
+prefix=${MESON_INSTALL_PREFIX:-/usr/local}
+for file in "$@"; do
+	case $file in
+	"$prefix"/*) ;;
+	*) continue ;; # never anything outside tw's own prefix
+	esac
+	if [ -e "$file" ] || [ -L "$file" ]; then
+		rm -f "$file" && echo "tw: removed $file, left from an earlier install" ||
+			echo "tw: could not remove $file, left from an earlier install" >&2
+	fi
+done
+
 command -v systemctl >/dev/null 2>&1 || exit 0
 
 attempt() { # <what it is for> <command...>

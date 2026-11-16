@@ -1,10 +1,4 @@
 option(
-	'vendored_wlroots',
-	type: 'boolean',
-	value: true,
-	description: 'Build the pinned wlroots in subprojects/ and link it statically',
-)
-option(
 	'machine',
 	type: 'string',
 	value: 'auto',

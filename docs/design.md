@@ -37,10 +37,17 @@ two outputs show the same one; the rest are hidden. `server->active` is the
 workspace with the focus, and the output showing it is the focused output:
 new windows open there. Going to a workspace that another output shows moves
 the focus to that output; the workspace stays where it is. Unplugging an
-output only hides its workspace, so no window is ever moved because a
-monitor went away. With more than one output, a window sticking out of its
+output hides its workspace, unless it was the one in use: the oldest
+remaining output then shows it instead (`handle_destroy()` in `output.c`).
+No window is ever moved because a monitor went away. With more than one output, a window sticking out of its
 output is trimmed at the edge (`window_trim()`), or it would show up on the
-neighbour.
+neighbour. A monitor plugged in while the screens are off stays off with
+them.
+
+**A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
+it made with it. `handle_renderer_lost()` in `output.c` makes a new
+renderer and allocator and hands them to the compositor and every output;
+without that the screens would stay black until tw was started again.
 
 **Arranging.** `strip_arrange()` decides where the view of each workspace on
 screen should be (`view_x`) and places everything. Call it after anything
@@ -81,14 +88,17 @@ Change `workspace->focused`, `server->active`, `server->keyboard_layer` or
 the lock state, then call `focus_update()`. Nothing else sends focus events.
 When the keyboard moves it ends any grab first: an open menu holds the
 keyboard and the pointer, and wlroots would otherwise keep them on the menu
-through the change, a lock included. The surface that gets the keyboard is
+through the change, a lock included. A drag is the exception: it is ended
+only by a lock, so that a window opening during one does not make the user
+drop what they carry. The surface that gets the keyboard is
 told no key is held, since the key that changed the focus belonged to a
 binding and its release goes to nobody.
 
 The pointer's focus follows the windows, not only the mouse:
 `strip_arrange()` ends with `pointer_refocus()`, which gives the pointer to
-whatever is under it now (unless a button is held). Without that, a click
-after a lock, a workspace change or a window closing went to the window
+whatever is under it now (unless a button is held), and so does each step
+of a glide or a swipe. Without that, a click or a scroll after a lock, a
+workspace change, a window closing or the strip gliding went to the window
 that had been under the pointer before.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
@@ -101,6 +111,22 @@ confine it. A constraint is in force only while its window has both the
 keyboard and the pointer; `pointer_constraint_update()` re-derives that
 after either focus changes, so every focus binding releases a lock.
 
+**Drag and drop.** A client starts a drag from a button press; tw lets it
+if the press was real (its serial) and the session is not locked, and
+wlroots' drag grab then tells each window the pointer passes over. The
+picture a client drags, if any, is in `drag_icon_tree`, the top of the
+scene, moved with the cursor. wlroots takes the picture's input region
+away, so the hit test sees through it. Unlike a click, a drag follows the
+windows as the pointer focus does (`pointer_refocus()` runs for it with
+the button held): carried to another workspace, it is over what is there,
+and let go over nothing it lands nowhere.
+
+**Menus** (xdg popups) are kept on the output: tw hands wlroots the
+output's box when a menu first appears and again whenever its client moves
+it (`reposition`, which GTK 4 and Firefox use for menus that follow what
+they belong to). A layer surface's menu is kept on its layer surface's
+output.
+
 **Keys.** Direction keys follow one scheme: I, J, K, L are up, left, down,
 right, and the arrow keys do the same. Alone they move the focus; with Shift
 they go to the monitor on that side or, with none there, to the previous or
@@ -109,11 +135,28 @@ next workspace; with Ctrl the focused window or column is taken along. The
 The other bindings follow niri's defaults. Bindings match on the unshifted
 keysym, so Shift combinations do not depend on the layout.
 
+Mod is Super, or Alt when tw runs in a window inside another session,
+which owns Super; that is told from the backend, not from the environment.
+A binding of Mod with Alt (Mod+Alt+L, lock) does not exist there: it would
+be Alt+L, which is Mod+L's.
+
+Every keyboard but a virtual one gets the same keymap, compiled once from
+the `XKB_DEFAULT_*` variables. The seat sends the keymap to every client
+whenever the keyboard in use has a different one, and a laptop has several
+keyboards: the hotkeys and the power button are keyboards too.
+
 **Layer surfaces.** Launchers, bars and notifications are layer-shell
 clients (`layer.c`). A new layer surface is told its screen's scale as it is
 created: wlroots' scene tells a surface its scale only once it is on screen,
 by which time a client has drawn it for scale 1 and has to draw again.
 Windows still learn their scale the late way.
+
+wlroots sends a layer surface a configure whenever asked, changed or not,
+and every layer surface is arranged whenever one of them changes. So each
+remembers what it was last arranged for (the output's box and the room
+left by the surfaces before it) and is not configured again until that or
+its own state changes: a notification coming and going does not wake the
+wallpaper or a bar.
 
 ## Screen off and lock
 
@@ -137,10 +180,9 @@ locker, which takes the lock over. So `locked` with `server->lock == NULL`
 is a normal state: the locker has not arrived yet, or it died. A key press
 in that state starts the locker again, at most once a second.
 
-While locked no binding runs except VT switching, only lock surfaces get
-input, and the session stays locked if the lock client dies. tw never locks
-by itself unless the locker is installed: a lock nobody can open is worse
-than none.
+What a lock guarantees (no bindings but VT switching, input only to lock
+surfaces, locked until a new client unlocks) is a rule in
+[CLAUDE.md](../CLAUDE.md#rules).
 
 ## X11 programs
 
@@ -239,8 +281,11 @@ more than one piece (over 4 kB) leaves that one cut short on the clipboard.
 ## On battery
 
 `power.c` does three things, all off one event source. What that costs on a
-machine with a battery: a socket that wakes tw two to four times a minute
-to read a handful of small files, and 20 kB. On one without, nothing.
+machine with a battery: 20 kB, and a socket that wakes tw each time a
+battery or charger announces itself, which they do with nothing changed
+(every 35 to 110 s on the G533ZW), to read a handful of small files. These
+are the one wakeup an idle tw has, and they come from the kernel, not from
+tw. On a machine without a battery, nothing.
 
 **Knowing.** `server->on_battery` follows the kernel's own rule
 (`power_supply_is_system_supplied()`): the machine has a battery, and no
@@ -248,14 +293,15 @@ supply that is not a battery is online. Supplies of scope `Device` belong to
 a mouse or a phone and are skipped. Changes arrive through a libudev monitor
 on the `power_supply` subsystem (wlroots links libudev anyway). tw does not
 read what an announcement says; it reads `/sys/class/power_supply` again and
-acts only if the answer changed, because batteries and chargers announce
-themselves every half minute or so with nothing changed.
+acts only if the answer changed, since most announcements change nothing.
 
 A machine without a battery opens no monitor and runs no command. Neither
 does a tw that is not what runs the machine, one inside another session or
 on the headless backend (`server->session` is NULL): it would set the power
 profile a second time, next to the session that does. The tests switch it
-on all the same by pointing `TW_SYS` at a made-up machine.
+on all the same by pointing `TW_SYS` at a made-up machine; tw then does not
+listen to the kernel, whose announcements are about the real machine (a
+test that heard the real battery once warned of the made-up one).
 
 **Slower outputs.** On battery every output runs in the slowest mode of its
 preferred size that is not below `battery_refresh_hz` (60), because a
@@ -294,7 +340,8 @@ without a display; the battery's next announcement comes soon enough.
 
 `tw-notify` shows notifications. It is a program of its own in `notify/`
 that shares no code with tw and talks to it as any layer-shell client
-would. Two decisions keep it small.
+would. It is kept small by running only while there is something to show
+and by speaking D-Bus itself.
 
 **It runs only while there is something to show.** Its D-Bus service file
 makes the session bus start it when a program sends a notification or asks
@@ -332,7 +379,9 @@ the compositor has it. On a screen with a fractional scale the picture is in
 the screen's own pixels (fractional-scale and viewporter), its size rounded
 up so that it is a whole number of logical pixels. The overlay layer is
 above fullscreen windows, so a game does not hide the battery warning, and
-below the lock screen, so a locked session shows none.
+below the lock screen, so a locked session shows none. When its monitor is unplugged the compositor closes the surface; the list
+comes back with the next notification, or as soon as a monitor is plugged
+in, so a warning that does not expire is not left out of sight.
 
 A click closes the notification under it. A left click on one whose program
 listed the action `default` first gets an activation token from the
@@ -382,6 +431,10 @@ What it does besides starting tw:
   against is gone after a system update (the loader's exit status, 127).
 - **Runs `~/.config/tw/autostart`**, if there is one, once tw is up.
 
+The desktop portals are not the script's: `tw-portals.conf`, installed for
+xdg-desktop-portal, has screen capture and screenshots served by the wlr
+backend and everything else (file dialogs) by the GTK one.
+
 `data/post-install.sh` is what `meson install` runs last: it has systemd,
 polkit, udev and the installing user's systemd read the new files, and does
 nothing for a staged install.
@@ -393,7 +446,9 @@ something needs it, and none of this is in tw's C code.
 
 **Off** means its kernel driver is unloaded and the GPU is off the PCI bus
 (`remove` on the device; the root helper leaves the port's path in
-`/run/tw-gpu-off`, and scans that port to bring the GPU back). Unloading
+`/run/tw-gpu-off`, and scans that port to bring the GPU back, removing the
+note only once the GPU is back: without it the machine would pass for one
+with no NVIDIA GPU). Unloading
 alone is not enough: NVIDIA's libraries load the driver through their setuid
 `nvidia-modprobe` as soon as a program asks about the GPU, which `btop` and
 `fastfetch` do, and modprobe's configuration cannot refuse it (kmod ignores
@@ -410,14 +465,17 @@ appears later only when that variable is unset; so the GPU can come and go
 under a running tw. It keeps programs on the first GPU
 (`__EGL_VENDOR_LIBRARY_FILENAMES`, and `VK_LOADER_DRIVERS_DISABLE='*nvidia*'`,
 which goes by the driver manifest's name and so survives a Mesa update
-during the session), so that none of them
-grabs the NVIDIA GPU while it is on for another. And once tw is up it runs
+during the session), so that none of them grabs the NVIDIA GPU while it
+is on for another. It hands the same two on to D-Bus and systemd for the
+programs they start (the portals), and takes them back from systemd on a
+login that does not set them. And once tw is up it runs
 `tw-gpu login`, unless a monitor is on the NVIDIA GPU.
 
 **`tw-gpu run <program>`** switches the GPU on, starts the program with
 NVIDIA's offload variables, and switches it off afterwards. The launcher
 starts everything through `tw-gpu launch`, which does the same for desktop
-entries with `PrefersNonDefaultGPU=true`.
+entries with `PrefersNonDefaultGPU=true` or KDE's
+`X-KDE-RunOnDiscreteGpu=true`, and otherwise just runs the program.
 
 Who still needs the GPU is tracked with one lock file: every program
 started by `run` inherits a shared lock on it, and the switch-off, arranged
@@ -449,6 +507,11 @@ Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
 `tw-gpu@off.service`, which a polkit rule allows, and those run
 `tw-gpu-root`. `tw-power` and `tw-bluetooth` are built the same way.
 
+A udev rule (`72-tw-gpu.rules`) lets an NVIDIA GPU whose driver is
+unloaded power down. CachyOS's `71-nvidia.rules` forbids that; tw's sorts
+after it and wins. `tw-gpu` takes the GPU off the bus anyway, so the rule
+matters for a driver unloaded by hand or a GPU that could not be removed.
+
 ## Bluetooth: tw-bluetooth
 
 Bluetooth is handled like the NVIDIA GPU: off until asked for, with none of
@@ -463,7 +526,14 @@ enabled as shipped, and the Bluetooth modules are out of the kernel too.
 `modprobe.d`, blacklists the adapter's driver (`btusb`). A blacklist stops
 what udev does at boot, loading by the device's alias, and not a load by
 name, so the same file is the list of what `tw-bluetooth on` loads: the
-root helper reads the names out of it.
+root helper reads the names out of it. An adapter on another bus (UART,
+SDIO) has a driver the file does not name and is there from boot; once
+`off` has unloaded it, `on` has to know it. So the helper keeps every
+module it unloads in `/run/tw-bluetooth-unloaded` and loads those too.
+
+`on`, `off` and the timer's `idle` are three units, which systemd would run
+side by side; the helper takes a lock first, so the timer running out
+during an `on` waits for it. `tw-power`'s helper does the same.
 
 **On** leaves `/run/tw-bluetooth`, loads the drivers, waits for an adapter,
 lifts the radio's block and starts `tw-bluetooth-idle.timer`. It lifts the
@@ -531,20 +601,19 @@ Under the `performance` governor intel_pstate and amd-pstate refuse every
 preference but `performance`, so `saver` and `balanced` move such a CPU to
 `powersave` first, as the daemon does. Nothing else in cpufreq or
 intel_pstate moves with the daemon's profiles, and ASUS's
-`throttle_thermal_policy` follows the platform's profile by itself. `tw-power` has them written by a root helper through a oneshot
-unit, the way `tw-gpu` does its switching, and nothing stays running. A
+`throttle_thermal_policy` follows the platform's profile by itself.
+
+`tw-power` has them written by a root helper through a oneshot unit, the
+way `tw-gpu` does its switching, and nothing stays running. A
 machine that lacks one of the settings is not given it, and a setting that
 already reads as wanted is not written.
 
 ## Thunderbolt
 
-Thunderbolt devices are let in by a udev rule (`tw-thunderbolt.rules`) and
-not by boltd. A port at security level `user` keeps the PCIe side of a
-device (a dock's network port and disks, an external GPU) off until
-something writes 1 to the device's `authorized` file. boltd does that and
-runs from boot for it, because the port's controller counts as a device.
-Where the kernel's DMA protection is on (`iommu_dma_protection` reads 1)
-boltd approves every device without asking, and the rule, which is the one
-in the kernel's own guide, does the same as the device appears. Where the
-protection is off the rule does nothing. `-Dthunderbolt=false` leaves the
-rule out.
+Thunderbolt devices are let in by a udev rule (`tw-thunderbolt.rules`, the
+one in the kernel's own guide) instead of boltd, which runs from boot only
+to approve them. Where the kernel's DMA protection is on
+(`iommu_dma_protection` reads 1) boltd approves every device without asking,
+and the rule does the same as the device appears. Where it is off the rule
+does nothing. [setup.md](setup.md#thunderbolt-a-dock-without-a-daemon) says
+how to tell and when to keep boltd.

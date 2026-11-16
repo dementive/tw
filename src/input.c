@@ -14,6 +14,7 @@
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_switch.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
@@ -95,6 +96,11 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 			const struct tw_binding *binding = &bindings[j];
 			uint32_t want = binding->mods & ~TW_MOD;
 			if (binding->mods & TW_MOD) {
+				/* Mod+Alt+L when Mod is Alt would be Alt+L, which is
+				 * Mod+L's: such a binding does not exist while nested. */
+				if (want & server->mod) {
+					continue;
+				}
 				want |= server->mod;
 			}
 			if (want == mods && binding->sym == syms[i]) {
@@ -183,16 +189,26 @@ static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyb
 	keyboard->wlr_keyboard = wlr_keyboard;
 
 	if (!is_virtual) {
-		struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-		struct xkb_keymap *keymap = context == NULL ? NULL :
-			xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-		if (keymap != NULL) {
-			wlr_keyboard_set_keymap(wlr_keyboard, keymap);
-		} else {
-			wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*");
+		/* All of them share one keymap. The seat sends the keymap to every
+		 * client whenever the keyboard in use has a different one, and a
+		 * laptop has several keyboards: the hotkeys and the power button
+		 * are keyboards too. Compiled with the first: a tw without a
+		 * keyboard (headless) has no use for one. */
+		if (server->keymap == NULL) {
+			/* The layout comes from the XKB_DEFAULT_* variables. */
+			struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+			if (context != NULL) {
+				server->keymap = xkb_keymap_new_from_names(context, NULL,
+					XKB_KEYMAP_COMPILE_NO_FLAGS);
+				xkb_context_unref(context);
+			}
+			if (server->keymap == NULL) {
+				wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*");
+			}
 		}
-		xkb_keymap_unref(keymap);
-		xkb_context_unref(context);
+		if (server->keymap != NULL) {
+			wlr_keyboard_set_keymap(wlr_keyboard, server->keymap);
+		}
 		wlr_keyboard_set_repeat_info(wlr_keyboard, repeat_rate, repeat_delay);
 		wlr_seat_set_keyboard(server->seat, wlr_keyboard);
 	}
@@ -203,7 +219,6 @@ static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyb
 	wl_signal_add(&wlr_keyboard->events.key, &keyboard->key);
 	keyboard->destroy.notify = handle_keyboard_destroy;
 	wl_signal_add(&wlr_keyboard->base.events.destroy, &keyboard->destroy);
-
 }
 
 static void handle_new_virtual_keyboard(struct wl_listener *listener, void *data) {
@@ -302,36 +317,53 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 	}
 }
 
-static void pointer_update(struct tw_server *server, uint32_t time_msec) {
-	double sx, sy;
-	struct wlr_surface *surface = NULL;
-	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
-
+/* Gives the pointer to `surface`, at sx,sy in it, or to nothing. */
+static void pointer_enter(struct tw_server *server, uint32_t time_msec,
+		struct wlr_surface *surface, double sx, double sy) {
+	if (server->seat->drag != NULL) {
+		wlr_scene_node_set_position(&server->drag_icon_tree->node,
+			(int)server->cursor->x, (int)server->cursor->y);
+	}
 	if (surface == NULL) {
 		wlr_cursor_set_xcursor(server->cursor, server->cursor_manager, "default");
-		wlr_seat_pointer_clear_focus(server->seat);
+		/* Through the grab, like the enter below: a drag over nothing
+		 * must leave the window it was over, or it would drop there. */
+		wlr_seat_pointer_notify_clear_focus(server->seat);
 		return;
 	}
-	/* wlroots drops duplicate enter/motion events for us. */
+	/* wlroots drops duplicate enter/motion events for us. During a drag
+	 * these go to the drag, which tells the window under it. */
 	wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
 }
 
+/* The pointer moved: it goes to whatever is under it now. */
+static void pointer_update(struct tw_server *server, uint32_t time_msec) {
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	pointer_enter(server, time_msec, surface, sx, sy);
+}
+
 void pointer_refocus(struct tw_server *server) {
-	/* Not in the middle of a click or a drag: the button's release goes to
-	 * where its press went. */
-	if (server->cursor == NULL || server->seat->pointer_state.button_count > 0) {
+	/* Not in the middle of a click: the button's release goes to where its
+	 * press went. A drag and drop is the other way round: what it is over
+	 * is where it lands. */
+	if (server->cursor == NULL ||
+			(server->seat->pointer_state.button_count > 0 && server->seat->drag == NULL)) {
 		return;
 	}
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
 	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 	/* Over nothing, as before: no cursor to set. That keeps the cursor
-	 * theme unloaded until the pointer first moves. */
-	if (surface == NULL && server->seat->pointer_state.focused_surface == NULL) {
+	 * theme unloaded until the pointer first moves. (A drag keeps the
+	 * seat's own pointer focus empty, so it is not "as before".) */
+	if (surface == NULL && server->seat->pointer_state.focused_surface == NULL &&
+			server->seat->drag == NULL) {
 		return;
 	}
-	pointer_update(server, (uint32_t)now_ms());
+	pointer_enter(server, (uint32_t)now_ms(), surface, sx, sy);
 }
 
 /*
@@ -529,6 +561,9 @@ static void handle_swipe_update(struct wl_listener *listener, void *data) {
 			event->time_msec, event->dx, event->dy);
 		return;
 	}
+	if (server->locked) {
+		return; /* the lid closed during the swipe; handle_swipe_end() drops it */
+	}
 	server->swipe_dx += event->dx;
 	server->swipe_dy += event->dy;
 	if (server->swipe_axis == SWIPE_UNDECIDED &&
@@ -556,9 +591,11 @@ static void handle_swipe_end(struct wl_listener *listener, void *data) {
 		return;
 	}
 	server->swipe_ours = false;
+	/* A swipe the session was locked during does nothing. */
+	bool cancelled = event->cancelled || server->locked;
 	if (server->swipe_axis == SWIPE_SIDEWAYS) {
-		strip_swipe_end(server, event->cancelled);
-	} else if (server->swipe_axis == SWIPE_VERTICAL && !event->cancelled &&
+		strip_swipe_end(server, cancelled);
+	} else if (server->swipe_axis == SWIPE_VERTICAL && !cancelled &&
 			fabs(server->swipe_dy) >= swipe_workspace_distance) {
 		/* Workspaces are stacked: pushing the screen up shows the next one. */
 		union tw_arg arg = {.i = server->swipe_dy < 0 ? +1 : -1};
@@ -633,6 +670,35 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 	wlr_seat_set_selection(server->seat, event->source, event->serial);
 }
 
+/*
+ * Drag and drop: a client asks to start one from a button press, and gets
+ * it if the press was real and the session is not locked. Its picture, if
+ * it has one, follows the cursor; the drag's own grab tells the windows it
+ * passes over.
+ */
+static void handle_request_start_drag(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, request_start_drag);
+	struct wlr_seat_request_start_drag_event *event = data;
+	if (!server->locked &&
+			wlr_seat_validate_pointer_grab_serial(server->seat, event->origin, event->serial)) {
+		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
+		return;
+	}
+	/* Refused: the client hears that its drag was cancelled. */
+	wlr_data_source_destroy(event->drag->source);
+}
+
+static void handle_start_drag(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, start_drag);
+	struct wlr_drag *drag = data;
+	if (drag->icon != NULL) {
+		/* Destroyed with the icon. */
+		wlr_scene_drag_icon_create(server->drag_icon_tree, drag->icon);
+	}
+	wlr_scene_node_set_position(&server->drag_icon_tree->node,
+		(int)server->cursor->x, (int)server->cursor->y);
+}
+
 static void handle_request_set_primary_selection(struct wl_listener *listener, void *data) {
 	/* Select-to-copy, middle-click-to-paste. */
 	struct tw_server *server =
@@ -654,11 +720,11 @@ static void handle_request_set_shape(struct wl_listener *listener, void *data) {
 }
 
 void input_init(struct tw_server *server) {
-
 	server->cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
-	/* The theme and size programs are told, so that the pointer looks the
-	 * same over a window as over the empty desktop. */
+	/* The theme and size come from XCURSOR_THEME and XCURSOR_SIZE, which
+	 * programs read too, so that the pointer looks the same over a window
+	 * as over the empty desktop. */
 	const char *size = getenv("XCURSOR_SIZE");
 	int cursor_size = size != NULL ? atoi(size) : 0;
 	server->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"),
@@ -704,6 +770,10 @@ void input_init(struct tw_server *server) {
 	wl_signal_add(&server->seat->pointer_state.events.focus_change, &server->pointer_focus_change);
 	server->request_set_selection.notify = handle_request_set_selection;
 	wl_signal_add(&server->seat->events.request_set_selection, &server->request_set_selection);
+	server->request_start_drag.notify = handle_request_start_drag;
+	wl_signal_add(&server->seat->events.request_start_drag, &server->request_start_drag);
+	server->start_drag.notify = handle_start_drag;
+	wl_signal_add(&server->seat->events.start_drag, &server->start_drag);
 
 	wlr_primary_selection_v1_device_manager_create(server->display);
 	server->request_set_primary_selection.notify = handle_request_set_primary_selection;
@@ -756,10 +826,15 @@ void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->request_set_cursor.link);
 	wl_list_remove(&server->pointer_focus_change.link);
 	wl_list_remove(&server->request_set_selection.link);
+	wl_list_remove(&server->request_start_drag.link);
+	wl_list_remove(&server->start_drag.link);
 	wl_list_remove(&server->request_set_primary_selection.link);
 	wl_list_remove(&server->request_set_shape.link);
 	wlr_xcursor_manager_destroy(server->cursor_manager);
 	wlr_cursor_destroy(server->cursor);
+	/* The keyboards that use it hold a reference of their own. */
+	xkb_keymap_unref(server->keymap);
+	server->keymap = NULL;
 	/* Outputs going away later in the teardown still arrange the strip. */
 	server->cursor_manager = NULL;
 	server->cursor = NULL;

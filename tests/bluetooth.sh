@@ -38,6 +38,7 @@ logged() { grep -q "$1" "$journal" 2>/dev/null; }
 # A laptop with one Bluetooth adapter on USB, driven by btusb with btintel
 # under it, and a Wi-Fi card whose radio is none of tw-bluetooth's business.
 # In $state:
+#   driver          another driver than btusb drives the adapter: its name
 #   daemon          the Bluetooth service runs, and has rfcomm and bnep open
 #   timer           the timer that switches Bluetooth off is running
 #   remembered      what systemd remembers of the radio's block: 1 is blocked
@@ -51,13 +52,14 @@ logged() { grep -q "$1" "$journal" 2>/dev/null; }
 cat >"$rootbin/kernel" <<EOF
 #!/bin/sh
 module=$sys/module
+driver=\$(cat $state/driver 2>/dev/null || echo btusb)
 case \$1 in
-load) # btusb, and what the kernel and systemd do when it finds the adapter
-	mkdir -p \$module/bluetooth/holders \$module/btintel/holders \$module/btusb/holders \\
+load) # the driver, and what the kernel and systemd do when it finds the adapter
+	mkdir -p \$module/bluetooth/holders \$module/btintel/holders \$module/\$driver/holders \\
 		$sys/class/bluetooth
-	ln -sfn ../../btusb \$module/bluetooth/holders/btusb
+	ln -sfn ../../\$driver \$module/bluetooth/holders/\$driver
 	ln -sfn ../../btintel \$module/bluetooth/holders/btintel
-	ln -sfn ../../btusb \$module/btintel/holders/btusb
+	ln -sfn ../../\$driver \$module/btintel/holders/\$driver
 	[ -e $state/no-adapter ] && exit 0
 	mkdir -p $sys/class/bluetooth/hci0 $sys/class/rfkill/rfkill1
 	echo bluetooth >$sys/class/rfkill/rfkill1/type
@@ -92,7 +94,7 @@ unload)
 	esac
 	rm -rf "\$module/\$2"
 	rm -f \$module/*/holders/"\$2"
-	if [ "\$2" = btusb ]; then
+	if [ "\$2" = "\$driver" ]; then
 		# The adapter goes with its driver, and so does what only the
 		# driver needed.
 		rm -rf $sys/class/bluetooth/hci0* $sys/class/rfkill/rfkill1 $state/restore
@@ -114,17 +116,13 @@ EOF
 cat >"$rootbin/modprobe" <<EOF
 #!/bin/sh
 echo "modprobe \$*" >>"$log"
-case \$1 in
--r) exec "$rootbin/kernel" unload "\$2" ;;
-btusb)
+[ "\$1" = -r ] && exec "$rootbin/kernel" unload "\$2"
+if [ "\$1" = "\$(cat "$state/driver" 2>/dev/null || echo btusb)" ]; then
 	[ -e "$state/driver-fails" ] && exit 1
 	exec "$rootbin/kernel" load
-	;;
-*)
-	echo "modprobe: FATAL: Module \$1 not found" >&2
-	exit 1
-	;;
-esac
+fi
+echo "modprobe: FATAL: Module \$1 not found" >&2
+exit 1
 EOF
 cat >"$rootbin/systemctl" <<EOF
 #!/bin/sh
@@ -381,6 +379,17 @@ printf '%s\n' 'blacklist hci_uart' '  blacklist   btusb  # the one in use' >"$co
 bluetooth on || fail "on failed because of a driver this machine does not have"
 all_on || fail "on with a second, unknown driver did not leave Bluetooth on"
 [ "$(calls '^modprobe hci_uart$')" = 1 ] || fail "the second driver was not tried"
+# An adapter whose driver the file does not name (hci_uart, on a bus of its
+# own) is there from boot. Once off has unloaded that driver, on loads it
+# again: the helper remembers what it unloaded.
+machine
+echo hci_uart >"$state/driver"
+"$rootbin/kernel" load
+bluetooth off || fail "off failed with an adapter driven by hci_uart"
+all_off || fail "off left an adapter driven by hci_uart"
+bluetooth on || fail "on could not bring back a driver the file does not name"
+loaded hci_uart && adapter && daemon && timer && flagged ||
+	fail "on did not leave an adapter driven by hci_uart on"
 # The units may not be started.
 machine
 : >"$state/denied"

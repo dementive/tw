@@ -24,6 +24,12 @@ struct tw_layer_surface {
 	 * window would carry a serial wlroots is about to forget, and a client
 	 * that acked it would be killed with a protocol error. */
 	bool awaiting_initial_commit;
+	/* What it was last configured for: the output's box, the room left by
+	 * the surfaces before it, and the room it left. While neither those
+	 * nor the surface's own state change, a configure would say nothing
+	 * new, and wlroots sends one whenever asked. */
+	bool configured;
+	struct wlr_box configured_full, configured_room, configured_left;
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener commit;
@@ -76,11 +82,18 @@ static void arrange_pass(struct tw_server *server, struct wlr_output *output,
 					(layer_surface->current.exclusive_zone > 0) != exclusive) {
 				continue;
 			}
+			if (surface->configured && wlr_box_equal(&surface->configured_full, full) &&
+					wlr_box_equal(&surface->configured_room, usable)) {
+				*usable = surface->configured_left;
+				continue;
+			}
 			/* Positions the surface, sends it a configure, and shrinks
-			 * `usable` by its exclusive zone. wlroots sends the configure
-			 * even if nothing changed, which is why this runs only when a
-			 * layer surface or an output changes, never per window. */
+			 * `usable` by its exclusive zone. */
+			surface->configured_full = *full;
+			surface->configured_room = *usable;
 			wlr_scene_layer_surface_v1_configure(surface->scene, full, usable);
+			surface->configured_left = *usable;
+			surface->configured = true;
 		}
 	}
 }
@@ -113,14 +126,17 @@ void layers_output_destroyed(struct tw_server *server, struct wlr_output *output
 }
 
 static void handle_map(struct wl_listener *listener, void *data) {
+	/* Its place was settled at its initial commit, which arranges; what
+	 * mapping changes is who may have the keyboard. */
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, map);
-	layers_arrange(surface->server);
+	layers_update_keyboard(surface->server);
 	strip_arrange(surface->server);
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, unmap);
 	surface->awaiting_initial_commit = true;
+	surface->configured = false;
 	layers_arrange(surface->server);
 	strip_arrange(surface->server);
 }
@@ -136,6 +152,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	} else if (layer_surface->current.committed == 0) {
 		return;
 	}
+	surface->configured = false;
 	if (layer_surface->current.committed & WLR_LAYER_SURFACE_V1_STATE_LAYER) {
 		wlr_scene_node_reparent(&surface->scene->tree->node,
 			surface->server->layer_trees[layer_surface->current.layer]);
@@ -151,6 +168,29 @@ static void handle_new_popup(struct wl_listener *listener, void *data) {
 	if (popup->base->data == NULL) {
 		popup->base->data = wlr_scene_xdg_surface_create(surface->scene->tree, popup->base);
 	}
+}
+
+bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, struct wlr_box *box) {
+	/* The layer surface the chain of popups hangs from. */
+	struct wlr_surface *root = popup->parent;
+	struct wlr_xdg_surface *xdg_surface;
+	while (root != NULL && (xdg_surface = wlr_xdg_surface_try_from_wlr_surface(root)) != NULL &&
+			xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP && xdg_surface->popup != NULL) {
+		root = xdg_surface->popup->parent;
+	}
+	struct tw_layer_surface *surface;
+	wl_list_for_each(surface, &server->layer_surfaces, link) {
+		int lx, ly;
+		if (surface->layer_surface->surface != root || surface->layer_surface->output == NULL ||
+				!wlr_scene_node_coords(&surface->scene->tree->node, &lx, &ly)) {
+			continue;
+		}
+		wlr_output_layout_get_box(server->output_layout, surface->layer_surface->output, box);
+		box->x -= lx;
+		box->y -= ly;
+		return !wlr_box_empty(box);
+	}
+	return false;
 }
 
 static void handle_destroy(struct wl_listener *listener, void *data) {

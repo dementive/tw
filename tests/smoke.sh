@@ -212,6 +212,17 @@ if grep -q '^key ' "$run_dir/d.log"; then
 	fail "a key leaked to the window behind the launcher"
 fi
 
+# A second layer surface coming and going changes nothing for the first,
+# which is told nothing: a configure would wake it for no reason.
+start_client launcher2 --layer
+launcher2_pid=$last_client_pid
+expect_line launcher2 "layer configure 400x200" "the second layer surface to be configured"
+expect_keyboard launcher2 enter "the newest launcher to take the keyboard"
+kill "$launcher2_pid"
+expect_keyboard launcher enter "the keyboard to go back to the first launcher"
+[ "$(grep -c '^layer configure' "$run_dir/launcher.log")" = 1 ] ||
+	fail "a layer surface was configured again although nothing about it changed"
+
 kill "$launcher_pid"
 expect_keyboard d enter "the keyboard to return to the window"
 

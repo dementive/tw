@@ -36,7 +36,7 @@ case "\$*" in
 *) exit 0 ;;
 esac
 [ -e "$tmp/denied" ] && exit 1
-TW_SYS="$sys" "$data/tw-power-root" "\$word" 2>>"$journal"
+TW_SYS="$sys" TW_RUN="$tmp" "$data/tw-power-root" "\$word" 2>>"$journal"
 EOF
 chmod +x "$bin/systemctl"
 
@@ -185,7 +185,7 @@ power frugal || status=$?
 [ "$status" = 2 ] || fail "an unknown profile exits with $status"
 said 'tw-power saver ' && said 'tw-power performance ' || fail "an unknown profile does not print the usage"
 status=0
-TW_SYS="$sys" "$data/tw-power-root" frugal 2>/dev/null || status=$?
+TW_SYS="$sys" TW_RUN="$tmp" "$data/tw-power-root" frugal 2>/dev/null || status=$?
 [ "$status" = 2 ] || fail "the helper exits with $status on an unknown word"
 expect_settings "an unknown profile" "balanced balance_performance, 6,"
 

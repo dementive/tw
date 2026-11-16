@@ -25,9 +25,17 @@
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
+ *   --drag        a window that starts dragging text each time a button is
+ *                 pressed in it: "drag started", then "drag dropped" and
+ *                 "drag finished", or "drag cancelled"
+ *   --drop        a window that takes what is dragged onto it: "drop enter",
+ *                 "drop leave", "drop"
  *   --menu        a window that opens a menu holding the keyboard and the
  *                 pointer (a popup grab) when it first gets the keyboard:
- *                 "menu shown", and "menu closed" when the compositor ends it
+ *                 "menu shown", and "menu closed" when the compositor ends it.
+ *                 Once shown, the menu asks to be moved far off to the right,
+ *                 as a menu that follows what it belongs to does; "menu at
+ *                 <x> <y>" for each place it is given, relative to the window
  *
  * Asking for the focus (xdg-activation):
  *   --token <file>     a window that, when it gets the keyboard, turns that
@@ -129,6 +137,12 @@ static bool token_requested, was_activated, activation_sent;
 /* Pointer modes. */
 static bool lock_pointer, confine_pointer, constraint_requested;
 
+/* Drag and drop. */
+static struct wl_data_device_manager *data_manager;
+static struct wl_data_device *data_device;
+static struct wl_data_offer *drop_offer;
+static bool drag_source, drop_target;
+
 static void say(const char *line) {
 	puts(line);
 	fflush(stdout);
@@ -174,10 +188,27 @@ static void draw(int32_t width, int32_t height) {
 
 /* --- A menu ----------------------------------------------------------------- */
 
+static struct xdg_positioner *menu_positioner(int32_t x) {
+	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(wm_base);
+	xdg_positioner_set_size(positioner, 100, 50);
+	xdg_positioner_set_anchor_rect(positioner, x, 10, 1, 1);
+	xdg_positioner_set_constraint_adjustment(positioner,
+		XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+		XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y);
+	return positioner;
+}
+
 static void menu_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
+	static bool moved;
 	xdg_surface_ack_configure(xdg_surface, serial);
 	draw_on(menu_surface, &menu_buffer, 100, 50);
 	say("menu shown");
+	if (!moved) {
+		moved = true;
+		struct xdg_positioner *positioner = menu_positioner(5000);
+		xdg_popup_reposition(data, positioner, 1);
+		xdg_positioner_destroy(positioner);
+	}
 }
 
 static const struct xdg_surface_listener menu_surface_listener = {
@@ -186,6 +217,8 @@ static const struct xdg_surface_listener menu_surface_listener = {
 
 static void popup_configure(void *data, struct xdg_popup *popup, int32_t x, int32_t y,
 		int32_t width, int32_t height) {
+	printf("menu at %d %d\n", x, y);
+	fflush(stdout);
 }
 
 static void popup_done(void *data, struct xdg_popup *popup) {
@@ -204,13 +237,11 @@ static const struct xdg_popup_listener popup_listener = {
 /* A menu as a right click opens one: it takes the keyboard and the pointer
  * until it is closed. `serial` is that of the input event behind it. */
 static void menu_open(uint32_t serial) {
-	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(wm_base);
-	xdg_positioner_set_size(positioner, 100, 50);
-	xdg_positioner_set_anchor_rect(positioner, 10, 10, 1, 1);
+	struct xdg_positioner *positioner = menu_positioner(10);
 	menu_surface = wl_compositor_create_surface(compositor);
 	struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, menu_surface);
-	xdg_surface_add_listener(xdg_surface, &menu_surface_listener, NULL);
 	struct xdg_popup *popup = xdg_surface_get_popup(xdg_surface, window_xdg_surface, positioner);
+	xdg_surface_add_listener(xdg_surface, &menu_surface_listener, popup);
 	xdg_popup_add_listener(popup, &popup_listener, NULL);
 	xdg_popup_grab(popup, seat, serial);
 	xdg_positioner_destroy(positioner);
@@ -543,11 +574,115 @@ static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t t
 	fflush(stdout);
 }
 
+/* --- Drag and drop ---------------------------------------------------------- */
+
+static void source_target(void *data, struct wl_data_source *source, const char *mime_type) {
+}
+
+static void source_send(void *data, struct wl_data_source *source, const char *mime_type,
+		int32_t fd) {
+	if (write(fd, "dragged", 7) < 0) {
+		perror("drag send");
+	}
+	close(fd);
+}
+
+static void source_cancelled(void *data, struct wl_data_source *source) {
+	say("drag cancelled");
+	wl_data_source_destroy(source);
+}
+
+static void source_drop_performed(void *data, struct wl_data_source *source) {
+	say("drag dropped");
+}
+
+static void source_finished(void *data, struct wl_data_source *source) {
+	say("drag finished");
+	wl_data_source_destroy(source);
+}
+
+static void source_action(void *data, struct wl_data_source *source, uint32_t action) {
+}
+
+static const struct wl_data_source_listener source_listener = {
+	.target = source_target,
+	.send = source_send,
+	.cancelled = source_cancelled,
+	.dnd_drop_performed = source_drop_performed,
+	.dnd_finished = source_finished,
+	.action = source_action,
+};
+
+/* Starts dragging from a button press, as a file manager does. */
+static void drag_start(uint32_t serial) {
+	struct wl_data_source *source = wl_data_device_manager_create_data_source(data_manager);
+	wl_data_source_add_listener(source, &source_listener, NULL);
+	wl_data_source_offer(source, "text/plain");
+	wl_data_source_set_actions(source, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+	wl_data_device_start_drag(data_device, source, surface, NULL, serial);
+	say("drag started");
+}
+
+static void device_data_offer(void *data, struct wl_data_device *device,
+		struct wl_data_offer *offer) {
+}
+
+static void device_enter(void *data, struct wl_data_device *device, uint32_t serial,
+		struct wl_surface *target, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *offer) {
+	say("drop enter");
+	drop_offer = offer;
+	if (offer != NULL && drop_target) {
+		wl_data_offer_accept(offer, serial, "text/plain");
+		wl_data_offer_set_actions(offer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY,
+			WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+	}
+}
+
+static void device_leave(void *data, struct wl_data_device *device) {
+	say("drop leave");
+	if (drop_offer != NULL) {
+		wl_data_offer_destroy(drop_offer);
+		drop_offer = NULL;
+	}
+}
+
+static void device_motion(void *data, struct wl_data_device *device, uint32_t time,
+		wl_fixed_t x, wl_fixed_t y) {
+}
+
+static void device_drop(void *data, struct wl_data_device *device) {
+	say("drop");
+	if (drop_offer != NULL) {
+		wl_data_offer_finish(drop_offer);
+		wl_data_offer_destroy(drop_offer);
+		drop_offer = NULL;
+	}
+}
+
+static void device_selection(void *data, struct wl_data_device *device,
+		struct wl_data_offer *offer) {
+	if (offer != NULL) {
+		wl_data_offer_destroy(offer);
+	}
+}
+
+static const struct wl_data_device_listener device_listener = {
+	.data_offer = device_data_offer,
+	.enter = device_enter,
+	.leave = device_leave,
+	.motion = device_motion,
+	.drop = device_drop,
+	.selection = device_selection,
+};
+
 static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
 		uint32_t time, uint32_t button, uint32_t state) {
 	printf("button %u %s\n", button,
 		state == WL_POINTER_BUTTON_STATE_PRESSED ? "pressed" : "released");
 	fflush(stdout);
+	if (drag_source && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		drag_start(serial);
+	}
 }
 
 static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
@@ -686,6 +821,9 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
 		scale_manager = wl_registry_bind(registry, name,
 			&wp_fractional_scale_manager_v1_interface, 1);
+	} else if (strcmp(interface, wl_data_device_manager_interface.name) == 0 && version >= 3) {
+		/* Version 3 is the first with drag-and-drop actions. */
+		data_manager = wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
 	}
 }
 
@@ -823,6 +961,8 @@ int main(int argc, char *argv[]) {
 	lock_pointer = strcmp(mode, "--lock-pointer") == 0;
 	confine_pointer = strcmp(mode, "--confine-pointer") == 0;
 	open_menu = strcmp(mode, "--menu") == 0;
+	drag_source = strcmp(mode, "--drag") == 0;
+	drop_target = strcmp(mode, "--drop") == 0;
 
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -840,6 +980,14 @@ int main(int argc, char *argv[]) {
 			constraints == NULL || relative_manager == NULL || output == NULL) {
 		fprintf(stderr, "compositor is missing a required global\n");
 		return 1;
+	}
+	if (drag_source || drop_target) {
+		if (data_manager == NULL) {
+			fprintf(stderr, "compositor has no drag and drop\n");
+			return 1;
+		}
+		data_device = wl_data_device_manager_get_data_device(data_manager, seat);
+		wl_data_device_add_listener(data_device, &device_listener, NULL);
 	}
 
 	surface = wl_compositor_create_surface(compositor);

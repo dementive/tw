@@ -623,8 +623,11 @@ root on || status=$?
 [ "$status" = 1 ] || fail "helper on returned $status for a GPU that did not come back"
 [ -s "$sys/bus/pci/rescan" ] || fail "the helper did not scan the whole bus for a GPU that stayed away"
 grep -q 'did not come back' "$tmp/err" || fail "the helper did not say that the GPU stayed away"
+[ -e "$flag" ] || fail "the helper forgot the GPU it could not bring back"
 rm "$tmp/dead-slot"
 "$bin/pci" rescan
+root on || fail "helper on failed once the GPU was back"
+[ ! -e "$flag" ] || fail "the helper kept the note of a GPU that is back"
 
 status=0
 root sideways || status=$?
@@ -648,11 +651,16 @@ session() { # [VAR=value...]: what tw-session decides, on one line
 # What tw-session runs once tw is up to switch the second GPU off.
 step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
 # The accessibility bus is kept off: said to the programs tw starts, and
-# passed on to the ones D-Bus and systemd start.
-a11y='NO_AT_BRIDGE=1 GTK_A11Y=none;told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y'
+# passed on to the ones D-Bus and systemd start, as is the GPU they are
+# kept on. What is not passed on is taken back from systemd.
+a11y='NO_AT_BRIDGE=1 GTK_A11Y=none'
+told_gpu='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE;taken back='
+told_none='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y;taken back= __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE'
 expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...]
 	description=$1
-	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_LOADER_DRIVERS_DISABLE=$4;once tw is up=$5;$a11y;"
+	told=$told_none
+	[ -z "$3" ] || told=$told_gpu
+	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_LOADER_DRIVERS_DISABLE=$4;once tw is up=$5;$a11y;$told;"
 	shift 5
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
@@ -697,7 +705,8 @@ machine
 "$bin/driver" unload
 rm -rf "$nvidia" "$bus/0000:01:00.0"
 expect_session "a single GPU" '' '' '' ''
-a11y='NO_AT_BRIDGE= GTK_A11Y=;told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP'
+a11y='NO_AT_BRIDGE= GTK_A11Y='
+told_none='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP;taken back= NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE'
 expect_session "the accessibility bus asked for" '' '' '' '' TW_A11Y=1
 
 # --- tw-session: what the services are told once tw is up ---------------------------
@@ -731,13 +740,14 @@ told() { # [VAR=value...]: what a session started like this passes on
 got=$(told)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session did not tell the services to leave the accessibility bus alone: $got"
-[ ! -e "$tmp/took-back" ] || fail "tw-session took something back from systemd: $(cat "$tmp/took-back")"
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
+	fail "tw-session on one GPU did not take back the GPU an earlier session named: $(cat "$tmp/took-back" 2>/dev/null)"
 got=$(told TW_A11Y=1)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE= GTK_A11Y=" ] ||
 	fail "tw-session with TW_A11Y=1 still spoke of the accessibility bus: $got"
 # ... and takes back what an earlier session told systemd, which the bus's
 # own unit goes by.
-[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment NO_AT_BRIDGE GTK_A11Y" ] ||
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
 	fail "tw-session with TW_A11Y=1 left systemd told to keep the bus off: $(cat "$tmp/took-back" 2>/dev/null)"
 got=$(told DISPLAY=:7)
 [ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||

@@ -34,11 +34,20 @@ EOF
 done
 chmod +x "$bin/id" "$bin/systemctl" "$bin/udevadm"
 
-# install [VAR=value...]: runs the step as `meson install` would, as root
-# unless $tmp/uid says otherwise. Leaves what it ran in $log.
+# install [VAR=value...] [-- file...]: runs the step as `meson install`
+# would, as root unless $tmp/uid says otherwise, with the files of options
+# now off as its arguments. Leaves what it ran in $log.
 install() {
 	: >"$log"
-	env -i PATH="$bin:$PATH" "$@" sh "$data/post-install.sh" >"$tmp/out" 2>"$tmp/err"
+	vars=
+	while [ $# -gt 0 ] && [ "$1" != -- ]; do
+		vars="$vars $1"
+		shift
+	done
+	[ $# -gt 0 ] && shift
+	# shellcheck disable=SC2086 # the words are VAR=value pairs
+	env -i PATH="$bin:$PATH" MESON_INSTALL_PREFIX="$tmp/prefix" $vars \
+		sh "$data/post-install.sh" "$@" >"$tmp/out" 2>"$tmp/err"
 }
 ran() { grep -qx "$1" "$log"; }
 
@@ -70,6 +79,24 @@ echo 1000 >"$tmp/uid"
 install SUDO_USER=somebody || fail "the step failed without root"
 [ ! -s "$log" ] || fail "an install without root tried to reload the system"
 echo 0 >"$tmp/uid"
+
+# --- What an earlier install left for an option now off -------------------------
+mkdir -p "$tmp/prefix/lib/modprobe.d" "$tmp/prefix/bin"
+: >"$tmp/prefix/lib/modprobe.d/tw-bluetooth.conf"
+: >"$tmp/prefix/bin/tw-notify"
+: >"$tmp/outside"
+install SUDO_USER=somebody -- "$tmp/prefix/lib/modprobe.d/tw-bluetooth.conf" \
+	"$tmp/prefix/bin/tw-notify" "$tmp/prefix/bin/never-installed" "$tmp/outside" ||
+	fail "the step failed with files to remove"
+[ ! -e "$tmp/prefix/lib/modprobe.d/tw-bluetooth.conf" ] && [ ! -e "$tmp/prefix/bin/tw-notify" ] ||
+	fail "a file of an option now off was left in place"
+[ -e "$tmp/outside" ] || fail "it removed a file outside the install prefix"
+grep -q 'removed .*tw-bluetooth.conf' "$tmp/out" || fail "a removal went unsaid"
+grep -q 'never-installed' "$tmp/out" "$tmp/err" && fail "it spoke of a file that was not there"
+ran 'systemctl daemon-reload' || fail "systemd was not reloaded after the removal"
+: >"$tmp/prefix/bin/tw-notify"
+install DESTDIR="$tmp/stage" -- "$tmp/prefix/bin/tw-notify" || fail "the step failed for a staged install"
+[ -e "$tmp/prefix/bin/tw-notify" ] || fail "a staged install removed a file of the running system"
 
 # --- A reload that fails does not fail the install ------------------------------
 : >"$tmp/broken"

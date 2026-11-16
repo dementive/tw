@@ -29,28 +29,26 @@ tests run each script against a made-up machine: a directory standing in for
 | --- | --- |
 | `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery decision |
 | `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
-| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces, fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held |
+| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held |
 | `columns` | windows sharing a column, floating dialogs |
-| `pointer` | pointer focus, click to focus, pointer lock, confinement; a window opening under a resting pointer gets it; while locked, a click without moving reaches no window, and an open menu gives the keyboard up to the lock screen |
+| `pointer` | pointer focus, click to focus, pointer lock, confinement; a window opening under a resting pointer gets it, and so does one the strip glides under it; while locked, a click without moving reaches no window, and an open menu gives the keyboard up to the lock screen; a menu its client moves off the screen is kept on it; drag and drop between two windows, and a drag carried to an empty workspace landing nowhere |
 | `outputs` | two monitors: a workspace on each, focus and columns between them |
 | `idle` | screen blanking and inhibitors with a two-second timeout; locking on idle; suspend (a stand-in command) |
 | `x11` | the X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
 | `clipboard` | a copy outlives its program; an emptied clipboard stays empty; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read |
 | `power` | what tw makes of the power supplies it finds as it starts, and the command it runs |
 | `notify` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
-| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (a second GPU that is a 3D controller too), what it passes on to services, a tw that cannot start; a GPU left on when nouveau drives it, when tw has every GPU open, and after a kernel update |
-| `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, the performance governor, nothing written twice, refusals |
-| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail, staying on after a kernel update |
+| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (a second GPU that is a 3D controller too), what it passes on to services and takes back from them, a tw that cannot start; a GPU left on when nouveau drives it, when tw has every GPU open, and after a kernel update; a GPU that does not come back stays known |
+| `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, the performance governor, nothing written twice, refusals. Not that two units at once wait for each other (`flock`) |
+| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail, staying on after a kernel update, an adapter whose driver is not btusb coming back on |
 | `thunderbolt` | that the Thunderbolt rule is still the kernel guide's and udev accepts it |
-| `install` | `data/post-install.sh`: what it reloads after a real install, and that a staged or rootless one reloads nothing |
+| `install` | `data/post-install.sh`: what it reloads after a real install, that a staged or rootless one reloads nothing, and that it removes what an option now off left, and nothing outside the prefix |
 | `budget` | release build only: idle wakeups and memory, see below |
 
-Several of these were checked by breaking the code under test one way at a
-time and seeing a test fail each time: the clipboard (27 ways), `tw-notify`
-(18), `tw-power` (21), `tw-bluetooth` (38), the accessibility condition and
-its part of `tw-session` (5), the Thunderbolt rule (4). When doing that again: a breakage run that is
-interrupted leaves a stale program in the scratch copy, and every test then
-fails or hangs for no reason. Rebuild it from clean.
+The clipboard, `tw-notify`, `tw-power`, `tw-bluetooth`, the
+accessibility part of `tw-session` and the Thunderbolt rule were each
+checked by breaking the code one way at a time and seeing a test fail
+every time.
 
 ## The budgets
 
@@ -72,61 +70,56 @@ by 100 to 200 kB with what else is running: it rose each time a program
 that shared libraries with tw was removed from the machine (a login
 manager's compositor, the KDE wallet, NetworkManager), with nothing in tw
 changed. A second tw from the same build running during the test shares
-the binary too, and the figure then reads about 1960. That is why this
-budget has been raised three times (2500, 2650, 2800) and says little.
+the binary too, and the figure then reads about 1960. So this budget says
+little on its own.
 
 So when the budget test fails: run it again and look at the line "of which
 allocated by tw" before looking for a regression. To tell what a change
 costs, compare that line, and for the rest build the previous commit too
 and run both budget tests back to back.
 
-**At a real login tw holds 15 to 20 MB of its own, not 0.8.** The
-difference is the GPU driver (Mesa), which the tests' software renderer
-never loads: 14 MB the moment the GLES2 renderer exists on Intel, in two
-driver instances, because wlroots opens one for the allocator and one for
-the renderer. Turning off Mesa's shader cache makes it larger, not smaller.
-tw also holds the screen's buffers, three at the panel's size (8 MB each at
-1920x1080), which show up as shared memory (`Shmem`, `Unevictable`) and not
-in any process. A client's window buffers are counted there too, once,
-however many processes have them open.
+**The budget is not what tw holds at a real login.** The tests' software
+renderer never loads the GPU driver, which is most of tw's memory on a real
+screen, and the screen's buffers are shared memory that no process is
+charged for. [g533zw.md](g533zw.md#what-is-left-and-what-was-not-done) has
+the figures from a real login.
 
 ## Known noise
 
-- With a GPU renderer, LeakSanitizer reports small leaks at exit from
-  inside the GPU driver (seen with the NVIDIA driver and the libdbus it
-  loads). They are not tw's. The tests use the software renderer, where the
-  report must be empty.
-- A program that only asks X11 a question starts Xwayland, which tw stops
-  again half a minute later. Two are known: fish's `done` plugin, which
-  runs `xprop` each time a shell starts when `DISPLAY` is set
-  ([system.md](system.md#keep-the-shell-from-starting-xwayland) says how to remove it), and the Claude desktop app,
-  which connects to X11 for a moment as it starts. To find another one,
-  open a terminal in a private headless tw run with `-d`, giving it the
-  environment of a terminal from the real session, and look for "started
-  xwayland-satellite" in its log. Xwayland still running with no X11 window
-  open means a program without a window is connected, or one left and no
-  window has closed since.
+With a GPU renderer, LeakSanitizer reports small leaks at exit from inside
+the GPU driver (seen with the NVIDIA driver and the libdbus it loads).
+They are not tw's. The tests use the software renderer, where the report
+must be empty.
 
 ## What no test reaches
 
-The headless backend sets the limits.
-
-- **Touchpad gestures.** It has no touchpad and no way to inject gestures,
+- **Touchpad gestures.** The headless backend has no touchpad and no way
+  to inject gestures,
   so the gesture handlers in `input.c` and the swipe functions in
   `window.c` (`strip_swipe_*`, `workspace_snap()`) are untested glue. Keep
   them thin, and put anything with logic in `layout.c`.
 - **Windows that unmap and map again, and popups of windows with a
-  client-drawn shadow.** The test client does neither, so that a remapped
-  window is not left `suspended` or fullscreen, and where a menu is kept
-  on screen for a GTK window with a shadow, are only reasoned from
-  wlroots' source.
-- **A workspace changing during a swipe**, and the cursor theme taken from
-  `XCURSOR_THEME` and `XCURSOR_SIZE`: untested.
+  client-drawn shadow.** The test client does neither, so two things rest
+  only on reading wlroots' source: that a remapped window is not left
+  `suspended` or fullscreen, and where a menu is kept on screen for a GTK
+  window with a shadow.
+- **A workspace changing during a swipe**, a swipe the session locks
+  during, and the cursor theme taken from `XCURSOR_THEME` and
+  `XCURSOR_SIZE`: untested.
+- **Physical keyboards and nesting.** The tests type through virtual
+  keyboards, which bring their own keymap, and run headless, so the shared
+  keymap of real keyboards and Mod being Alt in a window (with Mod+Alt
+  bindings left out) are untested.
+- **A GPU reset.** The software renderer is never lost, so
+  `handle_renderer_lost()` in `output.c` has never run. It follows what
+  sway does.
 - **The lid switch.** The handler in `input.c` is untested; what it calls
   (`lock_now()`) is tested through locking on idle.
-- **Unplugging an output.** Its outputs cannot be unplugged, so
-  `handle_destroy()` in `output.c` (the remaining output taking over the
-  active workspace) is untested.
+- **Plugging and unplugging an output.** Headless outputs are all there
+  from the start and cannot be unplugged, so `handle_destroy()` in
+  `output.c` (the remaining output taking over the active workspace), a
+  monitor plugged in while the screens are off, and `tw-notify` showing its
+  list again on a monitor plugged in after its own went away are untested.
 - **Suspend and wake-up.** The machine cannot be suspended or the clock set
   from a test, so the wake-up watch in `idle.c` is untested, and the
   suspend command is a stand-in.
@@ -164,14 +157,19 @@ last column once it has been seen; the figures that go with these are in
 
 | Area | Seen | Not seen yet |
 | --- | --- | --- |
-| Session | login from a login screen and from a text console, keyring unlocked in both; a boot with no login manager; Chromium and Electron keep their logins (`GNOME_DESKTOP_SESSION_ID`); the accessibility bus stays off (systemd logs the unmet `ConditionEnvironment=!NO_AT_BRIDGE`); lock and unlock through the edited `/etc/pam.d/login`; `meson install` reloading systemd, polkit and the user's systemd; the built-in libdisplay-info reading the panel's EDID as the system's does | `exec tw-session`; the rebuild hint in `tw-session`; a login on the build with libdisplay-info built in; the lock fixes of November 15 (clicks and open menus during a lock) |
+| Compositor | | drag and drop between real programs; a GTK 4 or Firefox menu that moves; the shared keymap with the laptop's hotkeys |
+| Session | login from a login screen and from a text console, keyring unlocked in both; a boot with no login manager; Chromium and Electron keep their logins (`GNOME_DESKTOP_SESSION_ID`); the accessibility bus stays off (systemd logs the unmet `ConditionEnvironment=!NO_AT_BRIDGE`); lock and unlock through the edited `/etc/pam.d/login`; `meson install` reloading systemd, polkit and the user's systemd; the built-in libdisplay-info giving the same make and model as the system's for the panel's EDID, read from `/sys` | `exec tw-session`; the rebuild hint in `tw-session`; a login on the build with libdisplay-info built in (wlroots reads the EDID as the DRM backend starts); on the real screen, a click or an open menu while locked |
 | X11 | with xwayland-satellite 0.8.3 and Xwayland 24.1: both stopped after `xdpyinfo` once the idle time ran out and started again on the next; kept up by `xprop -spy`, by a sandboxed client (`bwrap --unshare-net`), by an open `vkcube --wsi xcb`; in the real session, gone 43 s after the Claude app's start-up connection | |
 | Clipboard | in a headless tw with real programs: a copy from foot outliving foot and pasted into another foot; `wl-copy --foreground`; a PNG byte for byte; `wl-copy --clear`; no wakeup while holding a copy | the installed build in daily use; copies from Chromium, GTK or Qt; a copy through xwayland-satellite, and tw stopping that helper while it owns the clipboard |
 | Battery | announcements of an unchanged battery and charger every 35 to 110 s, acted on only when something changed; a made-up battery running down with real announcements: one warning, suspends at 5%, 4% and 2% and none on the charger; at a login on battery, the panel at 60 Hz from its first modeset and power-saver; at a login on mains, `tw-power balanced` without a password prompt | the panel changing mode while tw runs, and whether the screen blinks; a USB-C charger as a supply; the root helper writing the real `/sys`; a real suspend from a low battery; a wake-up told from the clocks |
 | Notifications | `notify-send`, `busctl` and `dbus-send` all agree with `bus.c`; wrapping, the urgent border, one picture per change; under dbus-broker, tw's entry in `/usr/local` winning and each start a transient unit of its own; with fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and symbols, each from the first font that has them | the fontconfig build on a real screen at 1.25; a notification from the Claude app and its window coming forward after a click; a monitor going away under the list |
 | NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go | a window on the real screen drawn by the GPU; a monitor on it; suspend while it is off; a machine whose GPU is a 3D controller; the guard after a kernel update |
-| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine) |
+| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB |
 | Thunderbolt | udev accepts the rule; nothing more | any device at all; whether a dock's USB ports and display outputs work before it is approved |
+
+Nothing that needs a suspend can be seen on the G533ZW: it did not wake
+from one, and sleep stays off there ([g533zw.md](g533zw.md#decisions)).
+Those items wait for another machine.
 
 The real runs found faults the made-up machines had not, and each is in a
 test now: the GPU switched off at the first login before the login screen

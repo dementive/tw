@@ -93,17 +93,18 @@ override the screen-off, suspend and X11 timeouts.
 - **The clipboard** keeps what you copied after the program you copied it
   from has closed, up to 64 MB. A program that empties the clipboard on
   purpose, as a password manager does, is obeyed.
-- **X11 programs** work. Xwayland is started when one runs and stopped half
-  a minute after the last has gone.
+- **X11 programs** work. Xwayland is started when one runs and stopped
+  about half a minute after the last X11 window closes.
 - **Notifications** appear top right, above fullscreen windows too: a title
   and up to four lines. A click closes one; a left click also tells its
   program, which can bring its window forward. An urgent one has a red
   border and stays until clicked. No icons, buttons, sounds or emoji.
 - **Screen readers** find no programs to talk to: the session keeps the
-  accessibility bus off, which saves three background programs. Log in
+  accessibility bus off, which saves three background processes. Log in
   with `TW_A11Y=1` set to keep it.
-- **Several monitors** each show one workspace. Unplugging one only hides
-  its workspace; no window is moved.
+- **Several monitors** each show one workspace. Unplugging one hides its
+  workspace, or moves it to another monitor if it was the one in use; no
+  window is moved.
 
 Commands that come with it:
 
@@ -111,7 +112,7 @@ Commands that come with it:
 | --- | --- |
 | `tw-gpu run <program>` | runs a program on a laptop's NVIDIA GPU, which is otherwise off; `tw-gpu status`, `on`, `off` |
 | `tw-bluetooth on` | switches Bluetooth on, which is otherwise off; `tw-bluetooth off`, and alone to say which it is |
-| `tw-power saver`, `balanced`, `performance` | sets the power profile until the power cable next moves; alone, says which is set |
+| `tw-power saver`, `balanced`, `performance` | sets the power profile until the power cable next moves or tw next starts; alone, says which is set |
 
 ## After a system update
 

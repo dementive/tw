@@ -31,6 +31,7 @@ struct tw_x11;
 struct wlr_output;
 struct wlr_pointer_constraint_v1;
 struct wlr_surface;
+struct wlr_xdg_popup;
 
 /* One scrolling strip. It is on screen while an output shows it; each output
  * shows a different one. */
@@ -69,6 +70,11 @@ struct tw_output {
 	struct wl_listener destroy;
 };
 
+/*
+ * Everything tw has, one instance. Grouped by the file that owns each part,
+ * in the order main() sets them up; a field another file reads is described
+ * where it is declared.
+ */
 struct tw_server {
 	struct wl_display *display;
 	struct wl_event_loop *loop;
@@ -76,8 +82,9 @@ struct tw_server {
 
 	struct wlr_backend *backend;
 	struct wlr_session *session; /* NULL when nested or headless */
-	struct wlr_renderer *renderer;
-	struct wlr_allocator *allocator;
+	struct wlr_renderer *renderer;   /* replaced when the GPU is reset */
+	struct wlr_allocator *allocator; /* likewise */
+	struct wlr_compositor *compositor;
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf; /* NULL with the software renderer */
 
 	/* output.c */
@@ -86,15 +93,23 @@ struct tw_server {
 	struct wlr_scene_output_layout *scene_layout;
 	/* Stacking order, bottom to top: layer_trees[background], [bottom],
 	 * window_tree, layer_trees[top], fullscreen_tree, float_tree,
-	 * layer_trees[overlay], lock_tree. */
+	 * layer_trees[overlay], lock_tree, drag_icon_tree. */
 	struct wlr_scene_tree *layer_trees[4]; /* by zwlr_layer_shell_v1_layer */
 	struct wlr_scene_tree *window_tree;
 	struct wlr_scene_tree *fullscreen_tree;
 	struct wlr_scene_tree *float_tree;
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
+	struct wlr_scene_tree *drag_icon_tree; /* at the cursor; what a drag shows */
 	struct wl_list outputs; /* tw_output.link, in the order they appeared */
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
+	struct wl_listener renderer_lost;
+
+	/* layer.c */
+	struct wlr_layer_shell_v1 *layer_shell;
+	struct wl_list layer_surfaces; /* tw_layer_surface.link, newest first */
+	struct tw_layer_surface *keyboard_layer; /* holds the keyboard, or NULL */
+	struct wl_listener new_layer_surface;
 
 	/* window.c */
 	struct wlr_xdg_shell *xdg_shell;
@@ -110,51 +125,11 @@ struct tw_server {
 	size_t active;
 	struct tw_window *focused; /* the window whose client is told it is active */
 
-	/* layer.c */
-	struct wlr_layer_shell_v1 *layer_shell;
-	struct wl_list layer_surfaces; /* tw_layer_surface.link, newest first */
-	struct tw_layer_surface *keyboard_layer; /* holds the keyboard, or NULL */
-	struct wl_listener new_layer_surface;
-
-	/* idle.c */
-	struct wlr_idle_notifier_v1 *idle_notifier;
-	struct wlr_idle_inhibit_manager_v1 *idle_inhibit_manager;
-	struct wl_listener new_idle_inhibitor;
-	struct wl_event_source *idle_timer;
-	struct wl_event_source *resume_watch; /* fires when the machine wakes up */
-	int resume_fd;
-	int blank_after_ms;   /* 0 never blanks */
-	int suspend_after_ms; /* 0 never suspends */
-	int suspend_tries;    /* suspend attempts since the last input */
-	int64_t last_activity_ms;
-	bool blanked; /* outputs are powered off */
-	bool idle_inhibited; /* a visible surface asked to keep the screen on */
-
-	/* lock.c */
-	struct wlr_session_lock_manager_v1 *lock_manager;
-	struct wlr_scene_rect *lock_background;
-	struct wl_listener new_lock;
-	bool locked;
-	/* The client holding the lock. NULL while locked means there is none:
-	 * it died, or tw locked by itself and the locker has not arrived yet. */
-	struct tw_lock *lock;
-	int64_t locker_started_ms; /* when tw last started the locker; 0 if never */
-
-	/* x11.c */
-	struct tw_x11 *x11; /* NULL when X11 support is off */
-	int x11_idle_ms;    /* 0 never stops the X11 helper */
-
-	/* power.c */
-	struct tw_power *power; /* NULL on a machine without a battery */
-	bool on_battery;        /* nothing but its battery supplies the machine */
-
-	/* clipboard.c */
-	struct tw_clipboard *clipboard; /* NULL when copies are not kept */
-
 	/* input.c */
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_manager;
+	struct xkb_keymap *keymap; /* every keyboard's but the virtual ones; NULL until the first */
 	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
 	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
 	struct wlr_pointer_gestures_v1 *pointer_gestures;
@@ -190,6 +165,43 @@ struct tw_server {
 	struct wl_listener request_set_cursor;
 	struct wl_listener pointer_focus_change;
 	struct wl_listener request_set_selection;
+	struct wl_listener request_start_drag;
+	struct wl_listener start_drag;
+
+	/* clipboard.c */
+	struct tw_clipboard *clipboard; /* NULL when copies are not kept */
+
+	/* idle.c */
+	struct wlr_idle_notifier_v1 *idle_notifier;
+	struct wlr_idle_inhibit_manager_v1 *idle_inhibit_manager;
+	struct wl_listener new_idle_inhibitor;
+	struct wl_event_source *idle_timer;
+	struct wl_event_source *resume_watch; /* fires when the machine wakes up */
+	int resume_fd;
+	int blank_after_ms;   /* 0 never blanks */
+	int suspend_after_ms; /* 0 never suspends */
+	int suspend_tries;    /* suspend attempts since the last input */
+	int64_t last_activity_ms;
+	bool blanked; /* outputs are powered off */
+	bool idle_inhibited; /* a visible surface asked to keep the screen on */
+
+	/* lock.c */
+	struct wlr_session_lock_manager_v1 *lock_manager;
+	struct wlr_scene_rect *lock_background;
+	struct wl_listener new_lock;
+	bool locked;
+	/* The client holding the lock. NULL while locked means there is none:
+	 * it died, or tw locked by itself and the locker has not arrived yet. */
+	struct tw_lock *lock;
+	int64_t locker_started_ms; /* when tw last started the locker; 0 if never */
+
+	/* power.c */
+	struct tw_power *power; /* NULL on a machine without a battery */
+	bool on_battery;        /* nothing but its battery supplies the machine */
+
+	/* x11.c */
+	struct tw_x11 *x11; /* NULL when X11 support is off */
+	int x11_idle_ms;    /* 0 never stops the X11 helper */
 };
 
 union tw_arg {
@@ -217,6 +229,8 @@ struct tw_output_rule {
 int64_t now_ms(void);
 /* Runs a shell command, detached from tw. */
 void spawn(const char *cmd);
+/* In a child of tw, before exec: the signals as a new program expects them. */
+void child_reset_signals(void);
 /*
  * Looks up the program a shell command starts (its first word) on PATH,
  * without running anything. On success `path` holds where it is.
@@ -250,6 +264,19 @@ void outputs_update_mode(struct tw_server *server);
  */
 bool output_set_power(struct tw_output *output, bool on);
 
+/* layer.c */
+void layer_init(struct tw_server *server);
+void layer_finish(struct tw_server *server);
+/* Configures every layer surface and recomputes each output's usable area. */
+void layers_arrange(struct tw_server *server);
+/* Closes the layer surfaces of an output that is going away. */
+void layers_output_destroyed(struct tw_server *server, struct wlr_output *output);
+/* Surface of the layer that holds the keyboard, or NULL. */
+struct wlr_surface *layer_keyboard_surface(struct tw_server *server);
+/* The box of the output a layer surface's popup is on, in the coordinates of
+ * that layer surface; false if the popup does not belong to one. */
+bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, struct wlr_box *box);
+
 /* window.c */
 void window_init(struct tw_server *server);
 void window_finish(struct tw_server *server);
@@ -274,7 +301,7 @@ void strip_arrange(struct tw_server *server);
 bool strip_animate(struct tw_output *output);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
-/* A touchpad swipe drags the strip: `dx` is the finger movement in pixels. */
+/* A touchpad swipe drags the strip. `dx` is the finger movement in pixels. */
 void strip_swipe_begin(struct tw_server *server);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
 /* Lets go: the strip glides to the nearest column edge. */
@@ -313,15 +340,27 @@ void action_move_to_workspace_relative(struct tw_server *server, const union tw_
 void action_workspace_toward(struct tw_server *server, const union tw_arg *arg);
 void action_move_to_workspace_toward(struct tw_server *server, const union tw_arg *arg);
 
-/* layer.c */
-void layer_init(struct tw_server *server);
-void layer_finish(struct tw_server *server);
-/* Configures every layer surface and recomputes each output's usable area. */
-void layers_arrange(struct tw_server *server);
-/* Closes the layer surfaces of an output that is going away. */
-void layers_output_destroyed(struct tw_server *server, struct wlr_output *output);
-/* Surface of the layer that holds the keyboard, or NULL. */
-struct wlr_surface *layer_keyboard_surface(struct tw_server *server);
+/* input.c */
+void input_init(struct tw_server *server);
+void input_finish(struct tw_server *server);
+/*
+ * Re-derives which pointer lock or confinement is in force: the one of the
+ * surface under the pointer, if that window also has the keyboard. Call
+ * after the keyboard or pointer focus changes.
+ */
+void pointer_constraint_update(struct tw_server *server);
+/* Gives the pointer to the surface under it now, which may have changed
+ * without the pointer moving. strip_arrange() and each step of a glide or
+ * swipe call it. */
+void pointer_refocus(struct tw_server *server);
+
+/* clipboard.c */
+/* Keeps what is copied for when its program exits. Call after input_init(). */
+void clipboard_init(struct tw_server *server);
+void clipboard_finish(struct tw_server *server);
+/* A program asked for an empty clipboard: the copy kept so far goes too.
+ * Call before the seat is told. */
+void clipboard_cleared(struct tw_server *server);
 
 /* idle.c */
 void idle_init(struct tw_server *server);
@@ -360,33 +399,13 @@ void power_init(struct tw_server *server);
 void power_finish(struct tw_server *server);
 
 /* x11.c */
-/* Sets DISPLAY for the programs tw starts, or removes it. Call before the
- * session's programs start; the power command power_init() may run before
- * it has no use for X11. */
+/* Opens the X11 display sockets and sets DISPLAY for the programs tw starts,
+ * or removes DISPLAY if X11 support is off. Call before the session's
+ * programs start. (The power command power_init() runs earlier has no use
+ * for X11.) */
 void x11_init(struct tw_server *server);
 void x11_finish(struct tw_server *server);
 /* A window closed: its program may have been the last X11 application. */
 void x11_window_closed(struct tw_server *server);
-
-/* clipboard.c */
-/* Keeps what is copied for when its program exits. Call after input_init(). */
-void clipboard_init(struct tw_server *server);
-void clipboard_finish(struct tw_server *server);
-/* A program asked for an empty clipboard: the copy kept so far goes too.
- * Call before the seat is told. */
-void clipboard_cleared(struct tw_server *server);
-
-/* input.c */
-void input_init(struct tw_server *server);
-void input_finish(struct tw_server *server);
-/*
- * Re-derives which pointer lock or confinement is in force: the one of the
- * surface under the pointer, if that window also has the keyboard. Call
- * after the keyboard or pointer focus changes.
- */
-void pointer_constraint_update(struct tw_server *server);
-/* Gives the pointer to the surface under it now, which may have changed
- * without the pointer moving. strip_arrange() calls it. */
-void pointer_refocus(struct tw_server *server);
 
 #endif
