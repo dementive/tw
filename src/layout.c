@@ -1,4 +1,5 @@
 #include <math.h>
+#include <string.h>
 
 #include "layout.h"
 
@@ -71,4 +72,24 @@ int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
 		due |= TW_BATTERY_SUSPEND;
 	}
 	return due;
+}
+
+bool tw_connector_builtin(const char *name) {
+	static const char *const prefixes[] = {"eDP-", "LVDS-", "DSI-"};
+	for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+		if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int tw_lid_look(struct tw_lid *lid, bool closed, int panels, int others) {
+	/* The laptop's own screen is the only one, behind a closed lid. */
+	bool alone = closed && others == 0 && panels > 0;
+	bool was_alone = lid->closed && lid->others == 0;
+	lid->closed = closed;
+	lid->others = others;
+	return (!closed || others == 0 ? TW_LID_PANEL : 0) |
+		(alone && !was_alone ? TW_LID_LOCK : 0);
 }

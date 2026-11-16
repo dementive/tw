@@ -62,7 +62,8 @@ static const int swipe_workspace_distance = 60;
 static const int blank_after_seconds = 300;
 
 /*
- * Lock the session when the laptop lid closes, and when nobody is there:
+ * Lock the session when the laptop lid closes with no monitor plugged in
+ * (docked, the laptop's own screen just goes off), and when nobody is there:
  * as the screen turns off after blank_after_seconds, and before the machine
  * is suspended. tw locks at once and by itself, so nothing is visible or
  * reachable even if the machine suspends before the locker is up; the locker

@@ -57,13 +57,27 @@ workspace with the focus, and the output showing it is the focused output:
 new windows open there. Going to a workspace that another output shows moves
 the focus to that output; the workspace stays where it is. Unplugging an
 output hides its workspace, unless it was the one in use: the oldest
-remaining output then shows it instead (`handle_destroy()` in `output.c`).
-No window is ever moved because a monitor went away. With more than one
+remaining output then shows it instead (`output_hand_over()` in
+`output.c`). No window is ever moved because a monitor went away. With more than one
 output, a window sticking out of its output is trimmed at the edge
 (the `cut_left` and `cut_right` of `window_place()`), or it would show up
 on the neighbour. A monitor plugged
 in while the screens are off stays off with them. An output that is not for
 a desktop (a VR headset, `non_desktop`) is left alone.
+
+**The lid.** A laptop's own screen (a connector named `eDP-`, `LVDS-` or
+`DSI-`) behind a closed lid is taken out of use while another output is
+there, as niri does: out of the layout, its layer surfaces closed, turned
+off (`output_leave()`), and its workspace goes as it does when an output is
+unplugged. Left in, it would keep a workspace nobody can see, and the
+pointer and new windows could land there. It comes back, placed by its
+`output_rules` entry, when the lid opens or the last other output goes away
+with the lid closed, so that there is always a screen; it shows the
+workspace it showed before if no other output has it by then. A screen
+plugged in behind a closed lid takes over from the laptop's own at once.
+`outputs_lid()` runs on each move of the lid and each output that comes or
+goes, and `tw_lid_look()` in `layout.c` decides. Blanking leaves the screen
+behind the lid off, and the lock does not wait for it.
 
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
 it made with it. `handle_renderer_lost()` in `output.c` makes a new
@@ -218,10 +232,16 @@ it, so a jump counts as a wake-up only if the time spent asleep
 
 **Lock** (`lock.c`). tw draws no lock screen. A lock client (swaylock) asks
 for the lock through ext-session-lock, or tw takes it by itself with
-`lock_now()`: on Mod+Alt+L, when the lid closes, when the screen blanks from
-inactivity, and before a suspend. `lock_now()` sets `server->locked` at once,
-which hides every window behind an opaque curtain, and then starts the
-locker, which takes the lock over. So `locked` with `server->lock == NULL`
+`lock_now()`: on Mod+Alt+L, when the screen blanks from inactivity, before a
+suspend, and when the laptop's own screen is left the only one behind a
+closed lid: the lid closes with no monitor plugged in, or the last monitor
+is unplugged while it is closed. Those are the times logind suspends the
+machine. A docked laptop whose lid closes does not lock: logind does not
+suspend it (`HandleLidSwitchDocked=ignore`), the user works on at the
+monitor, and its own screen goes out of use instead (**The lid** under
+[The strip](#the-strip)). `lock_now()` sets `server->locked` at once, which
+hides every window behind an opaque curtain, and then starts the locker,
+which takes the lock over. So `locked` with `server->lock == NULL`
 is a normal state: the locker has not arrived yet, or it died. A key press
 in that state starts the locker again, at most once a second.
 

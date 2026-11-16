@@ -268,14 +268,12 @@ static void handle_switch_toggle(struct wl_listener *listener, void *data) {
 	if (event->switch_type != WLR_SWITCH_TYPE_LID) {
 		return;
 	}
-	if (event->switch_state == WLR_SWITCH_STATE_ON) {
-		/* Closed. logind suspends the machine by itself; the session has to
-		 * be locked before it does. */
-		if (lock_on_lid_close) {
-			lock_now(lid->server);
-		}
-	} else {
-		/* Opened: turn the screen back on if it was off. */
+	/* What happens to the laptop's own screen, and whether the session
+	 * locks, depends on what else is plugged in: output.c decides. */
+	bool closed = event->switch_state == WLR_SWITCH_STATE_ON;
+	outputs_lid(lid->server, closed);
+	if (!closed) {
+		/* Opened: turn the screens back on if they were off. */
 		idle_activity(lid->server);
 	}
 }

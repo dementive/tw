@@ -120,8 +120,15 @@ must be empty.
   `handle_renderer_lost()` in `output.c` has never run. It follows what
   sway does. Nor can a headless output be one that is not for a desktop
   (`non_desktop`).
-- **The lid switch.** The handler in `input.c` is untested; what it calls
-  (`lock_now()`) is tested through locking on idle.
+- **The lid switch.** A lid cannot be emulated, and no headless output is
+  a laptop's own screen, so the handler in `input.c` and `outputs_lid()`
+  in `output.c` are untested: the laptop's own screen leaving the layout
+  and coming back, its workspace and layer surfaces, blanking passing it
+  over, and the lock not waiting for it or putting its lock surface on
+  another screen. What decides (`tw_lid_look()`, `tw_connector_builtin()`)
+  is unit tested in `layout_test.c`, and `lock_now()` through locking on
+  idle. Closing the lid with a monitor plugged in has not been tried on
+  the G533ZW.
 - **Plugging and unplugging an output.** Headless outputs are all there
   from the start and cannot be unplugged, so `handle_destroy()` in
   `output.c` (the remaining output taking over the active workspace), a

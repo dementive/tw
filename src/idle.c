@@ -59,6 +59,10 @@ static void set_blanked(struct tw_server *server, bool blanked) {
 
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
+		/* The laptop's own screen behind a closed lid stays off. */
+		if (output->lid_off) {
+			continue;
+		}
 		if (!output_set_power(output, !blanked)) {
 			wlr_log(WLR_ERROR, "failed to power %s output %s",
 				blanked ? "off" : "on", output->wlr_output->name);

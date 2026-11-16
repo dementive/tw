@@ -92,4 +92,34 @@ struct tw_battery {
 int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
 	int warn_at, int suspend_at);
 
+/* Whether an output with this connector name is a laptop's own screen
+ * (eDP, LVDS or DSI): the one its lid covers. */
+bool tw_connector_builtin(const char *name);
+
+/* What tw remembers about a laptop's lid. */
+struct tw_lid {
+	bool closed;
+	int others; /* outputs other than the laptop's own screens, at the last look */
+};
+
+#define TW_LID_PANEL 1 /* the laptop's own screen is in use */
+#define TW_LID_LOCK 2  /* lock the session */
+
+/*
+ * What a laptop's lid calls for, as a set of the flags above. Call whenever
+ * the lid moves or an output comes or goes, with the lid's state and how
+ * many of the laptop's own screens (`panels`) and other outputs (`others`)
+ * there are now.
+ *
+ * The laptop's own screen is in use while the lid is open, and while it is
+ * closed only if there is no other output, so that there is always a screen.
+ * Locking is due when that screen becomes the only one behind a closed lid:
+ * the lid closes with no other output, or the last other output goes away
+ * while it is closed. That is when logind suspends the machine; with another
+ * output it does not, and the user works on there. Before any output has
+ * appeared nothing is due: tw is starting, and which outputs are about to
+ * come is not known yet.
+ */
+int tw_lid_look(struct tw_lid *lid, bool closed, int panels, int others);
+
 #endif

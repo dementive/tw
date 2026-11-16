@@ -173,7 +173,7 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 	struct wlr_scene_output *scene_output =
 		wlr_scene_get_scene_output(server->scene, output->wlr_output);
 	if (scene_output == NULL) {
-		return; /* left dark; see handle_new_output() */
+		return; /* left dark; see output_enter() */
 	}
 
 	/* A scroll animation moves one step per frame of the output showing the
@@ -210,6 +210,35 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
 	wlr_output_commit_state(output->wlr_output, event->state);
 }
 
+/* The oldest output in use, other than `except`; NULL if there is none. */
+static struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except) {
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (output != except && !output->lid_off) {
+			return output;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * An output is leaving the layout, or going away. Its workspace is hidden
+ * from here on. If that is where the user was working, the oldest remaining
+ * output shows it instead of its own, so that an output going never takes
+ * the current work out of sight.
+ */
+static void output_hand_over(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	if (output->workspace != server->active || output->lid_off) {
+		return;
+	}
+	struct tw_output *heir = output_oldest(server, output);
+	if (heir != NULL) {
+		heir->workspace = server->active;
+		output->workspace = TW_WORKSPACES;
+	}
+}
+
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_output *output = wl_container_of(listener, output, destroy);
 	struct tw_server *server = output->server;
@@ -218,20 +247,133 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&output->present.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
+	/* The output layout raises its change event next, which arranges. */
+	output_hand_over(output);
 	wl_list_remove(&output->link);
-
-	/* Its workspace is hidden from here on. If that is where the user was
-	 * working, the oldest remaining output shows it instead of its own, so
-	 * unplugging a monitor never takes the current work out of sight. The
-	 * output layout raises its change event next, which arranges. */
-	if (output->workspace == server->active && !wl_list_empty(&server->outputs)) {
-		struct tw_output *heir = wl_container_of(server->outputs.next, heir, link);
-		heir->workspace = server->active;
-	}
 	output->wlr_output->data = NULL;
 	free(output);
+	/* The last monitor of a docked laptop with its lid closed: the
+	 * laptop's own screen comes back. */
+	outputs_lid(server, server->lid.closed);
 	/* The lock may have been waiting for this one. */
 	lock_confirm(server);
+}
+
+/*
+ * The workspace an output shows as it comes into the layout: the active one
+ * if no output shows it, then the one it showed before if that is hidden,
+ * then the lowest-numbered hidden one. TW_WORKSPACES if there are more
+ * outputs than workspaces.
+ */
+static size_t output_pick_workspace(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	if (output_showing(server, server->active) == NULL) {
+		return server->active;
+	}
+	if (output->workspace < TW_WORKSPACES && output_showing(server, output->workspace) == NULL) {
+		return output->workspace;
+	}
+	for (size_t i = 0; i < TW_WORKSPACES; i++) {
+		if (output_showing(server, i) == NULL) {
+			return i;
+		}
+	}
+	return TW_WORKSPACES;
+}
+
+/* Turns an output on (unless the screens are off) and puts it in the layout,
+ * showing a workspace. */
+static void output_enter(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	struct wlr_output *wlr_output = output->wlr_output;
+	const struct tw_output_rule *rule = output_rule(wlr_output->name);
+	output->lid_off = false;
+	output->workspace = output_pick_workspace(output);
+
+	/* While the screens are off a new one stays off with them, until the
+	 * next input turns them all on (idle.c). */
+	if (!output_commit(output, !server->blanked, rule->scale)) {
+		wlr_log(WLR_ERROR, "output %s: could not be set up", wlr_output->name);
+	}
+	/* Coming in while locked: its first frame has the curtain on it. */
+	output->curtain_shown = false;
+	output->lock_seq = wlr_output->commit_seq;
+	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
+		wlr_output->name, rule->scale, output->workspace + 1);
+
+	/* Adding to the layout raises its change event, which arranges. */
+	struct wlr_output_layout_output *layout_output = rule->x == TW_AUTO || rule->y == TW_AUTO ?
+		wlr_output_layout_add_auto(server->output_layout, wlr_output) :
+		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
+	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	if (layout_output == NULL || scene_output == NULL) {
+		/* Out of memory. The output stays dark; its frame handler copes. */
+		wlr_log(WLR_ERROR, "output %s: out of memory, left dark", wlr_output->name);
+		wlr_scene_output_destroy(scene_output);
+		return;
+	}
+	wlr_scene_output_layout_add_output(server->scene_layout, layout_output, scene_output);
+}
+
+/*
+ * Takes the laptop's own screen out of the layout and turns it off. Its
+ * workspace goes as it does when an output is unplugged, and so do the
+ * layer surfaces on it: with the output out of the layout its wl_output is
+ * gone for clients too.
+ */
+static void output_leave(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	struct wlr_output *wlr_output = output->wlr_output;
+	output_hand_over(output);
+	output->lid_off = true;
+	output->animating = false;
+	layers_output_destroyed(server, wlr_output);
+	/* The scene would go on drawing on it where it was. */
+	wlr_scene_output_destroy(wlr_scene_get_scene_output(server->scene, wlr_output));
+	/* Raises the layout's change event, which arranges. */
+	wlr_output_layout_remove(server->output_layout, wlr_output);
+	if (!output_set_power(output, false)) {
+		wlr_log(WLR_ERROR, "output %s: could not be turned off", wlr_output->name);
+	}
+}
+
+/*
+ * A laptop's own screen behind a closed lid is of no use while another output
+ * is there, and in the layout it would keep a workspace, the pointer and new
+ * windows where nobody can see them. Like niri, tw takes it out of use then
+ * and brings it back when the lid opens or the last other output goes, so
+ * that there is always a screen. The decision is tw_lid_look()'s.
+ */
+void outputs_lid(struct tw_server *server, bool closed) {
+	int panels = 0, others = 0;
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (output->builtin) {
+			panels++;
+		} else {
+			others++;
+		}
+	}
+	int due = tw_lid_look(&server->lid, closed, panels, others);
+	bool in_use = due & TW_LID_PANEL;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (!output->builtin || output->lid_off != in_use) {
+			continue;
+		}
+		wlr_log(WLR_DEBUG, "output %s: %s", output->wlr_output->name,
+			in_use ? "back in use" : "out of use behind the closed lid");
+		if (in_use) {
+			output_enter(output);
+		} else {
+			output_leave(output);
+		}
+	}
+	/* The laptop's own screen is the only one and the lid is closed, so
+	 * logind suspends the machine: the session has to be locked before it
+	 * does. */
+	if ((due & TW_LID_LOCK) && lock_on_lid_close) {
+		lock_now(server);
+	}
 }
 
 static void handle_new_output(struct wl_listener *listener, void *data) {
@@ -255,30 +397,9 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	}
 	output->server = server;
 	output->wlr_output = wlr_output;
-	wlr_output->data = output;
-	const struct tw_output_rule *rule = output_rule(wlr_output->name);
-
-	/* The first output shows the active workspace; each further one the
-	 * lowest-numbered workspace that is not on screen yet. */
 	output->workspace = TW_WORKSPACES;
-	if (output_focused(server) == NULL) {
-		output->workspace = server->active;
-	} else {
-		for (size_t i = 0; i < TW_WORKSPACES; i++) {
-			if (output_showing(server, i) == NULL) {
-				output->workspace = i;
-				break;
-			}
-		}
-	}
-
-	/* While the screens are off a new one stays off with them, until the
-	 * next input turns them all on (idle.c). */
-	if (!output_commit(output, !server->blanked, rule->scale)) {
-		wlr_log(WLR_ERROR, "output %s: could not be set up", wlr_output->name);
-	}
-	/* Plugged in while locked: its first frame has the curtain on it. */
-	output->lock_seq = wlr_output->commit_seq;
+	output->builtin = tw_connector_builtin(wlr_output->name);
+	wlr_output->data = output;
 
 	output->frame.notify = handle_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
@@ -288,22 +409,18 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
 	output->destroy.notify = handle_destroy;
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
-
 	wl_list_insert(server->outputs.prev, &output->link);
-	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
-		wlr_output->name, rule->scale, output->workspace + 1);
 
-	/* Adding to the layout raises its change event, which arranges. */
-	struct wlr_output_layout_output *layout_output = rule->x == TW_AUTO || rule->y == TW_AUTO ?
-		wlr_output_layout_add_auto(server->output_layout, wlr_output) :
-		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
-	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
-	if (layout_output == NULL || scene_output == NULL) {
-		/* Out of memory. The output stays dark; its frame handler copes. */
-		wlr_log(WLR_ERROR, "output %s: out of memory, left dark", wlr_output->name);
-		return;
+	/* The laptop's own screen behind a closed lid waits for outputs_lid()
+	 * to say whether it is wanted; any other output may be what takes it
+	 * out of use. */
+	if (output->builtin && server->lid.closed) {
+		output->lid_off = true;
+		output_set_power(output, false);
+	} else {
+		output_enter(output);
 	}
-	wlr_scene_output_layout_add_output(server->scene_layout, layout_output, scene_output);
+	outputs_lid(server, server->lid.closed);
 }
 
 /*

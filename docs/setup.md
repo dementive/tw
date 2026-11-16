@@ -338,7 +338,8 @@ that by itself) and `systemctl suspend` typed by hand.
 sudo systemctl mask sleep.target suspend.target
 ```
 
-Closing the lid then only locks the session. On battery the laptop runs
+Closing the lid then only locks the session, and with a monitor plugged
+in only turns the laptop's own screen off. On battery the laptop runs
 until it is empty: the warning at 10% is all there is, so plug in when it
 shows. `sudo systemctl unmask sleep.target suspend.target` gives sleep
 back.

@@ -61,7 +61,10 @@ struct wlr_surface *lock_keyboard_surface(struct tw_server *server) {
 		if (primary != NULL && surface->lock_surface->output == primary->wlr_output) {
 			return surface->lock_surface->surface;
 		}
-		any = surface;
+		/* Then one that is on screen (lock_surface_arrange()). */
+		if (any == NULL || surface->tree->node.enabled) {
+			any = surface;
+		}
 	}
 	return any != NULL ? any->lock_surface->surface : NULL;
 }
@@ -89,6 +92,9 @@ static void lock_surface_arrange(struct tw_lock_surface *surface) {
 	struct tw_server *server = surface->lock->server;
 	struct wlr_box box;
 	wlr_output_layout_get_box(server->output_layout, surface->lock_surface->output, &box);
+	/* An output out of the layout (the laptop's own screen behind a closed
+	 * lid) shows nothing, and its lock surface must not land on another. */
+	wlr_scene_node_set_enabled(&surface->tree->node, !wlr_box_empty(&box));
 	if (wlr_box_empty(&box)) {
 		return;
 	}

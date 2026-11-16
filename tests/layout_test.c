@@ -157,6 +157,47 @@ int main(void) {
 	CHECK(tw_battery_look(&quiet, 40, true, 0, 5) == 0);
 	CHECK(tw_battery_look(&quiet, 5, false, 0, 5) == TW_BATTERY_SUSPEND);
 
+	/* A laptop's own screen, by its connector's name. */
+	CHECK(tw_connector_builtin("eDP-1"));
+	CHECK(tw_connector_builtin("LVDS-1"));
+	CHECK(tw_connector_builtin("DSI-1"));
+	CHECK(!tw_connector_builtin("HDMI-A-1"));
+	CHECK(!tw_connector_builtin("DP-1"));
+	CHECK(!tw_connector_builtin("eDP"));
+	CHECK(!tw_connector_builtin("HEADLESS-1"));
+
+	/* The lid on a laptop with nothing plugged in: closing it locks and
+	 * leaves the screen on, so that there is one; opening it does nothing
+	 * more. */
+	struct tw_lid lid = {0};
+	CHECK(tw_lid_look(&lid, false, 1, 0) == TW_LID_PANEL);
+	CHECK(tw_lid_look(&lid, true, 1, 0) == (TW_LID_PANEL | TW_LID_LOCK));
+	CHECK(tw_lid_look(&lid, true, 1, 0) == TW_LID_PANEL);
+	CHECK(tw_lid_look(&lid, false, 1, 0) == TW_LID_PANEL);
+	/* Docked: closing it takes the screen out, without locking. */
+	CHECK(tw_lid_look(&lid, false, 1, 1) == TW_LID_PANEL);
+	CHECK(tw_lid_look(&lid, true, 1, 1) == 0);
+	CHECK(tw_lid_look(&lid, true, 1, 2) == 0);
+	CHECK(tw_lid_look(&lid, true, 1, 1) == 0);
+	/* Opened again: the screen comes back. */
+	CHECK(tw_lid_look(&lid, false, 1, 1) == TW_LID_PANEL);
+	/* Closed, then the last monitor unplugged: the screen comes back behind
+	 * the lid, and the session locks, as logind is about to suspend. */
+	CHECK(tw_lid_look(&lid, true, 1, 1) == 0);
+	CHECK(tw_lid_look(&lid, true, 1, 0) == (TW_LID_PANEL | TW_LID_LOCK));
+	/* A monitor plugged in behind the closed lid takes over from the screen. */
+	CHECK(tw_lid_look(&lid, true, 1, 1) == 0);
+	/* Started with the lid closed: the lid is known before any output, and
+	 * nothing locks while the outputs appear, the laptop's own first. */
+	struct tw_lid docked = {0};
+	CHECK(tw_lid_look(&docked, true, 0, 0) == TW_LID_PANEL);
+	CHECK(tw_lid_look(&docked, true, 1, 0) == TW_LID_PANEL);
+	CHECK(tw_lid_look(&docked, true, 1, 1) == 0);
+	/* With no screen of its own among the outputs, nothing ever locks. */
+	struct tw_lid unknown = {0};
+	CHECK(tw_lid_look(&unknown, true, 0, 1) == 0);
+	CHECK(tw_lid_look(&unknown, true, 0, 0) == TW_LID_PANEL);
+
 	if (failures > 0) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

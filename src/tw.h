@@ -72,6 +72,11 @@ struct tw_output {
 	 * was locked: a frame committed after lock_seq has been presented. */
 	bool curtain_shown;
 	uint32_t lock_seq;
+	/* The laptop's own screen (eDP, LVDS, DSI), and while that is true,
+	 * whether it is out of use: off and out of the layout, because the lid
+	 * is closed and another output is there. */
+	bool builtin;
+	bool lid_off;
 	struct wl_listener frame;
 	struct wl_listener present;
 	struct wl_listener request_state;
@@ -170,6 +175,7 @@ struct tw_server {
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
 	struct wlr_scene_tree *drag_icon_tree; /* at the cursor; what a drag shows */
 	struct wl_list outputs; /* tw_output.link, in the order they appeared */
+	struct tw_lid lid; /* the laptop's lid, as outputs_lid() last saw it */
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
 	struct wl_listener renderer_lost;
@@ -348,13 +354,21 @@ void outputs_update_mode(struct tw_server *server);
  * now, since the power cable may have gone in or out while it was off.
  */
 bool output_set_power(struct tw_output *output, bool on);
+/*
+ * The lid is `closed`: takes the laptop's own screen out of use while another
+ * output is there, brings it back otherwise, and locks the session when that
+ * screen is left the only one behind the lid. input.c calls it when the lid
+ * moves; output.c when an output comes or goes.
+ */
+void outputs_lid(struct tw_server *server, bool closed);
 
 /* layer.c */
 void layer_init(struct tw_server *server);
 void layer_finish(struct tw_server *server);
 /* Configures every layer surface and recomputes each output's usable area. */
 void layers_arrange(struct tw_server *server);
-/* Closes the layer surfaces of an output that is going away. */
+/* Closes the layer surfaces of an output that is going away or leaving the
+ * layout. */
 void layers_output_destroyed(struct tw_server *server, struct wlr_output *output);
 /* Surface of the layer that holds the keyboard, or NULL. */
 struct wlr_surface *layer_keyboard_surface(struct tw_server *server);
