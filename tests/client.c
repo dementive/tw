@@ -28,6 +28,8 @@
  *                 300x200 unless given
  *   --game        a 300x200 window that cannot be resized, like a game, and
  *                 that asks for fullscreen or to leave it when F is pressed
+ *   --fickle      the same game asking to start fullscreen, and changing its
+ *                 mind before it draws its first frame
  *   --inhibit     a window that asks to keep the screen on, like a video player
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
@@ -137,7 +139,7 @@ static size_t output_count;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen;
-static bool fixed_size, game;
+static bool fixed_size, game, fickle;
 static int32_t fixed_width = 300, fixed_height = 200;
 static struct xdg_toplevel *window_toplevel;
 static bool running = true;
@@ -319,6 +321,11 @@ static void ask_for_focus(void) {
 
 static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
 	xdg_surface_ack_configure(xdg_surface, serial);
+	if (fickle) {
+		fickle = false;
+		xdg_toplevel_unset_fullscreen(window_toplevel);
+		say("leave fullscreen");
+	}
 	printf("configure %dx%d activated=%d suspended=%d fullscreen=%d\n", pending_width,
 		pending_height, pending_activated, pending_suspended, pending_fullscreen);
 	fflush(stdout);
@@ -1065,7 +1072,11 @@ int main(int argc, char *argv[]) {
 		window_toplevel = toplevel;
 		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
 		xdg_toplevel_set_title(toplevel, "tw-test-client");
-		game = strcmp(mode, "--game") == 0;
+		fickle = strcmp(mode, "--fickle") == 0;
+		game = strcmp(mode, "--game") == 0 || fickle;
+		if (fickle) {
+			xdg_toplevel_set_fullscreen(toplevel, NULL);
+		}
 		if (strcmp(mode, "--fixed") == 0 || game) {
 			fixed_size = true;
 			if (argc > 2 && sscanf(argv[2], "%dx%d", &fixed_width, &fixed_height) != 2) {

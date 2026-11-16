@@ -6,8 +6,14 @@
 # tw-bluetooth-idle.timer.
 [Unit]
 Description=Bluetooth: %i (tw-bluetooth)
+# Never refused for starting too often: the idle unit is started by a
+# timer that every disconnect starts over.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+# A driver that hangs as it loads or unloads must not hold every later
+# start forever.
+TimeoutStartSec=90
 Environment=TW_BLUETOOTH_CONF=@conf@
 ExecStart=@libexecdir@/tw-bluetooth-root %i

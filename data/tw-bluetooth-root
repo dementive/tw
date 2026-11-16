@@ -7,8 +7,9 @@
 # Off: the Bluetooth service is stopped and every Bluetooth module is
 # unloaded, the adapter's driver among them. With no driver there is no
 # adapter, so nothing starts the service again, and the radio has no power.
-# On: the adapter's driver is loaded, and any other this helper unloaded. systemd starts the service by itself
-# when the adapter appears, as it does on any machine that boots with one.
+# On: the adapter's driver is loaded, and any other this helper unloaded.
+# systemd starts the service by itself when the adapter appears, as it does
+# on any machine that boots with one.
 # Idle: off, if it was this helper that switched Bluetooth on and nothing
 # is connected.
 set -u
@@ -146,8 +147,10 @@ on)
 	systemctl restart "$timer"
 	# systemd starts the service when an adapter appears. One that was there
 	# already, because an earlier off could not unload its driver, brings no
-	# such event.
-	systemctl start --no-block "$service"
+	# such event. Without bluez there is no service, and the adapter is on
+	# all the same.
+	systemctl start --no-block "$service" 2>/dev/null ||
+		echo "tw-bluetooth: $service could not be started; is bluez installed?" >&2
 	;;
 off)
 	switch_off
@@ -155,6 +158,10 @@ off)
 idle)
 	[ -e "$flag" ] || exit 0
 	connected && exit 0
+	# An `on` rewrites the note. One that finished while this waited for
+	# the lock has just started the timer over, and nothing has had time
+	# to connect yet.
+	[ -n "$(find "$flag" -mmin +5)" ] || exit 0
 	# After a kernel update the running kernel's modules are gone from the
 	# disk until the next boot: unloaded now, Bluetooth could not come back.
 	for driver in $(drivers); do

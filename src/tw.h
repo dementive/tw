@@ -22,6 +22,7 @@
 #define TW_AUTO INT32_MIN
 
 struct tw_clipboard;
+struct tw_column;
 struct tw_layer_surface;
 struct tw_lock;
 struct tw_power;
@@ -32,6 +33,8 @@ struct wlr_output;
 struct wlr_pointer_constraint_v1;
 struct wlr_surface;
 struct wlr_xdg_popup;
+struct wlr_xdg_toplevel;
+struct wlr_xdg_toplevel_decoration_v1;
 
 /* One scrolling strip. It is on screen while an output shows it; each output
  * shows a different one. */
@@ -73,6 +76,66 @@ struct tw_output {
 	struct wl_listener present;
 	struct wl_listener request_state;
 	struct wl_listener destroy;
+};
+
+/*
+ * One window. Where it is (link, workspace, column) and whether it is
+ * fullscreen are strip.c's to change; the rest is window.c's.
+ *
+ * Its scene_tree lives under server->window_tree,
+ * or fullscreen_tree while fullscreen, or float_tree while floating:
+ *
+ *   scene_tree          positioned at the window; node.data = window
+ *   └── surface_tree    the client's surfaces, clipped to the window's box
+ *
+ * Its menus are drawn above every window, dialog and bar, so popup_tree
+ * lives under server->popup_tree and follows scene_tree's position and
+ * visibility:
+ *
+ *   popup_tree          the client's popups, unclipped; node.data = window
+ *
+ * xdg_surface.data points at the tree its popups attach to: popup_tree for a
+ * toplevel, the popup's own tree for a popup.
+ */
+struct tw_window {
+	/* tw_column.windows, or tw_workspace.floating; valid only while mapped. */
+	struct wl_list link;
+	struct tw_server *server;
+	struct tw_workspace *workspace; /* NULL unless mapped */
+	struct tw_column *column;       /* NULL unless mapped and tiled; strip.c's */
+	struct wlr_xdg_toplevel *xdg_toplevel;
+	struct wlr_xdg_toplevel_decoration_v1 *decoration; /* NULL if none */
+
+	struct wlr_scene_tree *scene_tree;
+	struct wlr_scene_tree *surface_tree;
+	struct wlr_scene_tree *popup_tree;
+
+	bool mapped;
+	bool floating;   /* a dialog: centred, sized by the client, not in the strip */
+	bool fullscreen; /* covers the whole output; alone in its column */
+	/* A window of a fixed size (a game) floats, but is in the strip while
+	 * fullscreen: it floats again when it leaves fullscreen. */
+	bool float_after_fullscreen;
+
+	/* The last state sent to the client or the scene, so that re-arranging
+	 * an unchanged strip sends no configure and causes no damage. */
+	int width, height;
+	bool suspended;
+	bool fullscreen_applied;
+	struct wlr_box clip;
+	/* How much of the window's left and right side is cut off, because it
+	 * sticks out of its output toward a neighbouring one. */
+	int cut_left, cut_right;
+
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+	struct wl_listener request_maximize;
+	struct wl_listener request_fullscreen;
+	/* Linked only while decoration != NULL. */
+	struct wl_listener decoration_request_mode;
+	struct wl_listener decoration_destroy;
 };
 
 /*
@@ -125,6 +188,8 @@ struct tw_server {
 	struct wl_listener new_popup;
 	struct wl_listener new_decoration;
 	struct wl_listener request_activate;
+
+	/* strip.c */
 	struct tw_workspace workspaces[TW_WORKSPACES];
 	/* Index of the workspace with the focus. The output showing it is the
 	 * focused output: new windows open there. */
@@ -216,6 +281,11 @@ struct tw_server {
 	int x11_idle_ms;    /* 0 never stops the X11 helper */
 };
 
+/* Nothing is on screen while the outputs are off or the session is locked. */
+static inline bool screen_on(const struct tw_server *server) {
+	return !server->blanked && !server->locked;
+}
+
 union tw_arg {
 	int i;
 	const char *s;
@@ -301,6 +371,69 @@ void window_finish(struct tw_server *server);
  */
 struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 	struct wlr_surface **surface, double *sx, double *sy);
+/* Whether the window or layer surface this surface belongs to is on screen. */
+bool surface_visible(struct tw_server *server, struct wlr_surface *surface);
+/*
+ * What strip.c places windows with. Each sends the client and the scene only
+ * what changed since the last call, so arranging an unchanged strip costs
+ * nothing.
+ *
+ * window_place() puts the window's outer box at `box` (layout coordinates).
+ * With `configure` the client is asked for that size; a dialog chose its
+ * own. `cut_left` and `cut_right` are how much of it to hide on each side,
+ * where it sticks out of its output toward a neighbouring one.
+ */
+void window_place(struct tw_window *window, const struct wlr_box *box, bool configure,
+	int cut_left, int cut_right);
+/* Centres a dialog in `area`, at whatever size its client chose. */
+void window_centre(struct tw_window *window, const struct wlr_box *area);
+/*
+ * `on_screen`: draw it. `wanted`: it is, or is about to be, on screen, so the
+ * client should be drawing. The two differ while the strip is moving.
+ *
+ * The battery win of a scrolling layout: most windows are off-screen or on
+ * another workspace. A disabled node gets no frame callbacks, and `suspended`
+ * tells the client outright to stop drawing.
+ */
+void window_show(struct tw_window *window, bool on_screen, bool wanted);
+/*
+ * Brings the client and the scene in line with window->fullscreen: the
+ * client is told, and the window gets a place above the bars. With nothing
+ * else left to draw, wlroots then hands the client's buffer straight to the
+ * display instead of compositing it (direct scanout).
+ */
+void window_apply_fullscreen(struct tw_window *window);
+/* Sets window->floating and tells the client: a dialog picks its own size
+ * and is not tiled. */
+void window_set_floating(struct tw_window *window, bool floating);
+/* Moves the scene node to the tree for what the window is now (dialog,
+ * fullscreen, or tiled). */
+void window_restack(struct tw_window *window);
+
+/* strip.c */
+void strip_init(struct tw_server *server);
+/*
+ * A window has mapped: it goes on the active workspace and gets the focus,
+ * into the strip in a column of its own, or in front of it as a dialog, and
+ * fullscreen if its client asked. False if out of memory.
+ */
+bool strip_add(struct tw_window *window);
+/* A window has unmapped: it leaves its workspace and its focus passes on. */
+void strip_remove(struct tw_window *window);
+/* The size a window that maps now will get, fullscreen or in a column of its
+ * own. False if no output shows the active workspace. */
+bool strip_initial_size(struct tw_server *server, bool fullscreen, int *width, int *height);
+/* The output boxes for a workspace: `area` is what its windows may use,
+ * `full` the whole output (for fullscreen). False if no output shows it. */
+bool workspace_boxes(struct tw_server *server, const struct tw_workspace *workspace,
+	struct wlr_box *area, struct wlr_box *full);
+/*
+ * A fullscreen window is alone in its column, so one that shares a column
+ * leaves it first. A dialog stays with its parent, but a window that floats
+ * only for its fixed size (a game) goes into the strip, and back out when it
+ * leaves fullscreen. Follow with strip_arrange().
+ */
+void window_set_fullscreen(struct tw_window *window, bool fullscreen);
 /* Makes the window the focused one of its workspace. Follow with strip_arrange(). */
 void window_focus(struct tw_server *server, struct tw_window *window);
 /*
@@ -321,8 +454,6 @@ void strip_swipe_begin(struct tw_server *server);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
 /* Lets go: the strip glides to the nearest column edge. */
 void strip_swipe_end(struct tw_server *server, bool cancelled);
-/* Whether the window or layer surface this surface belongs to is on screen. */
-bool surface_visible(struct tw_server *server, struct wlr_surface *surface);
 
 /* Actions on the focused column. arg.i is a direction (-1 left, +1 right). */
 void action_close(struct tw_server *server, const union tw_arg *arg);

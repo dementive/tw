@@ -125,6 +125,10 @@ logged '^leave$' || fail "tw-notify went without giving its name up first"
 # The next one starts it again, with an id no earlier one had.
 second=$(note 0 'Second' '' "$plain" 200)
 [ "$second" != "$first" ] || fail "an id was used twice"
+# libnotify keeps an id in a signed int; `notify-send -r` aborts on one
+# above 2^31 - 1.
+[ "$first" -gt 0 ] && [ "$first" -le 2147483647 ] && [ "$second" -le 2147483647 ] ||
+	fail "the ids $first and $second do not fit a signed 32-bit int"
 wait_until "the second notification" logged "^show $second 'Second' for 200 ms\$"
 wait_until "it to expire" logged "^close $second reason 1\$"
 
@@ -180,6 +184,16 @@ wait_until "its program to be told" signalled NotificationClosed "$urgent_id" "u
 call CloseNotification u "$new" >/dev/null
 call CloseNotification u 12345 >/dev/null || fail "closing an unknown notification failed"
 wait_until "the new one to close" logged "^close $new reason 3\$"
+
+# A tag too long to keep whole is no tag: two that differ only past the
+# length kept stay apart.
+long=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+long1=$(note 0 'Long 1' '' "$(tagged "${long}1")" 0)
+long2=$(note 0 'Long 2' '' "$(tagged "${long}2")" 0)
+[ "$long1" != "$long2" ] || fail "two long tags that differ at their end replaced each other"
+call CloseNotification u "$long1" >/dev/null
+call CloseNotification u "$long2" >/dev/null
+wait_until "the two long-tagged ones to close" logged "^close $long2 reason 3\$"
 
 # Clicks. One notification is left, 41 pixels high with only a title, in the
 # top right corner 12 pixels from both edges; a second goes below it. A

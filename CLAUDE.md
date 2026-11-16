@@ -59,7 +59,8 @@ what it would do and starts nothing.
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
 | `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler, a new renderer after a GPU reset |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
-| `src/window.c` | xdg-shell windows, columns, floating dialogs, popups, decorations, workspaces, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
+| `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation) |
+| `src/strip.c` | Where windows go: workspaces, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
@@ -124,7 +125,7 @@ battery, so the budget does not see it; keep that handler cheap.
 
 **Do not send what has not changed.** A redundant configure wakes a client
 and a redundant scene update causes a repaint. Cache the last value sent and
-compare, as `window_resize()` and `window_update_clip()` do.
+compare, as `window_place()` and `window_show()` do.
 
 **Off-screen windows cost nothing.** Windows nobody can see have their scene
 node disabled (no frame callbacks) and are sent the xdg `suspended` state.

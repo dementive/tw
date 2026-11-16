@@ -305,6 +305,7 @@ int main(int argc, char *argv[]) {
 	wlr_xdg_output_manager_v1_create(server.display, server.output_layout);
 	layer_init(&server);
 	window_init(&server);
+	strip_init(&server);
 	input_init(&server);
 	clipboard_init(&server);
 	idle_init(&server);

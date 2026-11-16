@@ -546,11 +546,17 @@ nvidia_drm)
 		;;
 	nvidia_modeset)
 		rm -rf "$sys/module/nvidia_modeset"
-		[ -e "$tmp/computing" ] || [ -d "$sys/module/nvidia_uvm" ] || "$bin/driver" unload
+		[ -e "$tmp/computing" ] || [ -d "$sys/module/nvidia_uvm" ] ||
+			[ -n "\$(ls "$sys/module/nvidia/holders" 2>/dev/null)" ] || "$bin/driver" unload
 		;;
 	nvidia)
 		[ -e "$tmp/computing" ] && exit 1
+		[ -n "\$(ls "$sys/module/nvidia/holders" 2>/dev/null)" ] && exit 1
 		"$bin/driver" unload
+		;;
+	*) # a module built on the driver
+		rm -rf "$sys/module/\$2"
+		rm -f "$sys/module/nvidia/holders/\$2"
 		;;
 	esac
 	;;
@@ -664,6 +670,15 @@ root off || fail "the helper failed to unload the driver and its computing modul
 [ "$ran" = "modprobe -r nvidia_drm;${stop_daemons}modprobe -r nvidia_uvm;modprobe -r nvidia_modeset;" ] ||
 	fail "helper off with the computing module ran: $ran"
 wait_until "the GPU to leave the bus" off
+# With a module the helper has no name for built on the driver (as
+# nvidia_peermem is): found among the driver's holders, it goes first.
+root on
+mkdir -p "$sys/module/nvidia_peermem" "$sys/module/nvidia/holders"
+: >"$sys/module/nvidia/holders/nvidia_peermem"
+root off || fail "the helper failed to unload a driver with a module built on it"
+[ "$ran" = "${unload}modprobe -r nvidia_peermem;modprobe -r nvidia;" ] ||
+	fail "helper off with a module built on the driver ran: $ran"
+wait_until "the GPU with a module built on its driver to leave the bus" off
 # Off with no driver loaded: only the bus.
 root on
 "$bin/driver" unload
@@ -758,7 +773,7 @@ session() { # [VAR=value...]: what tw-session decides, on one line
 		TW_SESSION_PRINT=1 "$@" sh "$data/tw-session" | tr '\n' ';'
 }
 # What tw-session runs once tw is up to switch the second GPU off.
-step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
+step='command -v tw-gpu >/dev/null 2>&1 && { tw-gpu login 2>&1 | systemd-cat -t tw-gpu; } &'
 # The accessibility bus is kept off: said to the programs tw starts, and
 # passed on to the ones D-Bus and systemd start, as is the GPU they are
 # kept on. What is not passed on is taken back from systemd.

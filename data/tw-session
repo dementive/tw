@@ -128,8 +128,10 @@ if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 			# Nothing in the session uses the second GPU now, so switch it
 			# off for good, until a program asks for it through tw-gpu.
 			# (`login` and not `off`: the login screen still holds the GPU
-			# for a few seconds, and `login` waits for it to let go.)
-			gpu_step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
+			# for a few seconds, and `login` waits for it to let go.) What
+			# it says goes to the journal: a GPU left on by a failure that
+			# nobody sees costs battery all session.
+			gpu_step='command -v tw-gpu >/dev/null 2>&1 && { tw-gpu login 2>&1 | systemd-cat -t tw-gpu; } &'
 		fi
 	fi
 fi

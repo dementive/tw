@@ -73,8 +73,11 @@ done
 for policy in "$sys"/devices/system/cpu/cpufreq/policy*; do
 	# Under the performance governor the CPU refuses every preference but
 	# performance (intel_pstate and amd-pstate alike), so the profile takes
-	# the governor that weighs the two, as power-profiles-daemon does.
+	# the governor that weighs the two, as power-profiles-daemon does. Only
+	# where there is a preference to weigh: without one (acpi-cpufreq, or
+	# either driver in passive mode) powersave pins the CPU to its slowest.
 	if [ "$preference" != performance ] &&
+		[ -e "$policy/energy_performance_available_preferences" ] &&
 		[ "$(cat "$policy/scaling_governor" 2>/dev/null)" = performance ] &&
 		offered "$policy/scaling_available_governors" powersave; then
 		put "$policy/scaling_governor" powersave

@@ -53,7 +53,7 @@ struct note {
 	bool critical;
 	bool has_default;  /* its program wants to hear of a click */
 	char sender[64];   /* that program's name on the bus */
-	char tag[32];      /* the next one with this tag replaces it; "": none */
+	char tag[64];      /* the next one with this tag replaces it; "": none */
 	char summary[160];
 	char body[640];
 	int y, height;     /* where it is in the picture, in the picture's pixels */
@@ -195,7 +195,7 @@ static struct note *note_find(uint32_t id) {
  * press) replaces the last one with its tag, as most servers do. */
 static struct note *note_find_tag(const char *tag) {
 	for (int i = 0; i < note_count && tag[0] != '\0'; i++) {
-		if (strncmp(notes[i].tag, tag, sizeof(notes[i].tag) - 1) == 0) {
+		if (strcmp(notes[i].tag, tag) == 0) {
 			return &notes[i];
 		}
 	}
@@ -261,8 +261,11 @@ static void method_notify(const struct bus_message *call) {
 	 * specification has it (`notify-send -r` is a new program each time),
 	 * and the one that replaced it hears of it from then on. */
 	struct note *note = read.replaces != 0 ? note_find(read.replaces) : NULL;
+	/* A tag too long to keep whole is no tag: cut short, two different
+	 * ones could replace each other. */
+	const char *tag = strlen(read.tag) < sizeof(note->tag) ? read.tag : "";
 	if (note == NULL) {
-		note = note_find_tag(read.tag);
+		note = note_find_tag(tag);
 	}
 	if (note == NULL) {
 		if (note_count == max_shown) {
@@ -279,14 +282,16 @@ static void method_notify(const struct bus_message *call) {
 		}
 		note = &notes[note_count++];
 		/* An id nobody holds: 0 means none, and a program may still hold
-		 * one from a tw-notify that has left since. */
+		 * one from a tw-notify that has left since. libnotify keeps ids in
+		 * a signed int, so they stay below 2^31: above, `notify-send -r`
+		 * takes the id it was given for an error and aborts. */
 		do {
-			last_id++;
-		} while (last_id == 0 || note_find(last_id) != NULL);
+			last_id = last_id >= INT32_MAX ? 1 : last_id + 1;
+		} while (note_find(last_id) != NULL);
 		*note = (struct note){.id = last_id};
 	}
 	copy(note->sender, sizeof(note->sender), call->sender);
-	copy(note->tag, sizeof(note->tag), read.tag);
+	copy(note->tag, sizeof(note->tag), tag);
 	copy(note->summary, sizeof(note->summary), read.summary);
 	copy(note->body, sizeof(note->body), read.body);
 	note->critical = read.urgency == 2;
@@ -1300,7 +1305,8 @@ int main(int argc, char *argv[]) {
 	 * notification with it. */
 	struct timespec wall;
 	clock_gettime(CLOCK_REALTIME, &wall);
-	last_id = (uint32_t)((uint64_t)wall.tv_sec * 1000 + (uint64_t)wall.tv_nsec / 1000000);
+	last_id = (uint32_t)(((uint64_t)wall.tv_sec * 1000 + (uint64_t)wall.tv_nsec / 1000000) %
+		INT32_MAX);
 	if (!bus_connect()) {
 		fprintf(stderr, "tw-notify: cannot reach the session's D-Bus\n");
 		return 1;
@@ -1311,8 +1317,14 @@ int main(int argc, char *argv[]) {
 		if (dirty) {
 			window_update();
 		}
-		if (display != NULL && wl_display_flush(display) < 0 && errno != EAGAIN) {
-			compositor_gone();
+		/* What does not fit into the socket now is sent once it has room. */
+		bool unsent = false;
+		if (display != NULL && wl_display_flush(display) < 0) {
+			if (errno == EAGAIN) {
+				unsent = true;
+			} else {
+				compositor_gone();
+			}
 		}
 
 		/* Sleep until a message, an event, or the next thing due: a
@@ -1334,7 +1346,8 @@ int main(int argc, char *argv[]) {
 		}
 		struct pollfd fds[2] = {
 			{bus_fd, POLLIN, 0},
-			{display != NULL ? wl_display_get_fd(display) : -1, POLLIN, 0},
+			{display != NULL ? wl_display_get_fd(display) : -1,
+				(short)(POLLIN | (unsent ? POLLOUT : 0)), 0},
 		};
 		int timeout = wake < 0 ? -1 : wake > now ? (int)(wake - now) : 0;
 		if (poll(fds, 2, timeout) < 0 && errno != EINTR) {
@@ -1343,7 +1356,10 @@ int main(int argc, char *argv[]) {
 		if (fds[0].revents != 0) {
 			bus_read();
 		}
-		if (fds[1].revents != 0 && display != NULL && wl_display_dispatch(display) < 0) {
+		/* Room to send alone is not something to read: the flush at the
+		 * top of the loop sends it. */
+		if ((fds[1].revents & ~POLLOUT) != 0 && display != NULL &&
+				wl_display_dispatch(display) < 0) {
 			compositor_gone();
 		}
 

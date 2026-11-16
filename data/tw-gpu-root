@@ -185,6 +185,14 @@ off)
 		# all the same.)
 		for module in nvidia_uvm nvidia_modeset nvidia; do
 			[ -d "$sys/module/$module" ] || continue
+			if [ "$module" = nvidia ]; then
+				# Whatever else is built on the driver: one this list does
+				# not know (nvidia_peermem, or a part a new release splits
+				# off) would keep it loaded for good.
+				for holder in "$sys"/module/nvidia/holders/*; do
+					[ -e "$holder" ] && modprobe -r "${holder##*/}" 2>/dev/null
+				done
+			fi
 			modprobe -r "$module" 2>/dev/null || break
 		done
 		if [ -d "$sys/module/nvidia" ]; then

@@ -23,6 +23,14 @@ they would work under another one.
 
 ## The strip
 
+Two files. `strip.c` decides where windows go: the workspaces, their
+columns, the focus, the view that scrolls and the key actions. `window.c`
+is one window: its client, its nodes in the scene, its menus and title bar.
+It carries out what `strip.c` decides (`window_place()`, `window_show()`)
+and sends the client only what changed. Each calls the other through
+`tw.h`: a window that maps or unmaps goes to `strip_add()` and
+`strip_remove()`.
+
 **Workspaces and columns.** There are `TW_WORKSPACES` (9) workspaces, each a
 strip: a list of columns, left to right. A column (`struct tw_column`) is a
 stack of windows, top to bottom, sharing the column's width and splitting
@@ -34,6 +42,9 @@ chose. A window of a fixed size without a parent is often a game rather than
 a dialog, and a game goes fullscreen: it then gets a column of its own like
 any fullscreen window, and floats again when it leaves fullscreen
 (`float_after_fullscreen`). A real dialog asking for fullscreen stays put.
+A window is sized at its first commit for what it asked to be, so that its
+first frame fits; as it maps, `strip_add()` settles its state again from
+what it asks for then, since a client can change its mind in between.
 
 tw has no maximized or minimized state and no window menu, and tells each
 window so as it appears (`wm_capabilities`: fullscreen only). Left to
@@ -49,7 +60,8 @@ output hides its workspace, unless it was the one in use: the oldest
 remaining output then shows it instead (`handle_destroy()` in `output.c`).
 No window is ever moved because a monitor went away. With more than one
 output, a window sticking out of its output is trimmed at the edge
-(`window_trim()`), or it would show up on the neighbour. A monitor plugged
+(the `cut_left` and `cut_right` of `window_place()`), or it would show up
+on the neighbour. A monitor plugged
 in while the screens are off stays off with them. An output that is not for
 a desktop (a VR headset, `non_desktop`) is left alone.
 
@@ -146,7 +158,7 @@ output. A window's menus are drawn in `popup_tree`, above every window,
 dialog and top-layer surface: under its window's own tree, the menu of a
 tiled window would open behind an open dialog, unseen but holding the
 keyboard and the pointer. Each window's `popup_tree` follows its window's
-position and visibility (`window_move()`, `window_draw()`).
+position and visibility.
 
 **Keys.** Direction keys follow one scheme: I, J, K, L are up, left, down,
 right, and the arrow keys do the same. Alone they move the focus; with Shift
@@ -416,10 +428,13 @@ specification allows: `notify-send -r <id>` and scripts that close one with
 a notification is the one told of its click and its closing. Ids go on from
 the time of day in milliseconds, so a new `tw-notify` does not hand out an
 id an earlier one gave, and a program holding an old id does not reach
-somebody else's notification by accident. A notification may instead
-carry a tag (the `x-canonical-private-synchronous` hint, which most
-servers take), and replaces the one with the same tag; the level keys
-use it (**Levels** under [The strip](#the-strip)).
+somebody else's notification by accident. They stay below 2^31, wrapping
+there: libnotify keeps an id in a signed int, and `notify-send -r` aborts
+on one that does not fit. A notification may instead carry a tag (the
+`x-canonical-private-synchronous` hint, which most servers take), and
+replaces the one with the same tag; the level keys use it (**Levels**
+under [The strip](#the-strip)). A tag longer than 63 bytes counts as none,
+since two cut to the same length could replace each other.
 
 **It speaks D-Bus by itself.** The messages are read and written by
 `bus.c`, with no D-Bus library: the login line, `Hello`,
@@ -532,8 +547,10 @@ something needs it, and none of this is in tw's C code.
 (`remove` on the device; the root helper leaves the port's path in
 `/run/tw-gpu-off`, and scans that port to bring the GPU back, removing the
 note only once the GPU is back: without it the machine would pass for one
-with no NVIDIA GPU). Unloading
-alone is not enough: NVIDIA's libraries load the driver through their setuid
+with no NVIDIA GPU). The driver goes module by module, and before the
+core `nvidia` whatever else holds it, by what the kernel lists as its
+holders: a module a driver release adds would otherwise keep it loaded for
+good. Unloading alone is not enough: NVIDIA's libraries load the driver through their setuid
 `nvidia-modprobe` as soon as a program asks about the GPU, which `btop` and
 `fastfetch` do, and modprobe's configuration cannot refuse it (kmod ignores
 `install` commands for a module with soft dependencies, which `nvidia`
@@ -556,7 +573,8 @@ during the session), so that none of them grabs the NVIDIA GPU while it
 is on for another. It hands the same two on to D-Bus and systemd for the
 programs they start (the portals), and takes them back from systemd on a
 login that does not set them. And once tw is up it runs
-`tw-gpu login`, unless a monitor is on the NVIDIA GPU.
+`tw-gpu login`, unless a monitor is on the NVIDIA GPU; what that says goes
+to the journal (`journalctl -t tw-gpu`).
 
 **`tw-gpu run <program>`** switches the GPU on, starts the program with
 NVIDIA's offload variables, and switches it off afterwards. The launcher
@@ -638,7 +656,9 @@ module it unloads in `/run/tw-bluetooth-unloaded` and loads those too.
 
 `on`, `off` and the timer's `idle` are three units, which systemd would run
 side by side; the helper takes a lock first, so the timer running out
-during an `on` waits for it. `tw-power`'s helper does the same.
+during an `on` waits for it, and then does nothing: an `idle` whose note is
+less than five minutes old comes from a timer the `on` has just started
+over. `tw-power`'s helper takes a lock too.
 
 **On** leaves `/run/tw-bluetooth`, loads the drivers, waits for an adapter,
 lifts the radio's block and starts `tw-bluetooth-idle.timer`. It lifts the
@@ -649,7 +669,8 @@ blocked" is what it puts back from then on.
 
 `on` also starts the service itself at the end, since an adapter that was
 there already (an earlier `off` that could not unload its driver) brings
-no event that would start it.
+no event that would start it. Without bluez there is no service to start:
+the adapter is on all the same, and the helper says what is missing.
 
 **Off** stops `bluetooth.service` and unloads every module that holds the
 Bluetooth core and then the core, in up to five passes half a second apart:
@@ -706,12 +727,18 @@ three power-profiles-daemon writes before it stays for the session:
 
 Under the `performance` governor intel_pstate and amd-pstate refuse every
 preference but `performance`, so `saver` and `balanced` move such a CPU to
-`powersave` first, as the daemon does. Nothing else in cpufreq or
+`powersave` first, as the daemon does. A CPU with no preference to set
+(acpi-cpufreq, or either driver in passive mode) keeps its governor: there,
+`powersave` means its lowest speed all the time. Nothing else in cpufreq or
 intel_pstate moves with the daemon's profiles, and ASUS's
 `throttle_thermal_policy` follows the platform's profile by itself.
 
 `tw-power` has them written by a root helper through a oneshot unit, the
-way `tw-gpu` does its switching, and nothing stays running. A
+way `tw-gpu` does its switching, and nothing stays running. The three
+helpers' units give up after 90 seconds, so a driver that hangs cannot
+hold every later start forever, and are never refused for starting too
+often, nor is the Bluetooth timer: a loose cable or a device dropping in
+and out starts them many times. A
 machine that lacks one of the settings is not given it, and a setting that
 already reads as wanted is not written.
 

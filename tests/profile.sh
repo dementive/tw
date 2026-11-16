@@ -108,6 +108,18 @@ power saver || fail "saver failed on the performance governor"
 expect_settings "saver on the performance governor" "quiet power, 15,"
 [ "$(cat "$cpus"/cpufreq/policy*/scaling_governor | sort -u)" = powersave ] ||
 	fail "the performance governor was left in place"
+# One with no preference to weigh (acpi-cpufreq, or a driver in passive
+# mode) keeps the performance governor: powersave would hold every CPU at
+# its slowest.
+machine
+no_preference
+for policy in "$cpus"/cpufreq/policy*; do
+	echo performance >"$policy/scaling_governor"
+	echo 'performance powersave' >"$policy/scaling_available_governors"
+done
+power balanced || fail "balanced failed without preferences"
+[ "$(cat "$cpus"/cpufreq/policy*/scaling_governor | sort -u)" = performance ] ||
+	fail "the governor went to powersave on CPUs without a preference"
 
 # One whose most frugal profile is called low-power gets that one.
 machine

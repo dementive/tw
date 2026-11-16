@@ -133,6 +133,12 @@ press f
 expect_line game "leave fullscreen" "the game to ask to leave fullscreen"
 expect_state game "configure 0x0 $on fullscreen=0" "the game to float again after fullscreen"
 
+# One that asks to start fullscreen is sized for it before it draws; if it
+# changes its mind before its first frame, it floats and is told so.
+start_client fickle --fickle
+expect_line fickle "leave fullscreen" "the game to change its mind about fullscreen"
+expect_state fickle "configure 0x0 $on fullscreen=0" "the game that changed its mind to float"
+
 # --- Menus are drawn above dialogs ---------------------------------------------
 # A dialog almost as large as the screen, then a window whose menu opens over
 # the dialog's corner: the menu is in front, so the pointer reaches it.

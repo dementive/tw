@@ -4,6 +4,9 @@
 # switches Bluetooth off, unless something is connected by then.
 [Unit]
 Description=Bluetooth goes off when nothing has been connected for a while (tw-bluetooth)
+# Started over at each disconnect; a device that keeps dropping out must
+# not get it refused for starting too often.
+StartLimitIntervalSec=0
 
 [Timer]
 # tw-bluetooth names this figure in what it prints.

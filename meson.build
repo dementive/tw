@@ -167,6 +167,7 @@ tw = executable(
 	'src/output.c',
 	'src/layer.c',
 	'src/window.c',
+	'src/strip.c',
 	'src/input.c',
 	'src/clipboard.c',
 	'src/idle.c',

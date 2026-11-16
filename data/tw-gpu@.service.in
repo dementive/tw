@@ -4,7 +4,13 @@
 # without a password.
 [Unit]
 Description=Switch the NVIDIA GPU %i (tw-gpu)
+# Started at every launch of a program that wants the GPU: never refused
+# for starting too often.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+# A driver that hangs as it loads or unloads must not hold every later
+# start, and the program waiting to launch, forever.
+TimeoutStartSec=90
 ExecStart=@libexecdir@/tw-gpu-root %i

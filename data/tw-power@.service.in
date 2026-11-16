@@ -4,7 +4,13 @@
 # password.
 [Unit]
 Description=Power profile: %i (tw-power)
+# Started at every move of the power cable, and a loose one moves often:
+# never refused for starting too often.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+# A firmware setting that hangs as it is written must not hold every
+# later profile forever.
+TimeoutStartSec=90
 ExecStart=@libexecdir@/tw-power-root %i

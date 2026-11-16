@@ -256,6 +256,12 @@ all_on || fail "a second on did not leave Bluetooth on"
 [ "$(calls 'start --no-block bluetooth.service')" = 2 ] || fail "on did not start the Bluetooth service"
 
 # --- Off by itself ------------------------------------------------------------
+# The timer ran out while an `on` was running: the `on` that just finished
+# stands.
+root idle || fail "idle failed right after on"
+all_on || fail "idle undid an on that had just finished"
+# From here on the `on` is long past.
+touch -d '-11 minutes' "$run/tw-bluetooth"
 # The timer ran out with something connected: nothing happens.
 connect 256
 bluetooth status
