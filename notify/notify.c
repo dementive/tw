@@ -35,6 +35,7 @@
 
 #include "bus.h"
 #include "config.h"
+#include "cursor-shape-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
@@ -705,7 +706,10 @@ static FT_GlyphSlot glyph_load(uint32_t code, bool render) {
 	if (index == 0) {
 		face = face_get(0);
 	}
-	FT_Int32 flags = FT_LOAD_TARGET_LIGHT | (render ? FT_LOAD_RENDER : 0);
+	/* Outlines only: a scalable font may also carry pictures of its
+	 * characters at a few sizes, in one bit per pixel, which glyph_draw()
+	 * would leave out. */
+	FT_Int32 flags = FT_LOAD_TARGET_LIGHT | FT_LOAD_NO_BITMAP | (render ? FT_LOAD_RENDER : 0);
 	if (face == NULL || FT_Load_Glyph(face, index, flags) != 0) {
 		return NULL;
 	}
@@ -906,6 +910,8 @@ static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct wl_seat *seat;
 static struct wl_pointer *pointer;
+static struct wp_cursor_shape_manager_v1 *cursor_shapes;
+static struct wp_cursor_shape_device_v1 *cursor; /* the pointer's */
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wp_viewporter *viewporter;
 static struct wp_fractional_scale_manager_v1 *scale_manager;
@@ -1068,6 +1074,16 @@ static const struct xdg_activation_token_v1_listener token_listener = {
 static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t enter,
 		struct wl_surface *entered, wl_fixed_t x, wl_fixed_t y) {
 	pointer_y = y;
+	/* The cursor is ours to set on entering, or it stays as the window
+	 * below left it: a text bar, or hidden by a game. A named one needs no
+	 * cursor theme. */
+	if (cursor == NULL && cursor_shapes != NULL) {
+		cursor = wp_cursor_shape_manager_v1_get_pointer(cursor_shapes, wl_pointer);
+	}
+	if (cursor != NULL) {
+		wp_cursor_shape_device_v1_set_shape(cursor, enter, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+		say("cursor default");
+	}
 }
 
 static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t leave,
@@ -1157,6 +1173,9 @@ static void registry_global(void *data, struct wl_registry *wl_registry, uint32_
 			&wp_fractional_scale_manager_v1_interface, 1);
 	} else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
 		activation = wl_registry_bind(wl_registry, name, &xdg_activation_v1_interface, 1);
+	} else if (strcmp(interface, wp_cursor_shape_manager_v1_interface.name) == 0) {
+		cursor_shapes = wl_registry_bind(wl_registry, name,
+			&wp_cursor_shape_manager_v1_interface, 1);
 	} else if (strcmp(interface, wl_output_interface.name) == 0 && note_count > 0 &&
 			surface == NULL) {
 		/* A screen to show the list on again, after the compositor closed
@@ -1178,10 +1197,11 @@ static const struct wl_registry_listener registry_listener = {
 static void wayland_disconnect(void) {
 	window_close();
 	struct wl_proxy *proxies[] = {
-		(struct wl_proxy *)token, (struct wl_proxy *)pointer, (struct wl_proxy *)seat,
-		(struct wl_proxy *)compositor, (struct wl_proxy *)shm, (struct wl_proxy *)layer_shell,
-		(struct wl_proxy *)viewporter, (struct wl_proxy *)scale_manager,
-		(struct wl_proxy *)activation, (struct wl_proxy *)registry,
+		(struct wl_proxy *)token, (struct wl_proxy *)cursor, (struct wl_proxy *)pointer,
+		(struct wl_proxy *)seat, (struct wl_proxy *)compositor, (struct wl_proxy *)shm,
+		(struct wl_proxy *)layer_shell, (struct wl_proxy *)viewporter,
+		(struct wl_proxy *)scale_manager, (struct wl_proxy *)activation,
+		(struct wl_proxy *)cursor_shapes, (struct wl_proxy *)registry,
 	};
 	/* Only our side of each: the compositor drops its own with the
 	 * connection, and a request to some of these is an error at the
@@ -1199,6 +1219,8 @@ static void wayland_disconnect(void) {
 	shm = NULL;
 	seat = NULL;
 	pointer = NULL;
+	cursor = NULL;
+	cursor_shapes = NULL;
 	layer_shell = NULL;
 	viewporter = NULL;
 	scale_manager = NULL;

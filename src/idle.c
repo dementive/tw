@@ -12,12 +12,14 @@
  * sleeps until the next thing is. That is at most one wakeup per timeout
  * while the machine is in use, and once the outputs are off none unless a
  * suspend is still to come. While inhibited the timer fires at most once
- * more and is not set again until the inhibitor lets go.
+ * more and is not set again until the inhibitor lets go, and while the user
+ * is on another VT it is not set at all.
  */
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#include <wlr/backend/session.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_output.h>
@@ -32,11 +34,23 @@ struct tw_idle_inhibitor {
 	struct wl_listener destroy;
 };
 
+/* The user is on another VT: tw gets no input and has no outputs, so it
+ * cannot tell whether anybody is there. */
+static bool away(const struct tw_server *server) {
+	return server->session != NULL && !server->session->active;
+}
+
 /* Sets the timer for whatever is due next: blanking, or a suspend attempt.
- * Call when one of those has just happened, the screen came back on, or an
- * inhibitor let go; never per input event (see the top of this file). */
+ * Call when one of those has just happened, the screen came back on, an
+ * inhibitor let go or the user came back to tw's VT; never per input event
+ * (see the top of this file). */
 static void idle_timer_start(struct tw_server *server) {
 	int64_t next = 0; /* in milliseconds of idleness; 0 if nothing is due */
+	if (away(server)) {
+		/* Nothing is due: coming back is activity. */
+		wl_event_source_timer_update(server->idle_timer, 0);
+		return;
+	}
 	if (!server->blanked && server->blank_after_ms > 0) {
 		next = server->blank_after_ms;
 	}
@@ -51,26 +65,40 @@ static void idle_timer_start(struct tw_server *server) {
 		next == 0 ? 0 : (wait > 0 ? (int)wait : 1));
 }
 
+/* The idle clock starts over: the user did something, or something that
+ * held it off let go. */
+static void idle_clock_restart(struct tw_server *server) {
+	server->last_activity_ms = now_ms();
+	server->suspend_tries = 0;
+}
+
+/*
+ * Turns every output in use off, or on those that are off. An output that
+ * refuses to come on (a GPU still waking, a monitor still training its link)
+ * is tried again on later input; see idle_activity().
+ */
+static void outputs_power(struct tw_server *server, bool on) {
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		/* The laptop's own screen behind a closed lid stays off. */
+		if (output->lid_off || (on && output->wlr_output->enabled)) {
+			continue;
+		}
+		if (!output_set_power(output, on)) {
+			wlr_log(WLR_ERROR, "failed to power %s output %s",
+				on ? "on" : "off", output->wlr_output->name);
+		} else if (on) {
+			wlr_output_schedule_frame(output->wlr_output);
+		}
+	}
+}
+
 static void set_blanked(struct tw_server *server, bool blanked) {
 	if (server->blanked == blanked) {
 		return;
 	}
 	server->blanked = blanked;
-
-	struct tw_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		/* The laptop's own screen behind a closed lid stays off. */
-		if (output->lid_off) {
-			continue;
-		}
-		if (!output_set_power(output, !blanked)) {
-			wlr_log(WLR_ERROR, "failed to power %s output %s",
-				blanked ? "off" : "on", output->wlr_output->name);
-		}
-		if (!blanked) {
-			wlr_output_schedule_frame(output->wlr_output);
-		}
-	}
+	outputs_power(server, !blanked);
 
 	/* Suspends every window while the screen is off, resumes them after. */
 	strip_arrange(server);
@@ -81,8 +109,9 @@ static void set_blanked(struct tw_server *server, bool blanked) {
 
 static int handle_idle_timer(void *data) {
 	struct tw_server *server = data;
-	/* The timer is started again when the inhibitor goes away. */
-	if (server->idle_inhibited) {
+	/* The timer is started again when the inhibitor goes away, or when the
+	 * user comes back to this VT. */
+	if (server->idle_inhibited || away(server)) {
 		return 0;
 	}
 	int64_t idle_ms = now_ms() - server->last_activity_ms;
@@ -119,10 +148,29 @@ void suspend_now(struct tw_server *server) {
 }
 
 void idle_activity(struct tw_server *server) {
-	server->last_activity_ms = now_ms();
-	server->suspend_tries = 0;
+	idle_clock_restart(server);
 	wlr_idle_notifier_v1_notify_activity(server->idle_notifier, server->seat);
-	set_blanked(server, false);
+	if (server->blanked) {
+		set_blanked(server, false);
+	} else if (server->last_activity_ms - server->lit_check_ms >= 1000) {
+		/* An output that should be on and is not (it refused to come on, or
+		 * to be set up) is tried again, at most once a second: one that
+		 * goes on refusing must not fill the log at the pointer's rate. */
+		server->lit_check_ms = server->last_activity_ms;
+		outputs_power(server, true);
+	}
+}
+
+/* The user switched to another VT, or back. wlroots has taken the outputs
+ * away on leaving and brings them back on return. */
+static void handle_session_active(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, session_active);
+	if (!away(server)) {
+		/* Coming back is activity: the outputs come on, if they were
+		 * off, and the idle clock starts over. */
+		idle_activity(server);
+	}
+	idle_timer_start(server); /* stops it while away */
 }
 
 /*
@@ -185,7 +233,7 @@ static void update_inhibited(struct tw_server *server, struct wlr_idle_inhibitor
 		/* The idle clock starts over when the inhibitor goes away, unless
 		 * that was because the screen went off. */
 		if (!server->blanked) {
-			server->last_activity_ms = now_ms();
+			idle_clock_restart(server);
 		}
 		idle_timer_start(server);
 	}
@@ -234,6 +282,10 @@ void idle_init(struct tw_server *server) {
 	}
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);
 	idle_timer_start(server);
+	if (server->session != NULL) {
+		server->session_active.notify = handle_session_active;
+		wl_signal_add(&server->session->events.active, &server->session_active);
+	}
 
 	server->asleep_ms = asleep_ms();
 	server->resume_fd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
@@ -246,6 +298,9 @@ void idle_init(struct tw_server *server) {
 
 void idle_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_idle_inhibitor.link);
+	if (server->session != NULL) {
+		wl_list_remove(&server->session_active.link);
+	}
 	wl_event_source_remove(server->idle_timer);
 	if (server->resume_watch != NULL) {
 		wl_event_source_remove(server->resume_watch);

@@ -44,7 +44,11 @@ any fullscreen window, and floats again when it leaves fullscreen
 (`float_after_fullscreen`). A real dialog asking for fullscreen stays put.
 A window is sized at its first commit for what it asked to be, so that its
 first frame fits; as it maps, `strip_add()` settles its state again from
-what it asks for then, since a client can change its mind in between.
+what it asks for then, since a client can change its mind in between. That
+first configure carries the window's whole state (`initial_commit()` in
+`window.c`): a window that unmaps and maps again would otherwise be sent
+what it was last told, which wlroots keeps, and one hidden at the time
+would come back `suspended` and might never draw.
 
 tw has no maximized or minimized state and no window menu, and tells each
 window so as it appears (`wm_capabilities`: fullscreen only). Left to
@@ -62,8 +66,11 @@ remaining output then shows it instead (`output_hand_over()` in
 output, a window sticking out of its output is trimmed at the edge
 (the `cut_left` and `cut_right` of `window_place()`), or it would show up
 on the neighbour. A monitor plugged
-in while the screens are off stays off with them. An output that is not for
-a desktop (a VR headset, `non_desktop`) is left alone.
+in while the screens are off stays off with them, with no mode yet; it
+holds its workspace all the same (`output_showing()` asks only whether an
+output is in use), so that a second one plugged in with it takes another,
+and the workspace waits suspended until the screens come on. An output that
+is not for a desktop (a VR headset, `non_desktop`) is left alone.
 
 **The lid.** A laptop's own screen (a connector named `eDP-`, `LVDS-` or
 `DSI-`) behind a closed lid is taken out of use while another output is
@@ -82,9 +89,11 @@ behind the lid off, and the lock does not wait for it.
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
 it made with it. `handle_renderer_lost()` in `output.c` makes a new
 renderer and allocator and hands them to the compositor and every output;
-without that the screens would stay black until tw was started again. If
-an output cannot take the new ones, the old ones are not freed: drawing
-with them fails, but freed they would crash tw.
+without that the screens would stay black until tw was started again.
+Each output that took them is asked for one frame, drawn whole, since
+nothing else would repaint an idle screen (the lock screen after a bad
+wake-up). If an output cannot take the new ones, the old ones are not
+freed: drawing with them fails, but freed they would crash tw.
 
 **Arranging.** `strip_arrange()` decides where the view of each workspace on
 screen should be (`view_x`) and places everything. Call it after anything
@@ -162,7 +171,11 @@ scene, moved with the cursor. wlroots takes the picture's input region
 away, so the hit test sees through it. Unlike a click, a drag follows the
 windows as the pointer focus does (`pointer_refocus()` runs for it with
 the button held): carried to another workspace, it is over what is there,
-and let go over nothing it lands nowhere.
+and let go over nothing it lands nowhere. A refused drag is cancelled by
+destroying its data source; one without a source (a drag within one
+client) cannot be, and wlroots 0.20 has no call to free it, so each such
+refusal leaks the few hundred bytes of the `wlr_drag`. Only a client
+starting source-less drags with stale serials hits that.
 
 **Menus** (xdg popups) are kept on the output: tw hands wlroots the
 output's box when a menu first appears and again whenever its client moves
@@ -172,7 +185,9 @@ output. A window's menus are drawn in `popup_tree`, above every window,
 dialog and top-layer surface: under its window's own tree, the menu of a
 tiled window would open behind an open dialog, unseen but holding the
 keyboard and the pointer. Each window's `popup_tree` follows its window's
-position and visibility.
+position and visibility. A menu's own tree goes with the menu, or with what
+it hangs from if that goes first (`popup_attach()`), so a menu's surface
+outliving either never points at a freed or stale tree.
 
 **Keys.** Direction keys follow one scheme: I, J, K, L are up, left, down,
 right, and the arrow keys do the same. Alone they move the focus; with Shift
@@ -190,7 +205,11 @@ be Alt+L, which is Mod+L's.
 Every keyboard but a virtual one gets the same keymap, compiled once from
 the `XKB_DEFAULT_*` variables. The seat sends the keymap to every client
 whenever the keyboard in use has a different one, and a laptop has several
-keyboards: the hotkeys and the power button are keyboards too.
+keyboards: the hotkeys and the power button are keyboards too. If the
+variables name a layout xkeyboard-config does not have (an update renamed a
+variant, or they came from another machine), tw logs an error and uses
+xkbcommon's built-in default (US): with no keymap at all nobody could type,
+not even a password into the lock screen, and Ctrl+Alt+F<n> would be gone.
 
 **Levels.** The volume, brightness and keyboard-light keys run a command
 from `config.h` that changes the level and then shows the new one with
@@ -212,7 +231,10 @@ and every layer surface is arranged whenever one of them changes. So each
 remembers what it was last arranged for (the output's box and the room
 left by the surfaces before it) and is not configured again until that or
 its own state changes: a notification coming and going does not wake the
-wallpaper or a bar.
+wallpaper or a bar. wlroots takes a surface's exclusive zone off the room
+only once the surface is mapped, after its initial commit was arranged, so
+a surface with one is arranged again as it maps: a bar's room is kept from
+its first frame on.
 
 ## Screen off and lock
 
@@ -221,7 +243,24 @@ a timestamp, and when the timer fires it does what is due (blank the
 outputs, suspend the machine) and sleeps until the next thing is. A visible
 surface with an idle inhibitor holds both off; one on a hidden workspace,
 or a layer surface behind the lock curtain or on a screen that is off, does
-not. While the outputs are off every window is suspended.
+not. While the outputs are off every window is suspended, and the pointer
+is over nothing (`pointer_refocus()`): a cursor a client chose, an animated
+one included, which wlroots steps with a timer, would otherwise stay on the
+dark screen. The client under the pointer gets it back as the outputs come
+on. Input and an
+inhibitor letting go restart the clock the same way (`idle_clock_restart()`),
+failed suspend attempts included.
+
+While the user is on another VT, tw gets no input and wlroots has taken its
+outputs away, so the clock stops (`session->events.active`): nothing blanks,
+locks or suspends behind the back of someone working on a text console.
+Coming back counts as input, which also turns on the outputs wlroots
+brings back, should the screen have been off as they left.
+
+An output that refuses to come on, or to be set up as it is plugged in,
+would otherwise stay dark until something else touched it. Input tries such
+outputs again, at most once a second while it lasts, so that one that keeps
+refusing does not fill the log at the pointer's rate.
 
 Nothing tells a compositor that the machine was suspended and has woken, so
 `idle.c` keeps a timer that never expires and that the kernel cancels when
@@ -243,7 +282,16 @@ monitor, and its own screen goes out of use instead (**The lid** under
 hides every window behind an opaque curtain, and then starts the locker,
 which takes the lock over. So `locked` with `server->lock == NULL`
 is a normal state: the locker has not arrived yet, or it died. A key press
-in that state starts the locker again, at most once a second.
+in that state starts the locker again, at most once a second. A lock
+surface's first picture takes the pointer if it is under it, which rests as
+the locker arrives: a click reaches it without the mouse moving first.
+
+A locker that is installed but cannot start (its config rejected after an
+update, a library missing) leaves the session locked with nobody to unlock
+it. tw does not unlock by itself; any ext-session-lock client may take the
+lock over and unlock it, so the way out is from a text console: a locker
+that works, started with `WAYLAND_DISPLAY` set to tw's socket (for
+swaylock, `swaylock -C /dev/null` skips a broken config).
 
 The lock client is told `locked` only once the curtain is on every screen,
 as ext-session-lock requires: each output remembers its `commit_seq` as the
@@ -312,11 +360,15 @@ pipe of its own, and keeps the bytes. The program stays the clipboard's
 owner for as long as it lives. When the source goes away tw offers what it
 read as a data source of its own (`handle_takeover()`; from an idle
 callback, so that every listener has first heard that the clipboard is
-empty), until the next copy replaces it. tw knows its own source by its
-`impl` and does not read that one. A program that asks for an empty
-clipboard is obeyed: `handle_request_set_selection()` calls
-`clipboard_cleared()` first, which is how a copy taken back on purpose is
-told from one whose program exited.
+empty), until the next copy replaces it. The offer carries the serial of
+the copy it stands in for (the seat keeps it after the source is gone):
+wlroots refuses a window's copy whose input serial is older than the
+selection's, and a fresh serial would refuse copies that would have
+replaced the original, such as one a program makes when an action started
+earlier is done. tw knows its own source by its `impl` and does not read
+that one. A program that asks for an empty clipboard is obeyed:
+`handle_request_set_selection()` calls `clipboard_cleared()` first, which
+is how a copy taken back on purpose is told from one whose program exited.
 
 A copy offering `x-kde-passwordManagerHint` (KeePassXC and other password
 managers mark secrets with it) is not read at all: its program empties the
@@ -396,13 +448,21 @@ program that animates draws as often as the output refreshes.
 in; a new output, an output coming back on and a change of power supply all
 ask it. wlroots refuses a mode for an output that is off, so
 `outputs_update_mode()` skips those and `output_set_power()` sets the mode
-as it turns one on, and turns it on in its old mode if the new one is
-refused: a dark screen is the one failure this must not have.
+as it turns one on. If the output refuses it, it gets its preferred mode,
+then its old one, then the first of its modes it takes (`output_commit()`):
+a dock, a hub or a cable may not carry the preferred mode, and a monitor
+just plugged in has no old one. A dark screen is the one failure this must
+not have.
 
 **The power profile.** `battery_command` runs when the cable is pulled,
 `mains_command` when it is back, and one of the two at startup. They are
 `tw-power saver` and `tw-power balanced`; see
-[Power profiles](#power-profiles-tw-power).
+[Power profiles](#power-profiles-tw-power). One runs at a time, as a child
+tw watches through a pidfd for as long as it runs: a cable that moves twice
+at once (a loose plug, a USB-C charger agreeing on its power) would
+otherwise start two that race to the root helper, and the one that holds
+could be the one for the state that went. When it exits and the state has
+changed since, tw runs the command for the state now.
 
 **A low battery.** There is no bar, so nothing shows the charge. With each
 announcement on battery `handle_change()` reads it (the fullest battery's
@@ -475,7 +535,9 @@ Signals go to the program that sent the notification and to nobody else.
 fontconfig and drawn with FreeType, so any character some installed font
 has is shown: fontconfig's fallback list is walked for each character a
 font lacks. Colour (emoji) and bitmap fonts are passed over, since their
-pictures come in fixed sizes. Both libraries are opened with the first
+pictures come in fixed sizes, and so are the pictures some outline fonts
+(CJK ones such as WenQuanYi) carry for small sizes, one bit per pixel: only
+outlines are drawn. Both libraries are opened with the first
 picture, not at startup, so a program that only asks for the capabilities
 costs no font. With fonts loaded `tw-notify` holds about 3 MB of its own,
 most of it fontconfig's list of fonts; it is gone a second after the last
@@ -491,7 +553,10 @@ below the lock screen, so a locked session shows none. When its monitor is
 unplugged the compositor closes the surface, and the list opens again at
 once on a monitor that is left; with none left the compositor closes it
 before its first configure, and it comes back as soon as a monitor is
-plugged in. So a warning that does not expire is not left out of sight.
+plugged in. So a warning that does not expire is not left out of sight. Over
+the list the cursor is the default arrow, named through cursor-shape on
+each enter; otherwise it would keep what the window below set, a hidden
+one included.
 When the compositor itself goes, `tw-notify` tells the programs their
 notifications are gone (reason 1, expired) and exits.
 
@@ -546,9 +611,22 @@ What it does besides starting tw:
   With `TW_A11Y=1`, `tw-session` also takes the variable back from systemd,
   which remembers what an earlier session told it for as long as the user
   is logged in anywhere.
+- **Hands on `DISPLAY` only if it is tw's.** Only the startup command,
+  which tw runs, knows whether tw opened an X11 display. Without one, a
+  `DISPLAY` an earlier Plasma session left in systemd would send the
+  programs D-Bus and systemd start to an X server that is gone, so it is
+  taken back: `dbus-update-activation-environment` cannot unset a variable
+  and is handed `DISPLAY=` (an empty one, which Xlib reads as none), then
+  systemd unsets it.
 - **Says what to do when tw cannot start** because a library it was built
   against is gone after a system update (the loader's exit status, 127).
 - **Runs `~/.config/tw/autostart`**, if there is one, once tw is up.
+
+If seatd or logind goes away while tw runs, wlroots loses the seat and
+with it every GPU and input device, which nothing can bring back. tw then
+exits with status 1 (`handle_session_destroy()` in `main.c`) rather than
+stay up with a black screen and no keyboard, so the login ends and can be
+started again.
 
 The desktop portals are not the script's: `tw-portals.conf`, installed for
 xdg-desktop-portal, has screen capture and screenshots served by the wlr
@@ -579,10 +657,12 @@ has). With no NVIDIA GPU on the bus the driver itself refuses to load.
 **`tw-session`** does three things for this. A GPU, for it, is any display
 controller on the PCI bus (class `0x03`): VGA, but also 3D (`0x0302`),
 which is what the NVIDIA GPU of many laptops calls itself and which has no
-`boot_vga` file. The first GPU is the one the firmware showed the boot
-screen on (`boot_vga`); a machine whose integrated GPU is not VGA-class has
-none, and then it is the one with the built-in panel connected (eDP, LVDS,
-DSI), or else the first that is not NVIDIA's. It names the GPUs tw may use in
+`boot_vga` file. The first GPU is the one with the built-in panel connected
+(eDP, LVDS, DSI); without one (a desktop), the one the firmware showed the
+boot screen on (`boot_vga`), or else the first that is not NVIDIA's. The
+panel comes before `boot_vga` because the kernel picks the boot VGA device
+among VGA controllers only: a laptop whose integrated GPU is of another
+class (`0x0380`, some AMD ones) has it on the NVIDIA GPU. It names the GPUs tw may use in
 `WLR_DRM_DEVICES` whenever the machine has a second GPU, be it loaded,
 without its driver, or switched off, because wlroots opens a GPU that
 appears later only when that variable is unset; so the GPU can come and go
@@ -594,7 +674,10 @@ is on for another. It hands the same two on to D-Bus and systemd for the
 programs they start (the portals), and takes them back from systemd on a
 login that does not set them. And once tw is up it runs
 `tw-gpu login`, unless a monitor is on the NVIDIA GPU; what that says goes
-to the journal (`journalctl -t tw-gpu`).
+to the journal (`journalctl -t tw-gpu`). With `TW_ALL_GPUS=1` it does none
+of this, but brings back a GPU that `tw-gpu` switched off earlier in the
+boot, with `tw-gpu run true` before tw starts: `on` would leave it kept on
+for the sessions after.
 
 **`tw-gpu run <program>`** switches the GPU on, starts the program with
 NVIDIA's offload variables, and switches it off afterwards. The launcher
@@ -607,9 +690,12 @@ each dash standing for a dash or a directory (`kde-foo.desktop` may be
 `kde/foo.desktop`).
 
 Who still needs the GPU is tracked with one lock file: every program
-started by `run` inherits a shared lock on it, and the switch-off, arranged
-before the program starts and in a session of its own, waits for the
-exclusive lock. So there is no counter to get out of step.
+started by `run` inherits a shared lock on it, and the switch-off
+(`settle`), arranged before the program starts and in a session of its own,
+waits for the exclusive lock. So there is no counter to get out of step.
+One `settle` waits at a time (a second lock, `tw-gpu.settle`, held only
+while waiting): a program that stays all session, Steam, would otherwise
+gather one waiting for each game started beside it.
 
 The root helper leaves a GPU alone that any program has open (it reads
 `/proc/*/fd`), and then one `tw-gpu retry` waits for that to end: it looks
@@ -634,9 +720,9 @@ update the running kernel's modules are gone until the next boot, and a
 driver unloaded then could not be loaded again. `tw-gpu` then keeps it on
 and says to reboot. A machine with no NVIDIA driver installed at all is
 told apart by the running kernel's own modules still being there, and is
-told so instead. `tw-gpu` also keeps the GPU on whenever tw has it open:
-with no GPUs named in `WLR_DRM_DEVICES` (one GPU, or `TW_ALL_GPUS=1`)
-wlroots opened them all.
+told so instead. `tw-gpu` also keeps the GPU on whenever tw has it open,
+and `off` says so: when `WLR_DRM_DEVICES` names it, or names no GPUs (one
+GPU, or `TW_ALL_GPUS=1`), so that wlroots opened them all.
 
 Switching on has a trap: the kernel announces the GPU before a driver can
 bind to it, udev loads the driver in answer, that load fails ("probe
@@ -648,7 +734,9 @@ Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
 `tw-gpu-root`. The two units could run side by side, so the helper takes
 a lock (`/run/tw-gpu.lock`) and does one thing at a time. When a unit
 fails, `tw-gpu` says which journal to read. `tw-power` and `tw-bluetooth`
-are built the same way.
+are built the same way; `tw-power`'s lock does not order two profiles (tw
+runs its own one at a time), it keeps one set by hand at the same moment
+from mixing with tw's.
 
 A udev rule (`72-tw-gpu.rules`) lets an NVIDIA GPU whose driver is
 unloaded power down. CachyOS's `71-nvidia.rules` forbids that; tw's sorts

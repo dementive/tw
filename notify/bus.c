@@ -24,7 +24,7 @@ static size_t round_up(size_t value, size_t alignment) {
 
 /* --- Reading ---------------------------------------------------------------- */
 
-void bus_read_align(struct bus_reader *reader, size_t alignment) {
+static void bus_read_align(struct bus_reader *reader, size_t alignment) {
 	size_t pos = round_up(reader->pos, alignment);
 	if (pos > reader->size) {
 		reader->failed = true;
@@ -45,7 +45,7 @@ static const uint8_t *take(struct bus_reader *reader, size_t alignment, size_t s
 	return bytes;
 }
 
-uint8_t bus_read_byte(struct bus_reader *reader) {
+static uint8_t bus_read_byte(struct bus_reader *reader) {
 	const uint8_t *bytes = take(reader, 1, 1);
 	return bytes != NULL ? bytes[0] : 0;
 }
@@ -69,11 +69,11 @@ static const char *text(struct bus_reader *reader, size_t length) {
 	return (const char *)bytes;
 }
 
-const char *bus_read_string(struct bus_reader *reader) {
+static const char *bus_read_string(struct bus_reader *reader) {
 	return text(reader, bus_read_u32(reader));
 }
 
-const char *bus_read_signature(struct bus_reader *reader) {
+static const char *bus_read_signature(struct bus_reader *reader) {
 	return text(reader, bus_read_byte(reader));
 }
 

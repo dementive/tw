@@ -386,8 +386,12 @@ static void handle_takeover(void *data) {
 		offered++;
 	}
 	wlr_log(WLR_DEBUG, "clipboard: its program is gone, offering %zu formats", offered);
-	wlr_seat_set_selection(clip->server->seat, &copy->source,
-		wl_display_next_serial(clip->server->display));
+	/* With the serial of the copy it stands in for, which the seat still
+	 * holds: a copy that would have replaced the original replaces this.
+	 * A new serial would refuse one a program makes later than the input
+	 * event it gives (a screenshot tool when its capture is done). */
+	struct wlr_seat *seat = clip->server->seat;
+	wlr_seat_set_selection(seat, &copy->source, seat->selection_serial);
 }
 
 /* --- What is on the clipboard changed --------------------------------------- */

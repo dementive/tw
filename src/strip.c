@@ -653,16 +653,16 @@ bool strip_add(struct tw_window *window) {
 	struct tw_server *server = window->server;
 	struct tw_workspace *workspace = active_workspace(server);
 	/* Its state is settled here as if it had been asked for now: the
-	 * initial commit only sized it. A client may have changed its mind about
-	 * fullscreen since. */
+	 * initial commit only told the client what to expect. A client may have
+	 * changed its mind about fullscreen since. */
 	bool fullscreen = window->xdg_toplevel->requested.fullscreen;
 	window->fullscreen = window->float_after_fullscreen = false;
 	if (window->floating) {
 		window->workspace = workspace;
 		wl_list_insert(&workspace->floating, &window->link);
-		if (window->width > 0 && !fullscreen) {
-			/* Sized for fullscreen at its first commit, which it no longer
-			 * wants: it picks its own size after all. */
+		if (window->fullscreen_applied && !fullscreen) {
+			/* Told it was fullscreen at its first commit, which it no
+			 * longer wants: it is a dialog after all. */
 			window_set_floating(window, true);
 		} else {
 			window_restack(window);
@@ -683,7 +683,9 @@ void strip_remove(struct tw_window *window) {
 	struct tw_server *server = window->server;
 	window_remove(window);
 	if (server->focused == window) {
-		/* Cleared directly: this surface must not be sent a configure now. */
+		/* Cleared without telling the client: unmapped, it is sent nothing
+		 * (wlroots would drop it), and initial_commit() tells it it is not
+		 * activated if it maps again. */
 		server->focused = NULL;
 	}
 	focus_update(server);

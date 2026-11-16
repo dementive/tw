@@ -155,4 +155,24 @@ wait_until "Mod+Alt+L to lock" locks $((locked_now + 1))
 wait_until "the machine to be suspended with the inhibitor behind the lock" suspends 4
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart, suspend"
+
+# An inhibitor going away starts the clock over as input does, attempts
+# included: the next one is a period away, not one period per attempt that
+# failed before it. Without a locker nothing hides the inhibitor as tw tries.
+rm "$bin_dir/swaylock" "$run_dir/suspend.log"
+start_tw -b 0 -z 1
+start_client g
+expect_state g "$on" "the window to start visible"
+wait_until "three attempts, a second apart" suspends 3
+start_client show --inhibit
+show_pid=$last_client_pid
+expect_state show "$on" "the inhibiting window to be focused"
+sleep 1.5
+attempts=$(grep -c . "$run_dir/suspend.log")
+kill "$show_pid"
+sleep 2.5
+[ "$(grep -c . "$run_dir/suspend.log")" -gt "$attempts" ] ||
+	fail "after the inhibitor went, the next attempt was not a period away"
+
+stop_tw
+echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart, suspend, the clock after an inhibitor"

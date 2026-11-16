@@ -47,6 +47,7 @@ struct tw_lock_surface {
 	struct wlr_session_lock_surface_v1 *lock_surface;
 	struct wlr_scene_tree *tree;
 	int width, height; /* last size sent, to avoid redundant configures */
+	struct wl_listener commit; /* until its first picture, then detached */
 	struct wl_listener destroy;
 };
 
@@ -122,9 +123,25 @@ void lock_arrange(struct tw_server *server) {
 	}
 }
 
+/* Its first picture is in the scene (wlroots' own commit listener ran
+ * first). If it is under the pointer, which rests as the locker usually
+ * arrives, the pointer goes to it without waiting for the mouse to move: a
+ * click reaches it, and it can hide the cursor. The map signal would be too
+ * early: it comes before the scene has the picture. */
+static void handle_surface_commit(struct wl_listener *listener, void *data) {
+	struct tw_lock_surface *surface = wl_container_of(listener, surface, commit);
+	if (!surface->lock_surface->surface->mapped) {
+		return;
+	}
+	wl_list_remove(&surface->commit.link);
+	wl_list_init(&surface->commit.link);
+	pointer_refocus(surface->lock->server);
+}
+
 static void handle_surface_destroy(struct wl_listener *listener, void *data) {
 	struct tw_lock_surface *surface = wl_container_of(listener, surface, destroy);
 	struct tw_server *server = surface->lock->server;
+	wl_list_remove(&surface->commit.link);
 	wl_list_remove(&surface->destroy.link);
 	wl_list_remove(&surface->link);
 	/* Its scene tree goes with the wl_surface, or with lock->tree. */
@@ -149,6 +166,9 @@ static void handle_new_surface(struct wl_listener *listener, void *data) {
 		wl_resource_post_no_memory(lock_surface->resource);
 		return;
 	}
+	/* After the scene tree's: wlroots runs listeners in order. */
+	surface->commit.notify = handle_surface_commit;
+	wl_signal_add(&lock_surface->surface->events.commit, &surface->commit);
 	surface->destroy.notify = handle_surface_destroy;
 	wl_signal_add(&lock_surface->events.destroy, &surface->destroy);
 	wl_list_insert(&lock->surfaces, &surface->link);

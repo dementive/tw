@@ -20,9 +20,14 @@
 struct tw_popup {
 	struct tw_server *server;
 	struct wlr_xdg_popup *xdg_popup;
+	/* Its place in the scene, also in xdg_popup->base->data: NULL until it
+	 * has one, and again once the tree is gone, whichever goes first, the
+	 * popup or what it hangs from. */
+	struct wlr_scene_tree *tree;
 	struct wl_listener commit;
 	struct wl_listener reposition;
 	struct wl_listener destroy;
+	struct wl_listener tree_destroy; /* linked while tree != NULL */
 };
 
 static struct tw_window *window_from_toplevel(struct wlr_xdg_toplevel *toplevel) {
@@ -216,13 +221,9 @@ static void window_unmap(struct tw_window *window) {
 	strip_remove(window);
 	x11_window_closed(server);
 
-	/* If the client maps again it starts from a fresh initial commit, and
-	 * nothing may be sent to it before that. `suspended` stays: wlroots
-	 * keeps the state it last sent, and so the cache has to as well. */
-	window->width = window->height = 0;
-	window->fullscreen = window->fullscreen_applied = false;
-	window->floating = window->float_after_fullscreen = false;
-	window_restack(window);
+	/* Nothing may be sent to the client until it commits again, and
+	 * initial_commit() then tells it its whole state afresh. What the scene
+	 * shows of it goes back to how a new window starts. */
 	window->clip = (struct wlr_box){0};
 	wlr_scene_node_set_enabled(&window->surface_tree->node, true);
 	window->cut_left = window->cut_right = 0;
@@ -261,37 +262,45 @@ static void handle_unmap(struct wl_listener *listener, void *data) {
  * maps. A dialog picks its own size. A window that asks to start fullscreen
  * (`mpv --fs`) is sized for that, even a game of a fixed size, which would
  * otherwise float: it is in the strip for as long as it stays fullscreen.
- * strip_add() settles all of it again as the window maps.
+ * strip_add() settles where it goes, and whether it is fullscreen, as it maps.
+ *
+ * The whole state goes in one configure. A window that was mapped before
+ * would otherwise be sent what it was last told then, which wlroots keeps:
+ * suspended (it was hidden), a client that draws nothing while suspended
+ * would never show up again; tiled, a dialog would draw no shadow.
  */
 static void initial_commit(struct tw_window *window) {
 	struct wlr_xdg_toplevel *toplevel = window->xdg_toplevel;
-	/* A window that was mapped before may still be sent the fullscreen
-	 * state it had then. */
-	if (toplevel->scheduled.fullscreen && !toplevel->requested.fullscreen) {
-		wlr_xdg_toplevel_set_fullscreen(toplevel, false);
-	}
-	/* tw has no maximized or minimized state and no window menu: told
-	 * otherwise, a program that draws its own title bar shows buttons for
-	 * them that do nothing. */
-	wlr_xdg_toplevel_set_wm_capabilities(toplevel, WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN);
 	decoration_apply(window);
 
 	window->floating = wants_float(toplevel);
 	bool fullscreen = toplevel->requested.fullscreen &&
 		(!window->floating || toplevel->parent == NULL);
-	int width, height;
-	if ((window->floating && !fullscreen) ||
-			!strip_initial_size(window->server, fullscreen, &width, &height)) {
-		wlr_xdg_toplevel_set_size(toplevel, 0, 0);
-		return;
+	bool tiled = !window->floating || fullscreen;
+	/* With no output showing the workspace, it picks its own size for now. */
+	int width = 0, height = 0;
+	if (tiled) {
+		strip_initial_size(window->server, fullscreen, &width, &height);
 	}
-	wlr_xdg_toplevel_set_tiled(toplevel,
-		WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
-	if (fullscreen) {
-		window->fullscreen = true;
-		window_apply_fullscreen(window);
-	}
-	window_resize(window, width, height, true);
+	struct wlr_xdg_toplevel_configure configure = {
+		/* tw has no maximized or minimized state and no window menu: told
+		 * otherwise, a program that draws its own title bar shows buttons
+		 * for them that do nothing. */
+		.fields = WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES,
+		.wm_capabilities = WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN,
+		.fullscreen = fullscreen,
+		.tiled = tiled ? WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT :
+			WLR_EDGE_NONE,
+		.width = width,
+		.height = height,
+	};
+	wlr_xdg_toplevel_configure(toplevel, &configure);
+
+	window->width = width;
+	window->height = height;
+	window->suspended = false;
+	window->fullscreen_applied = fullscreen;
+	window_restack(window);
 }
 
 static void handle_commit(struct wl_listener *listener, void *data) {
@@ -519,12 +528,46 @@ static void handle_popup_reposition(struct wl_listener *listener, void *data) {
 	popup_unconstrain(popup);
 }
 
+/* What the popup hangs from has gone, and its tree with it. */
+static void handle_popup_tree_destroy(struct wl_listener *listener, void *data) {
+	struct tw_popup *popup = wl_container_of(listener, popup, tree_destroy);
+	wl_list_remove(&popup->tree_destroy.link);
+	popup->tree = NULL;
+	popup->xdg_popup->base->data = NULL;
+}
+
 static void handle_popup_destroy(struct wl_listener *listener, void *data) {
 	struct tw_popup *popup = wl_container_of(listener, popup, destroy);
+	/* Its surface may live on and become another popup, which gets a tree
+	 * of its own. */
+	if (popup->tree != NULL) {
+		wl_list_remove(&popup->tree_destroy.link);
+		popup->xdg_popup->base->data = NULL;
+		wlr_scene_node_destroy(&popup->tree->node);
+	}
 	wl_list_remove(&popup->commit.link);
 	wl_list_remove(&popup->reposition.link);
 	wl_list_remove(&popup->destroy.link);
 	free(popup);
+}
+
+void popup_attach(struct wlr_xdg_popup *xdg_popup, struct wlr_scene_tree *parent) {
+	struct wl_listener *listener = wl_signal_get(&xdg_popup->events.destroy, handle_popup_destroy);
+	if (listener == NULL) {
+		return;
+	}
+	struct tw_popup *popup = wl_container_of(listener, popup, destroy);
+	if (popup->tree != NULL) {
+		return;
+	}
+	/* Out of memory, the menu stays invisible. */
+	popup->tree = wlr_scene_xdg_surface_create(parent, xdg_popup->base);
+	if (popup->tree == NULL) {
+		return;
+	}
+	xdg_popup->base->data = popup->tree;
+	popup->tree_destroy.notify = handle_popup_tree_destroy;
+	wl_signal_add(&popup->tree->node.events.destroy, &popup->tree_destroy);
 }
 
 static void handle_new_popup(struct wl_listener *listener, void *data) {
@@ -538,21 +581,20 @@ static void handle_new_popup(struct wl_listener *listener, void *data) {
 	}
 	popup->server = server;
 	popup->xdg_popup = xdg_popup;
-
-	/* A layer surface's popup has no parent yet; layer.c gives it a scene
-	 * tree when the client attaches it. Anything else stays invisible. */
-	struct wlr_xdg_surface *parent = xdg_popup->parent != NULL ?
-		wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent) : NULL;
-	if (parent != NULL && parent->data != NULL) {
-		xdg_popup->base->data = wlr_scene_xdg_surface_create(parent->data, xdg_popup->base);
-	}
-
 	popup->commit.notify = handle_popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
 	popup->reposition.notify = handle_popup_reposition;
 	wl_signal_add(&xdg_popup->events.reposition, &popup->reposition);
 	popup->destroy.notify = handle_popup_destroy;
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
+
+	/* A layer surface's popup has no parent yet; layer.c attaches it when
+	 * the client does. Anything else stays invisible. */
+	struct wlr_xdg_surface *parent = xdg_popup->parent != NULL ?
+		wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent) : NULL;
+	if (parent != NULL && parent->data != NULL) {
+		popup_attach(xdg_popup, parent->data);
+	}
 }
 
 void window_init(struct tw_server *server) {

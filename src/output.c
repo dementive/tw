@@ -20,15 +20,16 @@
  * no window ever has to be moved because a monitor went away.
  */
 
+/*
+ * Whether an output holds a workspace depends only on its being in use, not
+ * on its having a mode yet: one plugged in while the screens are off has
+ * none until they come on, and a second output must not take its workspace
+ * meanwhile. output_boxes() fails for it, so its workspace waits suspended.
+ */
 struct tw_output *output_showing(struct tw_server *server, size_t workspace) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		struct wlr_box box;
-		if (output->workspace != workspace) {
-			continue;
-		}
-		wlr_output_layout_get_box(server->output_layout, output->wlr_output, &box);
-		if (!wlr_box_empty(&box)) {
+		if (output->workspace == workspace && !output->lid_off) {
 			return output;
 		}
 	}
@@ -37,6 +38,16 @@ struct tw_output *output_showing(struct tw_server *server, size_t workspace) {
 
 struct tw_output *output_focused(struct tw_server *server) {
 	return output_showing(server, server->active);
+}
+
+struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except) {
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (output != except && !output->lid_off) {
+			return output;
+		}
+	}
+	return NULL;
 }
 
 struct tw_output *output_at(struct tw_server *server, double lx, double ly) {
@@ -125,36 +136,63 @@ void outputs_update_mode(struct tw_server *server) {
 	}
 }
 
+/* Commits power, a scale above 0 and a mode other than NULL to an output,
+ * or with `test` only asks whether it would take them. */
+static bool output_try(struct wlr_output *wlr_output, bool on, float scale,
+		struct wlr_output_mode *mode, bool test) {
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_enabled(&state, on);
+	if (scale > 0) {
+		wlr_output_state_set_scale(&state, scale);
+	}
+	if (mode != NULL) {
+		wlr_output_state_set_mode(&state, mode);
+	}
+	bool done = test ? wlr_output_test_state(wlr_output, &state) :
+		wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+	return done;
+}
+
 /*
  * Turns an output on, in the mode it should be in now, or off; a scale above
  * 0 is set as well. A dark screen is the one failure this must not have, so
- * a mode the output refuses gives way to its preferred one, and that to the
- * mode it had.
+ * a mode the output refuses gives way to its preferred one, then to the mode
+ * it had, then to the first of its modes it takes: a dock, a hub or a cable
+ * may not carry the preferred one, and a monitor just plugged in has no mode
+ * to keep.
  */
 static bool output_commit(struct tw_output *output, bool on, float scale) {
-	struct wlr_output_mode *mode = on ? output_mode(output) : NULL;
-	for (;;) {
-		struct wlr_output_state state;
-		wlr_output_state_init(&state);
-		wlr_output_state_set_enabled(&state, on);
-		if (scale > 0) {
-			wlr_output_state_set_scale(&state, scale);
+	struct wlr_output *wlr_output = output->wlr_output;
+	struct wlr_output_mode *wanted = on ? output_mode(output) : NULL;
+	bool done = output_try(wlr_output, on, scale, wanted, false);
+	/* Only an output with modes has others to fall back on. */
+	if (wanted != NULL) {
+		struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr_output);
+		struct wlr_output_mode *had = wlr_output->current_mode;
+		if (!done && preferred != wanted) {
+			done = output_try(wlr_output, on, scale, preferred, false);
 		}
-		if (mode != NULL) {
-			wlr_output_state_set_mode(&state, mode);
+		if (!done && had != NULL && had != wanted && had != preferred) {
+			done = output_try(wlr_output, on, scale, NULL, false);
 		}
-		bool done = wlr_output_commit_state(output->wlr_output, &state);
-		wlr_output_state_finish(&state);
-		if (done && !on) {
-			/* A screen that is off needs no curtain drawn on it. */
-			lock_confirm(output->server);
+		struct wlr_output_mode *mode;
+		wl_list_for_each(mode, &wlr_output->modes, link) {
+			if (done) {
+				break;
+			}
+			if (mode != wanted && mode != preferred && mode != had &&
+					output_try(wlr_output, on, scale, mode, true)) {
+				done = output_try(wlr_output, on, scale, mode, false);
+			}
 		}
-		if (done || mode == NULL) {
-			return done;
-		}
-		struct wlr_output_mode *preferred = wlr_output_preferred_mode(output->wlr_output);
-		mode = mode != preferred ? preferred : NULL;
 	}
+	if (done && !on) {
+		/* A screen that is off needs no curtain drawn on it. */
+		lock_confirm(output->server);
+	}
+	return done;
 }
 
 bool output_set_power(struct tw_output *output, bool on) {
@@ -210,17 +248,6 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
 	wlr_output_commit_state(output->wlr_output, event->state);
 }
 
-/* The oldest output in use, other than `except`; NULL if there is none. */
-static struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except) {
-	struct tw_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		if (output != except && !output->lid_off) {
-			return output;
-		}
-	}
-	return NULL;
-}
-
 /*
  * An output is leaving the layout, or going away. Its workspace is hidden
  * from here on. If that is where the user was working, the oldest remaining
@@ -239,19 +266,24 @@ static void output_hand_over(struct tw_output *output) {
 	}
 }
 
-static void handle_destroy(struct wl_listener *listener, void *data) {
-	struct tw_output *output = wl_container_of(listener, output, destroy);
-	struct tw_server *server = output->server;
-	layers_output_destroyed(server, output->wlr_output);
+/* Detaches an output from its wlr_output and frees it. */
+static void output_free(struct tw_output *output) {
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->present.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
-	/* The output layout raises its change event next, which arranges. */
-	output_hand_over(output);
 	wl_list_remove(&output->link);
 	output->wlr_output->data = NULL;
 	free(output);
+}
+
+static void handle_destroy(struct wl_listener *listener, void *data) {
+	struct tw_output *output = wl_container_of(listener, output, destroy);
+	struct tw_server *server = output->server;
+	layers_output_destroyed(server, output->wlr_output);
+	/* The output layout raises its change event next, which arranges. */
+	output_hand_over(output);
+	output_free(output);
 	/* The last monitor of a docked laptop with its lid closed: the
 	 * laptop's own screen comes back. */
 	outputs_lid(server, server->lid.closed);
@@ -287,8 +319,10 @@ static void output_enter(struct tw_output *output) {
 	struct tw_server *server = output->server;
 	struct wlr_output *wlr_output = output->wlr_output;
 	const struct tw_output_rule *rule = output_rule(wlr_output->name);
-	output->lid_off = false;
+	/* Picked before it counts as in use, or the workspace it showed before
+	 * would look taken: by itself. */
 	output->workspace = output_pick_workspace(output);
+	output->lid_off = false;
 
 	/* While the screens are off a new one stays off with them, until the
 	 * next input turns them all on (idle.c). */
@@ -453,6 +487,10 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data) {
 		if (!wlr_output_init_render(output->wlr_output, allocator, renderer)) {
 			wlr_log(WLR_ERROR, "output %s: cannot draw on it again", output->wlr_output->name);
 			all = false;
+		} else if (output->wlr_output->enabled) {
+			/* Nothing else asks for a frame: the scene took no damage.
+			 * The new buffers have no age, so the frame is drawn whole. */
+			wlr_output_schedule_frame(output->wlr_output);
 		}
 	}
 	/* An output that could not switch still draws with the old ones: they
@@ -508,4 +546,12 @@ void output_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_output.link);
 	wl_list_remove(&server->layout_change.link);
 	wl_list_remove(&server->renderer_lost.link);
+	/* The backend destroys the outputs only after the scene and the
+	 * renderer are gone, so none of tw's handlers may run then: an output
+	 * going would bring the laptop's own screen back, drawn with what was
+	 * freed, and could lock the session on the way out. */
+	struct tw_output *output, *tmp;
+	wl_list_for_each_safe(output, tmp, &server->outputs, link) {
+		output_free(output);
+	}
 }

@@ -92,21 +92,22 @@ expect_line box "pointer unconfined" "moving the focus away to end the confineme
 
 # --- Locked session: the pointer reaches only the lock screen -------------------
 # The pointer rests on a window as the session locks, as it does when the
-# session locks on idle: a click without moving it must not reach the window.
+# session locks on idle. The lock screen appears under it and gets it
+# without the pointer moving: a click goes to the lock screen, not to the
+# window.
 pointer_to 100 100
 sleep 0.2
 buttons() { cat "$run_dir/a.log" "$run_dir/game.log" "$run_dir/box.log" | grep -c '^button' || true; }
 buttons_before=$(buttons)
 start_client locker --lock
 expect_line locker locked "the session to lock"
-click
-sleep 0.3
-[ "$(buttons)" = "$buttons_before" ] || fail "a click without moving the pointer reached a window behind the lock"
+expect_line locker "pointer enter 100 100" "the lock screen to get the pointer resting under it"
 before=$(count a '^pointer\|^button')
-pointer_to 100 100
-expect_line locker "pointer enter 100 100" "the pointer to go to the lock screen"
 click
-expect_line locker "button 272 pressed" "clicks to go to the lock screen"
+expect_line locker "button 272 pressed" "a click without moving the pointer to go to the lock screen"
+[ "$(buttons)" = "$buttons_before" ] || fail "a click without moving the pointer reached a window behind the lock"
+pointer_by 5 0
+expect_line locker "pointer motion 105 100" "movement to go to the lock screen"
 sleep 0.3
 has a '^pointer\|^button' "$before" || fail "a window got pointer input while the session was locked"
 press Return
@@ -164,6 +165,17 @@ wait_until "the window the strip glides under the pointer to get it" \
 expect_line p1 "pointer motion 100 100" "the pointer to follow the glide to its end"
 last_line_matches a pointer leave || fail "the first window kept the pointer after the glide"
 
+# --- Screens off: the pointer is over nothing ----------------------------------
+# A cursor a window chose does not stay on a dark screen (an animated "busy"
+# one would wake tw at every image): the window loses the pointer as the
+# screens go off, and gets it back where it was as they come on.
+press super+shift+p
+wait_until "the window under the pointer to lose it as the screens go off" \
+	last_line_matches p1 pointer "pointer leave"
+press x
+wait_until "the window under the pointer to get it back as the screens come on" \
+	last_line_matches p1 pointer "pointer enter 100 100"
+
 # --- Drag and drop ---------------------------------------------------------------
 # Text dragged from one window to the one beside it arrives there. The two
 # share the screen: the drop window on the left, the drag window, newest
@@ -195,4 +207,4 @@ expect_keyboard drag leave "the keyboard to follow the focus once the drag is ov
 [ "$(grep -c '^drop$' "$run_dir/drop.log")" = 1 ] || fail "a drag let go over an empty workspace landed on a hidden window"
 
 stop_tw
-echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer"
+echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off"

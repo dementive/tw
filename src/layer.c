@@ -127,9 +127,17 @@ void layers_output_destroyed(struct tw_server *server, struct wlr_output *output
 
 static void handle_map(struct wl_listener *listener, void *data) {
 	/* Its place was settled at its initial commit, which arranges; what
-	 * mapping changes is who may have the keyboard. */
+	 * mapping changes is who may have the keyboard. And the room it keeps:
+	 * wlroots takes a surface's exclusive zone off the room only once it
+	 * is mapped, so a bar is arranged again now (and told the same size
+	 * once more). */
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, map);
-	layers_update_keyboard(surface->server);
+	if (surface->layer_surface->current.exclusive_zone > 0) {
+		surface->configured = false;
+		layers_arrange(surface->server);
+	} else {
+		layers_update_keyboard(surface->server);
+	}
 	strip_arrange(surface->server);
 }
 
@@ -164,10 +172,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 static void handle_new_popup(struct wl_listener *listener, void *data) {
 	/* window.c already tracks the popup; it only lacked a place in the scene. */
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, new_popup);
-	struct wlr_xdg_popup *popup = data;
-	if (popup->base->data == NULL) {
-		popup->base->data = wlr_scene_xdg_surface_create(surface->scene->tree, popup->base);
-	}
+	popup_attach(data, surface->scene->tree);
 }
 
 bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, struct wlr_box *box) {
@@ -193,37 +198,33 @@ bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, stru
 	return false;
 }
 
+/*
+ * wlroots unmaps a layer surface before it destroys it, whichever way it
+ * goes, and handle_unmap() gave back the keyboard and the room it kept. One
+ * that never mapped had neither. The scene node goes with the layer surface.
+ */
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, destroy);
-	struct tw_server *server = surface->server;
-
 	wl_list_remove(&surface->map.link);
 	wl_list_remove(&surface->unmap.link);
 	wl_list_remove(&surface->commit.link);
 	wl_list_remove(&surface->destroy.link);
 	wl_list_remove(&surface->new_popup.link);
 	wl_list_remove(&surface->link);
-	/* Unmap normally ran first and already handed the keyboard back. */
-	if (server->keyboard_layer == surface) {
-		server->keyboard_layer = NULL;
-		focus_update(server);
-	}
-	/* wlroots destroys the scene node together with the layer surface. */
 	free(surface);
-
-	layers_arrange(server);
-	strip_arrange(server);
 }
 
 static void handle_new_layer_surface(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, new_layer_surface);
 	struct wlr_layer_surface_v1 *layer_surface = data;
 
-	/* A client that names no output (a launcher) gets the focused one. */
+	/* A client that names no output (a launcher, tw-notify) gets the
+	 * focused one, else one in use: never the laptop's own screen behind a
+	 * closed lid, where it would wait unseen for a configure. */
 	if (layer_surface->output == NULL) {
 		struct tw_output *output = output_focused(server);
-		if (output == NULL && !wl_list_empty(&server->outputs)) {
-			output = wl_container_of(server->outputs.next, output, link);
+		if (output == NULL) {
+			output = output_oldest(server, NULL);
 		}
 		if (output == NULL) {
 			wlr_layer_surface_v1_destroy(layer_surface);

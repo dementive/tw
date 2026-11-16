@@ -305,6 +305,20 @@ loaded || fail "the GPU went off under a program left in the background"
 wait_until "the GPU to go off after the background program" settled
 off || fail "the GPU stayed on after the background program exited"
 
+# A program that stays (Steam) and others started beside it one after
+# another (its games): one switch-off waits for them all, not one for each.
+before=$(calls 'start tw-gpu@off')
+gpu "$data/tw-gpu" run sleep 1.5 &
+wait_until "the switch-off to be arranged" pgrep -f "$data/tw-gpu settle"
+for game in 1 2 3; do gpu "$data/tw-gpu" run true; done
+sleep 0.3
+[ "$(pgrep -fc "$data/tw-gpu settle")" = 1 ] ||
+	fail "$(pgrep -fc "$data/tw-gpu settle") switch-offs wait for the same programs"
+wait
+wait_until "the GPU to go off after the programs" settled
+off || fail "the GPU stayed on after the programs exited"
+[ "$(calls 'start tw-gpu@off')" = $((before + 1)) ] || fail "expected one switch-off for the programs"
+
 # --- on: stays on until off -----------------------------------------------------
 gpu "$data/tw-gpu" on || fail "on failed"
 loaded || fail "on did not load the driver"
@@ -351,9 +365,10 @@ sleep 0.5
 loaded || fail "a pending switch-off overrode 'tw-gpu on'"
 # One that tw drives a monitor with is not even tried.
 before=$(calls 'start tw-gpu@off')
-if gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" off 2>/dev/null; then
+if gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" off 2>"$tmp/err"; then
 	fail "off succeeded on the GPU driving a monitor"
 fi
+grep -q 'stays on for this session' "$tmp/err" || fail "off did not say tw keeps the GPU on: $(cat "$tmp/err")"
 wait_until "the waiting to end for a GPU driving a monitor" settled
 [ "$(calls 'start tw-gpu@off')" = "$before" ] || fail "tried to switch off a GPU driving a monitor"
 gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" status |
@@ -784,44 +799,49 @@ expect_session() { # <description> <devices> <first GPU> <egl> <vulkan> <step> [
 	description=$1
 	told=$told_none
 	[ -z "$4" ] || told=$told_gpu
-	want="WLR_DRM_DEVICES=$2;first GPU=$3;__EGL_VENDOR_LIBRARY_FILENAMES=$4;VK_LOADER_DRIVERS_DISABLE=$5;once tw is up=$6;$a11y;$told;"
+	want="before tw starts=$before_tw;WLR_DRM_DEVICES=$2;first GPU=$3;__EGL_VENDOR_LIBRARY_FILENAMES=$4;VK_LOADER_DRIVERS_DISABLE=$5;once tw is up=$6;$a11y;$told;"
 	shift 6
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
 }
 
-boot_vga='card1, the boot VGA device' # which GPU tw-session takes first, and why
+panel='card1, the built-in panel' # which GPU tw-session takes first, and why
+before_tw= # what it runs before tw starts
 
 machine
-expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 # Many laptops call the second GPU a 3D controller, which has no boot_vga.
 echo 0x030200 >"$nvidia/class"
 rm "$nvidia/boot_vga"
-expect_session "the NVIDIA GPU as a 3D controller" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA GPU as a 3D controller" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/driver" unload
-expect_session "a 3D controller without its driver" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "a 3D controller without its driver" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/driver" load
 echo 0x030000 >"$nvidia/class"
 echo 0 >"$nvidia/boot_vga"
 # Its driver unloaded: there is no second card, and tw must still be told to
 # use the first one only, or it would open the second when the driver loads.
 "$bin/driver" unload
-expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 # Switched off by tw-gpu, as after logging out and in: not even on the bus.
 echo "$port" >"$flag"
 "$bin/pci" remove
-expect_session "the NVIDIA GPU switched off" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA GPU switched off" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/pci" rescan
 rm "$flag"
-# No GPU is a VGA controller, so none has a boot_vga file: some laptops call
-# their first GPU a display controller of the other kind (0x0380). The first
-# one is then the one with the built-in panel, although NVIDIA's comes first.
+# Some laptops call their first GPU a display controller of the other kind
+# (0x0380), which the kernel does not count among VGA devices: the NVIDIA
+# GPU, if it is a VGA controller, is then the boot VGA device. The first GPU
+# is still the one with the built-in panel, although NVIDIA's comes first.
 "$bin/driver" load
 echo 0x038000 >"$intel/class"
 rm "$intel/boot_vga"
+echo 1 >"$nvidia/boot_vga"
+expect_session "the NVIDIA GPU as the boot VGA device" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
+# No GPU is a VGA controller, so none has a boot_vga file.
 echo 0x030200 >"$nvidia/class"
 rm "$nvidia/boot_vga"
-expect_session "no boot VGA device" /dev/dri/card1 "card1, the built-in panel" "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "no boot VGA device" /dev/dri/card1 "$panel" "$mesa_egl" "$mesa_vulkan" "$step"
 # The panel not connected either: the GPU that is not NVIDIA's.
 echo disconnected >"$sys/class/drm/card1-eDP-1/status"
 expect_session "no boot VGA device or panel" /dev/dri/card1 "card1, not NVIDIA's" "$mesa_egl" "$mesa_vulkan" "$step"
@@ -833,10 +853,22 @@ echo 0 >"$nvidia/boot_vga"
 # A monitor on the NVIDIA GPU: tw uses both, and the GPU stays on.
 : >"$tmp/hdmi"
 "$bin/driver" load
-expect_session "a monitor on the NVIDIA GPU" /dev/dri/card1:/dev/dri/card0 "$boot_vga" '' '' ''
+expect_session "a monitor on the NVIDIA GPU" /dev/dri/card1:/dev/dri/card0 "$panel" '' '' ''
 rm "$tmp/hdmi"
 "$bin/driver" load
 expect_session "all GPUs asked for" '' '' '' '' '' TW_ALL_GPUS=1
+# ... after tw-gpu switched the NVIDIA GPU off: it is brought back first.
+"$bin/driver" unload
+echo "$port" >"$flag"
+"$bin/pci" remove
+before_tw='command -v tw-gpu >/dev/null 2>&1 && tw-gpu run true'
+expect_session "all GPUs asked for, one switched off" '' '' '' '' '' TW_ALL_GPUS=1
+before_tw=
+expect_session "the NVIDIA GPU switched off, GPUs named by the user" /dev/dri/card1 '' '' '' '' \
+	TW_ALL_GPUS=1 WLR_DRM_DEVICES=/dev/dri/card1
+"$bin/pci" rescan
+rm "$flag"
+"$bin/driver" load
 expect_session "GPUs named by the user" /dev/dri/card0 '' '' '' '' WLR_DRM_DEVICES=/dev/dri/card0
 # The NVIDIA GPU has the panel (a desktop): nothing of NVIDIA's is kept out.
 echo 0 >"$intel/boot_vga"
@@ -847,10 +879,10 @@ expect_session "the NVIDIA GPU as the first one" /dev/dri/card0 "card0, the boot
 machine
 "$bin/driver" unload
 rm -rf "$nvidia" "$bus/0000:01:00.0"
-expect_session "a single GPU" '' "$boot_vga" '' '' ''
+expect_session "a single GPU" '' "$panel" '' '' ''
 a11y='NO_AT_BRIDGE= GTK_A11Y='
 told_none='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP;taken back= NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE'
-expect_session "the accessibility bus asked for" '' "$boot_vga" '' '' '' TW_A11Y=1
+expect_session "the accessibility bus asked for" '' "$panel" '' '' '' TW_A11Y=1
 
 # --- tw-session: what the services are told once tw is up ---------------------------
 # A stand-in tw runs the startup command it is handed, the way tw does, with
@@ -862,6 +894,7 @@ cat >"$tmp/session/tw" <<EOF
 #!/bin/sh
 [ ! -e '$tmp/no-library' ] || exit 127 # what the loader leaves when a library is missing
 [ "\$1" = -h ] && exit 0
+[ -z "\${TW_X11:-}" ] || export DISPLAY="\$TW_X11" # tw opened an X11 display
 [ "\$1" = -s ] && WAYLAND_DISPLAY=wayland-9 PATH='$tmp/session-bin' exec /bin/sh -c "\$2"
 EOF
 cat >"$tmp/session-bin/dbus-update-activation-environment" <<EOF
@@ -881,20 +914,40 @@ told() { # [VAR=value...]: what a session started like this passes on
 	cat "$tmp/told" 2>/dev/null
 }
 got=$(told)
-[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY= NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session did not tell the services to leave the accessibility bus alone: $got"
-[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE DISPLAY" ] ||
 	fail "tw-session on one GPU did not take back the GPU an earlier session named: $(cat "$tmp/took-back" 2>/dev/null)"
 got=$(told TW_A11Y=1)
-[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE= GTK_A11Y=" ] ||
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DISPLAY= NO_AT_BRIDGE= GTK_A11Y=" ] ||
 	fail "tw-session with TW_A11Y=1 still spoke of the accessibility bus: $got"
 # ... and takes back what an earlier session told systemd, which the bus's
 # own unit goes by.
-[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE DISPLAY" ] ||
 	fail "tw-session with TW_A11Y=1 left systemd told to keep the bus off: $(cat "$tmp/took-back" 2>/dev/null)"
+# A DISPLAY tw did not open is not passed on, and one an earlier session
+# left behind is taken back; the one tw opened is passed on.
 got=$(told DISPLAY=:7)
-[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY= NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
 	fail "tw-session passed on a DISPLAY that is not tw's: $got"
+got=$(told TW_X11=:3)
+[ "$got" = "--systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY NO_AT_BRIDGE=1 GTK_A11Y=none" ] ||
+	fail "tw-session did not pass on the X11 display tw opened: $got"
+[ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
+	fail "tw-session took back the X11 display tw opened: $(cat "$tmp/took-back" 2>/dev/null)"
+
+# The NVIDIA GPU switched off and every GPU asked for, as the session runs:
+# tw-gpu brings it back before tw starts, and leaves it on since tw opens it.
+machine
+"$bin/driver" unload
+echo "$port" >"$flag"
+"$bin/pci" remove
+env -i PATH="$data:$bin:$PATH" HOME="$tmp/home" TW_SYS="$sys" TW_DEV="$dev" TW_RUN="$run" \
+	TW_MODULES="$modules" XDG_RUNTIME_DIR="$tmp/user" TW_ALL_GPUS=1 \
+	sh "$tmp/session/tw-session" >/dev/null 2>&1
+on_bus && loaded && [ ! -e "$flag" ] || fail "TW_ALL_GPUS=1 did not bring back the switched-off GPU"
+wait_until "the switch-off check after the session start" settled
+on_bus && loaded || fail "the GPU brought back for TW_ALL_GPUS=1 was switched off again"
 
 # A tw that cannot start for want of a library, as after a system update:
 # the session says how to build it again, and only then.
@@ -922,4 +975,4 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 		fail "the accessibility bus would not start in a session that asked for it"
 fi
 
-echo "ok: tw-gpu run, launch, on, off, login and status, giving up on a GPU kept open, failures told apart; the root helper, one at a time; the GPU choice with and without boot_vga, the accessibility bus and a tw that cannot start in tw-session"
+echo "ok: tw-gpu run, launch, on, off, login and status, giving up on a GPU kept open, failures told apart; the root helper, one at a time; the GPU choice by panel and boot_vga, every GPU after a switch-off, the accessibility bus and a tw that cannot start in tw-session"

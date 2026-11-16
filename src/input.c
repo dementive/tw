@@ -175,6 +175,38 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data) {
 }
 
 /*
+ * The keymap of every real keyboard, from the XKB_DEFAULT_* variables. If
+ * they name a layout xkeyboard-config does not have (an update renamed a
+ * variant, or they came from another machine), xkbcommon's built-in default
+ * (US) instead: without a keymap nobody can type, not even a password into
+ * the lock screen, and there is no Ctrl+Alt+F<n> to another console.
+ */
+static struct xkb_keymap *keymap_compile(void) {
+	static const enum xkb_context_flags tries[] = {
+		XKB_CONTEXT_NO_FLAGS, XKB_CONTEXT_NO_ENVIRONMENT_NAMES,
+	};
+	for (size_t i = 0; i < LENGTH(tries); i++) {
+		struct xkb_context *context = xkb_context_new(tries[i]);
+		if (context == NULL) {
+			continue;
+		}
+		struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
+			XKB_KEYMAP_COMPILE_NO_FLAGS);
+		xkb_context_unref(context);
+		if (keymap != NULL) {
+			if (i > 0) {
+				wlr_log(WLR_ERROR, "the keymap XKB_DEFAULT_* names does not "
+					"compile; using xkbcommon's default layout instead");
+			}
+			return keymap;
+		}
+	}
+	wlr_log(WLR_ERROR, "failed to compile any keymap: no key bindings, "
+		"and no Ctrl+Alt+F<n> to another console");
+	return NULL;
+}
+
+/*
  * `is_virtual` keyboards come from the virtual-keyboard protocol (wtype, the
  * tests): their client supplies the keymap, so ours must not replace it.
  */
@@ -195,17 +227,7 @@ static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyb
 		 * are keyboards too. Compiled with the first: a tw without a
 		 * keyboard (headless) has no use for one. */
 		if (server->keymap == NULL) {
-			/* The layout comes from the XKB_DEFAULT_* variables. */
-			struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-			if (context != NULL) {
-				server->keymap = xkb_keymap_new_from_names(context, NULL,
-					XKB_KEYMAP_COMPILE_NO_FLAGS);
-				xkb_context_unref(context);
-			}
-			if (server->keymap == NULL) {
-				wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*: "
-					"no key bindings, and no Ctrl+Alt+F<n> to another console");
-			}
+			server->keymap = keymap_compile();
 		}
 		if (server->keymap != NULL) {
 			wlr_keyboard_set_keymap(wlr_keyboard, server->keymap);
@@ -350,21 +372,42 @@ void pointer_refocus(struct tw_server *server) {
 	 * is where it lands. So is a lock: a window behind the curtain gets
 	 * nothing more, not even the release. */
 	struct wlr_seat *seat = server->seat;
-	if (server->cursor == NULL || (seat->pointer_state.button_count > 0 &&
-			seat->drag == NULL && !server->locked)) {
+	if (seat->pointer_state.button_count > 0 && seat->drag == NULL && !server->locked) {
 		return;
 	}
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
-	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	/* With the screens off the pointer is over nothing. Otherwise a cursor
+	 * a client chose would stay on the dark screen, and an animated one
+	 * ("busy") wakes tw at every image. The client gets the pointer back,
+	 * and sets its cursor again, as the screens come on. */
+	if (!server->blanked) {
+		window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	}
 	/* Over nothing, as before: no cursor to set. That keeps the cursor
 	 * theme unloaded until the pointer first moves. (A drag keeps the
 	 * seat's own pointer focus empty, so it is not "as before".) */
-	if (surface == NULL && server->seat->pointer_state.focused_surface == NULL &&
-			server->seat->drag == NULL) {
+	struct wlr_surface *before = seat->pointer_state.focused_surface;
+	if (surface == NULL && before == NULL && seat->drag == NULL) {
 		return;
 	}
+	/* Where the pointer was on it; with no focus wlroots keeps NaN there. */
+	wl_fixed_t before_sx = 0, before_sy = 0;
+	if (before != NULL) {
+		before_sx = wl_fixed_from_double(seat->pointer_state.sx);
+		before_sy = wl_fixed_from_double(seat->pointer_state.sy);
+	}
 	pointer_enter(server, (uint32_t)now_ms(), surface, sx, sy);
+	/* The surface moved under a resting pointer: the motion needs a frame
+	 * of its own, as a real device sends one after its events
+	 * (handle_cursor_frame()), and clients hold motion until the frame.
+	 * wlroots frames an enter or a leave itself, and sends no motion that
+	 * did not move, so only this case is left. */
+	if (before != NULL && seat->pointer_state.focused_surface == before &&
+			(wl_fixed_from_double(seat->pointer_state.sx) != before_sx ||
+			wl_fixed_from_double(seat->pointer_state.sy) != before_sy)) {
+		wlr_seat_pointer_notify_frame(seat);
+	}
 }
 
 /*
@@ -855,7 +898,4 @@ void input_finish(struct tw_server *server) {
 	/* The keyboards that use it hold a reference of their own. */
 	xkb_keymap_unref(server->keymap);
 	server->keymap = NULL;
-	/* Outputs going away later in the teardown still arrange the strip. */
-	server->cursor_manager = NULL;
-	server->cursor = NULL;
 }

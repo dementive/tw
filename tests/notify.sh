@@ -203,6 +203,9 @@ wait_until "the lower one" logged "^show $lower 'Lower'"
 wait_until "two notifications on screen" settled
 logged '^draw 380x81 ' || fail "two notifications with a title each are not 81 pixels high"
 pointer_to 1000 70
+# Over the list the cursor is tw-notify's to set, or it keeps whatever the
+# window below left, a hidden one included.
+wait_until "the cursor to be set over the list" logged '^cursor default$'
 click
 wait_until "the lower one to close" logged "^close $lower reason 2\$"
 logged "^close $stays " && fail "a click closed the wrong notification"

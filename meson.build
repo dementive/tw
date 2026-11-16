@@ -130,6 +130,8 @@ protocols = {
 	'fractional-scale-v1': wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	'pointer-constraints-unstable-v1': wl_protocol_dir / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
+	'cursor-shape-v1': wl_protocol_dir / 'staging/cursor-shape/cursor-shape-v1.xml',
+	'tablet-v2': wl_protocol_dir / 'stable/tablet/tablet-v2.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
 	'wlr-data-control-unstable-v1': 'protocols/wlr-data-control-unstable-v1.xml',
@@ -294,6 +296,10 @@ if fontconfig.found() and freetype.found()
 		protocol_code['fractional-scale-v1'],
 		client_header['xdg-activation-v1'],
 		protocol_code['xdg-activation-v1'],
+		client_header['cursor-shape-v1'],
+		protocol_code['cursor-shape-v1'],
+		# Cursor-shape's code refers to the tablet protocol's tools.
+		protocol_code['tablet-v2'],
 		dependencies: [wayland_client, fontconfig, freetype],
 		install: true,
 	)

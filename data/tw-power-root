@@ -37,9 +37,9 @@ performance)
 	;;
 esac
 
-# The power cable pulled and put back at once starts two of these units,
-# which systemd runs side by side; one at a time, the last one's profile is
-# the one that holds, whole.
+# systemd runs two of these units side by side: tw starts one at a time
+# and in order, but a profile set by hand can come at the same moment. One
+# at a time, whichever comes last is set whole, never a mix of the two.
 exec 9>"${TW_RUN:-/run}/tw-power.lock"
 flock 9
 

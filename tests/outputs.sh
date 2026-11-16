@@ -119,6 +119,21 @@ never_on launcher $left
 kill "$last_client_pid"
 expect_keyboard e enter "the keyboard to return to the window"
 
+# A bar keeps its room on its own monitor: the windows there are made shorter
+# by its height, those on the other are not, and the room comes back when it
+# goes. wlroots counts the room only once the bar is mapped.
+e_size=$(current_size e)
+c_size=$(current_size c)
+start_client bar --bar
+expect_line bar "layer configure 1280x30" "a bar to be configured across its monitor"
+wait_until "a bar to take its height off the windows on its monitor" \
+	last_line_matches e configure "^configure ${e_size%x*}x$((${e_size#*x} - 30)) "
+never_on bar $left
+[ "$(current_size c)" = "$c_size" ] || fail "a bar on one monitor resized a window on the other"
+kill "$last_client_pid"
+wait_until "the room a bar kept to come back when it goes" \
+	last_line_matches e configure "^configure $e_size "
+
 # --- Fullscreen covers its own monitor ------------------------------------------
 press super+shift+f
 expect_state e "$on fullscreen=1" "Mod+Shift+F to make the window fullscreen"
@@ -141,4 +156,4 @@ never_on f $right
 never_on c $right
 
 stop_tw
-echo "ok: two monitors, focus and columns between them, workspaces, mouse, fullscreen, trimming"
+echo "ok: two monitors, focus and columns between them, workspaces, mouse, a bar, fullscreen, trimming"

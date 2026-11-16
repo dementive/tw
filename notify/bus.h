@@ -49,11 +49,7 @@ long bus_message_size(const uint8_t *data, size_t size);
  */
 bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *message);
 
-uint8_t bus_read_byte(struct bus_reader *reader);
 uint32_t bus_read_u32(struct bus_reader *reader);
-const char *bus_read_string(struct bus_reader *reader);
-const char *bus_read_signature(struct bus_reader *reader);
-void bus_read_align(struct bus_reader *reader, size_t alignment);
 /* Enters an array whose elements have this alignment, and returns the
  * position at which it ends. */
 size_t bus_read_array(struct bus_reader *reader, size_t alignment);

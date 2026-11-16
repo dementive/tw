@@ -223,6 +223,24 @@ quit "$copier"
 wait_until "the second program's copy to be offered" \
 	pasted text/plain 'paste text/plain: from the second one'
 
+# --- A copy made later than the input behind it ---------------------------
+# A window may copy a while after the input event it gives as the reason (a
+# screenshot tool when its capture is done). What tw offers in a program's
+# place keeps that program's serial, so such a copy still replaces it: it
+# would have replaced the original. Here the window has the keyboard after
+# the copy is made, and copies with that serial once it loses the keyboard
+# to a second window, after tw has taken over.
+copy q 'text/plain=from a program that is gone'
+wait_until "tw to have read the copy" tw_said 'clipboard: kept 1 formats in 27 bytes'
+start_client late --copy-late
+expect_keyboard late enter "the late copier to get the keyboard"
+quit "$copier"
+wait_until "the copy to be offered" pasted text/plain 'paste text/plain: from a program that is gone'
+start_client other
+expect_line late copied "the late copier to copy"
+wait_until "the late copy to take the place of tw's offer" \
+	pasted text/plain 'paste text/plain: copied late'
+
 # --- Leaving ------------------------------------------------------------------
 # Whatever tw holds as it exits is freed; a sanitizer build says so if not.
 # With a copy on offer and a paste under way:

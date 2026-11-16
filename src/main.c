@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <wlr/backend.h>
 #include <wlr/backend/multi.h>
+#include <wlr/backend/session.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/config.h>
 #include <wlr/render/allocator.h>
@@ -147,6 +148,25 @@ static int handle_signal(int signo, void *data) {
 	return 0;
 }
 
+/*
+ * The seat went away under tw: libseat lost seatd or logind, and wlroots
+ * destroyed the session, taking the GPUs and input devices with it. Nothing
+ * can bring them back, so tw exits rather than sit there with a black
+ * screen and no keyboard; the session script and the login manager then
+ * see it end.
+ */
+static void handle_session_destroy(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, session_destroy);
+	wlr_log(WLR_ERROR, "the seat was lost (seatd or logind went away), exiting");
+	/* wlroots asserts that nothing listens to the session once it is
+	 * gone, so idle.c's listener goes here too; with session NULL,
+	 * idle_finish() leaves it alone. */
+	wl_list_remove(&server->session_destroy.link);
+	wl_list_remove(&server->session_active.link);
+	server->session = NULL;
+	wl_display_terminate(server->display);
+}
+
 static void usage(const char *name) {
 	printf("Usage: %s [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
@@ -252,6 +272,10 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create the backend");
 		goto teardown_base;
 	}
+	if (server.session != NULL) {
+		server.session_destroy.notify = handle_session_destroy;
+		wl_signal_add(&server.session->events.destroy, &server.session_destroy);
+	}
 	/* In a window inside another session the host compositor owns Super,
 	 * so Mod is Alt there. Told from the backend, not from the environment,
 	 * which a console login may have inherited a DISPLAY into. */
@@ -334,8 +358,10 @@ int main(int argc, char *argv[]) {
 	}
 
 	wlr_log(WLR_INFO, "running on WAYLAND_DISPLAY=%s", socket);
+	struct wlr_session *session = server.session;
 	wl_display_run(server.display);
-	status = 0;
+	/* A failure if what stopped it was losing the seat. */
+	status = session != NULL && server.session == NULL;
 
 teardown:
 	/* wlroots asserts that every listener was removed before the object it
@@ -364,6 +390,11 @@ teardown_base:
 	wlr_allocator_destroy(server.allocator);
 	wlr_renderer_destroy(server.renderer);
 	wlr_backend_destroy(server.backend);
+	/* The session itself goes with the display's event loop, and wlroots
+	 * asserts that nothing listens to it by then. */
+	if (server.session != NULL) {
+		wl_list_remove(&server.session_destroy.link);
+	}
 	wl_display_destroy(server.display);
 	return status;
 }

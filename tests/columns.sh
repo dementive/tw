@@ -1,5 +1,6 @@
 #!/bin/sh
-# Columns that hold several windows, and floating dialogs. $3 = tw-test-keys.
+# Columns that hold several windows, floating dialogs, and a window that maps
+# again. $3 = tw-test-keys.
 # Windows are named a..d; the comments track the strip, with [x] focused and
 # "b,c" meaning b above c in one column.
 set -eu
@@ -157,5 +158,21 @@ menu_x=$3 menu_y=$4
 pointer_to $((menu_x + 20)) $((menu_y + 20))
 expect_line menu "pointer enter menu 20 20" "the pointer to reach the menu over the dialog"
 
+# --- A window that maps again starts afresh ------------------------------------
+# Hidden, it is told it is suspended; it takes its window down and puts it up
+# again as a dialog. Nothing it was told before may carry over: still told it
+# is suspended, a program that draws nothing while suspended would never show
+# up, and still told it is tiled, a dialog draws no shadow.
+press super+5
+start_client remap --remap
+expect_state remap "$on fullscreen=0 tiled=1" "a window in the strip to be told it is tiled"
+press super+6
+expect_line remap unmapped "the hidden window to take itself down"
+first_after_unmap() { sed -n '/^unmapped$/,$p' "$run_dir/remap.log" | grep -m 1 '^configure'; }
+wait_until "the window to be configured again" first_after_unmap
+first_after_unmap | grep -q 'configure 0x0 activated=0 suspended=0 fullscreen=0 tiled=0' ||
+	fail "the window was told what it was before it unmapped: $(first_after_unmap)"
+expect_state remap "configure 0x0 $on fullscreen=0 tiled=0" "the window to come back as a dialog"
+
 stop_tw
-echo "ok: stacked columns, floating dialogs"
+echo "ok: stacked columns, floating dialogs, mapping again"

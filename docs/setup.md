@@ -203,7 +203,8 @@ to the NVIDIA GPU (on many laptops, HDMI) only work if the monitor is
 connected when you log in after a boot. If you have logged out and in
 since, the GPU is still switched off and tw cannot see the monitor: run
 `tw-gpu on`, then log out and in. `TW_ALL_GPUS=1 tw-session` uses every GPU
-for the whole session, at the price of the second one's power and memory.
+for the whole session, at the price of the second one's power and memory;
+it also brings back a GPU switched off earlier in this boot.
 
 ### Bluetooth: off until you ask for it
 
@@ -390,7 +391,7 @@ same command silences it.
 | --- | --- |
 | tw exits or will not start | run `tw-session` from a text console: what it prints stays on screen. `tw -d` logs everything |
 | a key does nothing | its program is not installed (the table in part 1); `tw -d` logs "not installed" |
-| the session is locked and no lock screen comes | any key starts the locker again. If none comes, swaylock is failing: what it says is on the console tw was started from |
+| the session is locked and no lock screen comes | any key starts the locker again. If none comes, swaylock is failing: what it says is on the console tw was started from. To get back in, go to another console (Ctrl+Alt+F3), log in and run `WAYLAND_DISPLAY=wayland-1 swaylock -C /dev/null` (the socket tw logged at start, `ls $XDG_RUNTIME_DIR`), then go back and type your password: any working locker can take over a lock that has none |
 | Xwayland keeps running | [Keep the shell from starting Xwayland](system.md#keep-the-shell-from-starting-xwayland) |
 | the NVIDIA GPU will not go off | `tw-gpu`, then `journalctl -b -u tw-gpu@off` names who has it open |
 | `tw-gpu` says the running kernel's modules are gone, or `tw-bluetooth` that its driver "is not on the disk" | a kernel update removed the running kernel's modules; reboot. Until then the GPU or Bluetooth is left as it is rather than switched off for good |

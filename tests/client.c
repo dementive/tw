@@ -2,11 +2,11 @@
  * Minimal Wayland client for the headless tests. It reports what the
  * compositor tells it, one line per event:
  *
- *   configure <w>x<h> activated=<0|1> suspended=<0|1> fullscreen=<0|1>
+ *   configure <w>x<h> activated=<0|1> suspended=<0|1> fullscreen=<0|1> tiled=<0|1>
  *   capabilities <name...>                              what the window may ask
  *                      for besides moving and resizing: fullscreen, maximize,
  *                      minimize, menu
- *   layer configure <w>x<h>                             with --layer
+ *   layer configure <w>x<h>                             with --layer, --bar
  *   scale <n>                                           with --layer: the
  *                      screen's scale in 120ths, as soon as it is told
  *   lock configure <w>x<h>, locked, lock denied         with --lock
@@ -16,7 +16,8 @@
  *   pointer enter <x> <y> | pointer leave               pointer focus; "pointer
  *                      enter menu <x> <y>" when it enters the menu (--menu)
  *   output enter <name> | output leave <name>           which monitor shows it
- *   pointer motion <x> <y>, button <code> <pressed|released>
+ *   pointer motion <x> <y>, button <code> <pressed|released>    (motion when its
+ *                      wl_pointer.frame arrives)
  *   closed                                              asked to close; it exits
  *   token, activate, activate forged                    see the focus modes below
  *   x11 connected, x11 served, x11 closed               with --x11
@@ -30,10 +31,15 @@
  *                 that asks for fullscreen or to leave it when F is pressed
  *   --fickle      the same game asking to start fullscreen, and changing its
  *                 mind before it draws its first frame
+ *   --remap       an ordinary window that, the first time it is suspended,
+ *                 takes its window down ("unmapped") and puts it back up as
+ *                 one that cannot be resized, like a dialog
  *   --inhibit     a window that asks to keep the screen on, like a video player
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
  *   --layer-inhibit  the same, asking to keep the screen on
+ *   --bar         a layer surface 30 pixels high across the top of the
+ *                 screen that keeps those 30 pixels to itself, like a bar
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
  *   --drag        a window that starts dragging text each time a button is
  *                 pressed in it: "drag started", then "drag dropped" and
@@ -46,6 +52,11 @@
  *                 Once shown, the menu asks to be moved far off to the right,
  *                 as a menu that follows what it belongs to does; "menu at
  *                 <x> <y>" for each place it is given, relative to the window
+ *   --copy-late   a window that, the first time it loses the keyboard, copies
+ *                 "copied late" with the serial of the keyboard focus it had,
+ *                 as a program does that copies when an action started
+ *                 earlier is done: "copied", and "copy cancelled" when
+ *                 another copy takes its place
  *
  * Asking for the focus (xdg-activation):
  *   --token <file>     a window that, when it gets the keyboard, turns that
@@ -138,8 +149,8 @@ static struct {
 static size_t output_count;
 
 static int32_t pending_width, pending_height;
-static bool pending_activated, pending_suspended, pending_fullscreen;
-static bool fixed_size, game, fickle;
+static bool pending_activated, pending_suspended, pending_fullscreen, pending_tiled;
+static bool fixed_size, game, fickle, remap;
 static int32_t fixed_width = 300, fixed_height = 200;
 static struct xdg_toplevel *window_toplevel;
 static bool running = true;
@@ -157,6 +168,10 @@ static struct wl_data_device_manager *data_manager;
 static struct wl_data_device *data_device;
 static struct wl_data_offer *drop_offer;
 static bool drag_source, drop_target;
+
+/* --copy-late: the serial of the latest keyboard enter. */
+static bool copy_late, copied;
+static uint32_t enter_serial;
 
 static void say(const char *line) {
 	puts(line);
@@ -326,9 +341,22 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 		xdg_toplevel_unset_fullscreen(window_toplevel);
 		say("leave fullscreen");
 	}
-	printf("configure %dx%d activated=%d suspended=%d fullscreen=%d\n", pending_width,
-		pending_height, pending_activated, pending_suspended, pending_fullscreen);
+	printf("configure %dx%d activated=%d suspended=%d fullscreen=%d tiled=%d\n",
+		pending_width, pending_height, pending_activated, pending_suspended,
+		pending_fullscreen, pending_tiled);
 	fflush(stdout);
+	if (remap && pending_suspended) {
+		/* A null buffer unmaps it; the next commit starts it over. */
+		remap = false;
+		wl_surface_attach(surface, NULL, 0, 0);
+		wl_surface_commit(surface);
+		fixed_size = true;
+		xdg_toplevel_set_min_size(window_toplevel, fixed_width, fixed_height);
+		xdg_toplevel_set_max_size(window_toplevel, fixed_width, fixed_height);
+		wl_surface_commit(surface);
+		say("unmapped");
+		return;
+	}
 	if (pending_activated) {
 		was_activated = true;
 	} else if (was_activated && !activation_sent && (use_token || forge_token)) {
@@ -351,7 +379,7 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 		int32_t width, int32_t height, struct wl_array *states) {
 	pending_width = width;
 	pending_height = height;
-	pending_activated = pending_suspended = pending_fullscreen = false;
+	pending_activated = pending_suspended = pending_fullscreen = pending_tiled = false;
 	uint32_t *state;
 	wl_array_for_each(state, states) {
 		if (*state == XDG_TOPLEVEL_STATE_ACTIVATED) {
@@ -360,6 +388,11 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 			pending_suspended = true;
 		} else if (*state == XDG_TOPLEVEL_STATE_FULLSCREEN) {
 			pending_fullscreen = true;
+		} else if (*state == XDG_TOPLEVEL_STATE_TILED_LEFT ||
+				*state == XDG_TOPLEVEL_STATE_TILED_RIGHT ||
+				*state == XDG_TOPLEVEL_STATE_TILED_TOP ||
+				*state == XDG_TOPLEVEL_STATE_TILED_BOTTOM) {
+			pending_tiled = true;
 		}
 	}
 }
@@ -487,11 +520,18 @@ static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t
 		token_requested = true;
 		request_token(serial);
 	}
+	enter_serial = serial;
 }
+
+static void copy_start(void);
 
 static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
 		struct wl_surface *wl_surface) {
 	say("keyboard leave");
+	if (copy_late && !copied) {
+		copied = true;
+		copy_start();
+	}
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
@@ -616,10 +656,35 @@ static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t se
 	say("pointer leave");
 }
 
+/* Motion is said at the frame that closes it, as toolkits act on it: one
+ * that never gets its frame never shows up. */
+static bool motion_pending;
+static wl_fixed_t motion_x, motion_y;
+
 static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
 		wl_fixed_t x, wl_fixed_t y) {
-	printf("pointer motion %d %d\n", wl_fixed_to_int(x), wl_fixed_to_int(y));
-	fflush(stdout);
+	motion_pending = true;
+	motion_x = x;
+	motion_y = y;
+}
+
+static void pointer_frame(void *data, struct wl_pointer *wl_pointer) {
+	if (motion_pending) {
+		motion_pending = false;
+		printf("pointer motion %d %d\n", wl_fixed_to_int(motion_x), wl_fixed_to_int(motion_y));
+		fflush(stdout);
+	}
+}
+
+static void pointer_axis_source(void *data, struct wl_pointer *wl_pointer, uint32_t source) {
+}
+
+static void pointer_axis_stop(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+		uint32_t axis) {
+}
+
+static void pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer, uint32_t axis,
+		int32_t discrete) {
 }
 
 /* --- Drag and drop ---------------------------------------------------------- */
@@ -660,6 +725,40 @@ static const struct wl_data_source_listener source_listener = {
 	.dnd_finished = source_finished,
 	.action = source_action,
 };
+
+/* --- Copying ---------------------------------------------------------------- */
+
+static void copy_send(void *data, struct wl_data_source *source, const char *mime_type,
+		int32_t fd) {
+	if (write(fd, "copied late", 11) < 0) {
+		perror("copy send");
+	}
+	close(fd);
+}
+
+static void copy_cancelled(void *data, struct wl_data_source *source) {
+	say("copy cancelled");
+	wl_data_source_destroy(source);
+}
+
+static const struct wl_data_source_listener copy_listener = {
+	.target = source_target,
+	.send = copy_send,
+	.cancelled = copy_cancelled,
+	.dnd_drop_performed = source_drop_performed,
+	.dnd_finished = source_finished,
+	.action = source_action,
+};
+
+/* Copies with the serial of the keyboard focus it had, not of anything
+ * newer it has been sent since. */
+static void copy_start(void) {
+	struct wl_data_source *source = wl_data_device_manager_create_data_source(data_manager);
+	wl_data_source_add_listener(source, &copy_listener, NULL);
+	wl_data_source_offer(source, "text/plain");
+	wl_data_device_set_selection(data_device, source, enter_serial);
+	say("copied");
+}
 
 /* Starts dragging from a button press, as a file manager does. */
 static void drag_start(uint32_t serial) {
@@ -743,6 +842,10 @@ static const struct wl_pointer_listener pointer_listener = {
 	.motion = pointer_motion,
 	.button = pointer_button,
 	.axis = pointer_axis,
+	.frame = pointer_frame,
+	.axis_source = pointer_axis_source,
+	.axis_stop = pointer_axis_stop,
+	.axis_discrete = pointer_axis_discrete,
 };
 
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
@@ -833,7 +936,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
-		seat = wl_registry_bind(registry, name, &wl_seat_interface, at_most(version, 4));
+		/* 5: pointer frames, as toolkits use them (pointer_frame()). */
+		seat = wl_registry_bind(registry, name, &wl_seat_interface, at_most(version, 5));
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (strcmp(interface, wl_output_interface.name) == 0 &&
 			output_count < sizeof(outputs) / sizeof(outputs[0])) {
@@ -1012,6 +1116,7 @@ int main(int argc, char *argv[]) {
 	open_menu = strcmp(mode, "--menu") == 0;
 	drag_source = strcmp(mode, "--drag") == 0;
 	drop_target = strcmp(mode, "--drop") == 0;
+	copy_late = strcmp(mode, "--copy-late") == 0;
 
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -1030,9 +1135,9 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "compositor is missing a required global\n");
 		return 1;
 	}
-	if (drag_source || drop_target) {
+	if (drag_source || drop_target || copy_late) {
 		if (data_manager == NULL) {
-			fprintf(stderr, "compositor has no drag and drop\n");
+			fprintf(stderr, "compositor has no data device manager\n");
 			return 1;
 		}
 		data_device = wl_data_device_manager_get_data_device(data_manager, seat);
@@ -1057,6 +1162,15 @@ int main(int argc, char *argv[]) {
 				&scale_listener, NULL);
 		}
 		wl_surface_commit(surface);
+	} else if (strcmp(mode, "--bar") == 0) {
+		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP, "tw-test-bar");
+		zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
+		zwlr_layer_surface_v1_set_anchor(layer_surface, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+		zwlr_layer_surface_v1_set_size(layer_surface, 0, 30);
+		zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, 30);
+		wl_surface_commit(surface);
 	} else if (strcmp(mode, "--lock") == 0) {
 		/* A lock surface gets its role without an initial commit. */
 		session_lock = ext_session_lock_manager_v1_lock(lock_manager);
@@ -1074,6 +1188,7 @@ int main(int argc, char *argv[]) {
 		xdg_toplevel_set_title(toplevel, "tw-test-client");
 		fickle = strcmp(mode, "--fickle") == 0;
 		game = strcmp(mode, "--game") == 0 || fickle;
+		remap = strcmp(mode, "--remap") == 0;
 		if (fickle) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
 		}

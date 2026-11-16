@@ -85,7 +85,8 @@ struct tw_output {
 
 /*
  * One window. Where it is (link, workspace, column) and whether it is
- * fullscreen are strip.c's to change; the rest is window.c's.
+ * fullscreen (fullscreen, float_after_fullscreen) are strip.c's to change;
+ * the rest is window.c's, which carries them out.
  *
  * Its scene_tree lives under server->window_tree,
  * or fullscreen_tree while fullscreen, or float_tree while floating:
@@ -100,7 +101,8 @@ struct tw_output {
  *   popup_tree          the client's popups, unclipped; node.data = window
  *
  * xdg_surface.data points at the tree its popups attach to: popup_tree for a
- * toplevel, the popup's own tree for a popup.
+ * toplevel, the popup's own tree for a popup. It is NULL once that tree is
+ * gone, and for a popup once the popup is.
  */
 struct tw_window {
 	/* tw_column.windows, or tw_workspace.floating; valid only while mapped. */
@@ -154,7 +156,10 @@ struct tw_server {
 	struct wl_event_source *sigint, *sigterm;
 
 	struct wlr_backend *backend;
-	struct wlr_session *session; /* NULL when nested or headless */
+	/* NULL when nested or headless, and once lost: seatd or logind gone.
+	 * Losing it takes every screen and keyboard with it, so tw exits. */
+	struct wlr_session *session;
+	struct wl_listener session_destroy;
 	struct wlr_renderer *renderer;   /* replaced when the GPU is reset */
 	struct wlr_allocator *allocator; /* likewise */
 	struct wlr_compositor *compositor;
@@ -257,6 +262,7 @@ struct tw_server {
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit_manager;
 	struct wl_listener new_idle_inhibitor;
+	struct wl_listener session_active; /* only with a session */
 	struct wl_event_source *idle_timer;
 	struct wl_event_source *resume_watch; /* fires when the machine wakes up */
 	int resume_fd;
@@ -265,6 +271,7 @@ struct tw_server {
 	int suspend_after_ms; /* 0 never suspends */
 	int suspend_tries;    /* suspend attempts since the last input */
 	int64_t last_activity_ms;
+	int64_t lit_check_ms; /* when input last looked for an output left dark */
 	bool blanked; /* outputs are powered off */
 	bool idle_inhibited; /* a visible surface asked to keep the screen on */
 
@@ -337,10 +344,13 @@ void action_quit(struct tw_server *server, const union tw_arg *arg);
 /* output.c */
 void output_init(struct tw_server *server);
 void output_finish(struct tw_server *server);
-/* The output that shows this workspace, or NULL if it is hidden. */
+/* The output in use that shows this workspace, or NULL if it is hidden. It
+ * may have no mode yet; output_boxes() then fails. */
 struct tw_output *output_showing(struct tw_server *server, size_t workspace);
 /* The output with the focus (the one showing the active workspace), or NULL. */
 struct tw_output *output_focused(struct tw_server *server);
+/* The oldest output in use, other than `except`; NULL if there is none. */
+struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except);
 struct tw_output *output_at(struct tw_server *server, double lx, double ly);
 /* The nearest output in a direction (enum wlr_direction), or NULL. */
 struct tw_output *output_adjacent(struct tw_output *output, int direction);
@@ -387,6 +397,10 @@ struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 	struct wlr_surface **surface, double *sx, double *sy);
 /* Whether the window or layer surface this surface belongs to is on screen. */
 bool surface_visible(struct tw_server *server, struct wlr_surface *surface);
+/* Gives a popup its tree in the scene, under `parent`: a window's menus get
+ * theirs as they appear, a layer surface's when its client attaches them.
+ * The tree goes with the popup, or with `parent` if that goes first. */
+void popup_attach(struct wlr_xdg_popup *popup, struct wlr_scene_tree *parent);
 /*
  * What strip.c places windows with. Each sends the client and the scene only
  * what changed since the last call, so arranging an unchanged strip costs
@@ -435,7 +449,8 @@ bool strip_add(struct tw_window *window);
 /* A window has unmapped: it leaves its workspace and its focus passes on. */
 void strip_remove(struct tw_window *window);
 /* The size a window that maps now will get, fullscreen or in a column of its
- * own. False if no output shows the active workspace. */
+ * own. False, leaving both untouched, if no output shows the active
+ * workspace. */
 bool strip_initial_size(struct tw_server *server, bool fullscreen, int *width, int *height);
 /* The output boxes for a workspace: `area` is what its windows may use,
  * `full` the whole output (for fullscreen). False if no output shows it. */

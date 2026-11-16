@@ -11,7 +11,8 @@
 #                               command as it is.
 #   tw-gpu on                   switch it on and leave it on.
 #   tw-gpu off                  switch it off. If something still uses it,
-#                               it goes off when that has let go.
+#                               it goes off when that has let go; one that
+#                               tw drives a monitor with stays on.
 #   tw-gpu                      say whether it is on, and whether it is
 #                               powered (also: tw-gpu status).
 #
@@ -102,10 +103,12 @@ gpu_on() {
 }
 
 # Fails with 1 if the GPU is still on the bus afterwards: something is using
-# it. Fails with 2 if the unit failed, which it does not for a GPU in use.
+# it. Fails with 2 if the unit failed, which it does not for a GPU in use,
+# and with 3, before trying, if tw has the GPU open: it stays on for the
+# session.
 gpu_off() {
 	device=$(gpu_device) || return 0 # off already, or no such GPU
-	drives_a_monitor "$device" && return 1
+	drives_a_monitor "$device" && return 3
 	systemctl start tw-gpu@off.service || return 2
 	! gpu_device >/dev/null
 }
@@ -176,11 +179,10 @@ run)
 	gpu_device >/dev/null || [ -e "$flag" ] || exec "$@"
 	exec 9>"$lock"
 	flock -s 9 # also waits for a switch-off in progress to finish
-	# Arrange the switch-off before starting anything. It waits for the
-	# lock, which the program and whatever it starts hold until the last of
-	# them is gone, and it waits in a session of its own: closing the
-	# terminal or pressing Ctrl-C ends the program, not this.
-	setsid -f flock -x -o "$lock" "$0" settle 9>&- </dev/null >/dev/null 2>&1
+	# Arrange the switch-off before starting anything, in a session of its
+	# own: closing the terminal or pressing Ctrl-C ends the program, not
+	# this.
+	setsid -f "$0" settle 9>&- </dev/null >/dev/null 2>&1
 	if gpu_on; then
 		# The session keeps programs on the other GPU with the first two;
 		# the rest are NVIDIA's way of asking for theirs.
@@ -197,12 +199,24 @@ run)
 try) # internal, run holding the lock: off, unless it was asked to stay on
 	[ -e "$keep" ] || gpu_off
 	;;
-settle) # internal, run holding the lock: nothing started with run is left
+settle) # internal: off once nothing started with run is left
+	# It waits for the lock exclusively, which every program started with
+	# run and whatever it starts hold shared until the last of them is gone.
+	# One waiting is enough, since it waits for every program started before
+	# it switches off: a program that stays (Steam) would otherwise collect
+	# one more waiting here for each program started beside it. It stops
+	# waiting for that role once it holds the lock, so a program that comes
+	# after still has the GPU switched off after it.
+	exec 8>"$runtime/tw-gpu.settle"
+	flock -n 8 || exit 0
+	exec 9>"$lock"
+	flock -x 9
+	exec 8>&-
 	"$0" try
 	# 1: in use, so wait for it to let go. Not 2: the unit failed, and
-	# trying again would fail the same way.
+	# trying again would fail the same way. Not 3: tw has it open.
 	if [ $? = 1 ]; then
-		setsid -f "$0" retry </dev/null >/dev/null 2>&1
+		setsid -f "$0" retry 9>&- </dev/null >/dev/null 2>&1
 	fi
 	;;
 retry) # internal: the GPU is still in use by something not started here
@@ -220,8 +234,8 @@ retry) # internal: the GPU is still in use by something not started here
 		before=$(use_count)
 		flock -x -o "$lock" "$0" try
 		case $? in
-		0) exit 0 ;;
-		2) exit 1 ;; # the unit failed: nothing to wait for
+		0 | 3) exit 0 ;; # off, or tw has it open
+		2) exit 1 ;;     # the unit failed: nothing to wait for
 		esac
 		look=0
 		while :; do
@@ -238,7 +252,7 @@ retry) # internal: the GPU is still in use by something not started here
 	done
 	;;
 login) # internal, run by tw-session once tw is up
-	exec flock -x -o "$lock" "$0" settle
+	exec "$0" settle
 	;;
 launch)
 	shift
@@ -275,6 +289,10 @@ off)
 	0) ;;
 	2)
 		echo "tw-gpu: could not switch the NVIDIA GPU off. Why: journalctl -b -u tw-gpu@off.service" >&2
+		exit 1
+		;;
+	3)
+		echo "tw-gpu: tw drives a monitor with the NVIDIA GPU; it stays on for this session" >&2
 		exit 1
 		;;
 	*)
