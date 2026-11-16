@@ -185,6 +185,21 @@ if [ "$(id -u)" != 0 ]; then
 	expect_settings "a profile that could not be written" "balanced balance_performance, 6,"
 fi
 
+# --- One at a time -----------------------------------------------------------
+# A profile set by hand as tw sets another: one waits until the other is
+# done, so neither is left half written.
+machine
+(flock "$tmp/tw-power.lock" sh -c ": >'$tmp/locked'; sleep 0.6; rm '$tmp/locked'" &)
+tries=0
+until [ -e "$tmp/locked" ]; do
+	tries=$((tries + 1))
+	[ "$tries" -le 100 ] || fail "timed out waiting for the lock to be taken"
+	sleep 0.05
+done
+power saver || fail "saver failed after waiting for another profile"
+[ ! -e "$tmp/locked" ] || fail "the helper set a profile while another was being set"
+expect_settings "saver after waiting" "quiet power, 15,"
+
 # --- Refused, and asked the wrong thing ---------------------------------------
 machine
 : >"$tmp/denied"
@@ -214,4 +229,4 @@ grep -q '^static const char battery_command\[\] = "tw-power saver";$' "$data/../
 	grep -q '^static const char mains_command\[\] = "tw-power balanced";$' "$data/../src/config.h" ||
 	fail "config.h no longer has tw set its profiles with tw-power"
 
-echo "ok: the three profiles, machines that lack a setting, nothing written twice, refusals"
+echo "ok: the three profiles, machines that lack a setting, nothing written twice, one at a time, refusals"

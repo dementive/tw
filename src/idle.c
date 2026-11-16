@@ -45,6 +45,9 @@ static bool away(const struct tw_server *server) {
  * inhibitor let go or the user came back to tw's VT; never per input event
  * (see the top of this file). */
 static void idle_timer_start(struct tw_server *server) {
+	if (server->idle_timer == NULL) {
+		return;
+	}
 	int64_t next = 0; /* in milliseconds of idleness; 0 if nothing is due */
 	if (away(server)) {
 		/* Nothing is due: coming back is activity. */
@@ -199,9 +202,10 @@ static int handle_clock_jump(int fd, uint32_t mask, void *data) {
 	int64_t asleep = asleep_ms();
 	bool woke = asleep - server->asleep_ms > 500;
 	server->asleep_ms = asleep;
-	if (woke) {
-		/* Back from suspend: turn the screen on and start the idle clock
-		 * over. */
+	/* Back from suspend: turn the screen on and start the idle clock over.
+	 * Not while the user is on another VT: tw has no outputs to turn on
+	 * there, and coming back counts as activity anyway. */
+	if (woke && !away(server)) {
 		wlr_log(WLR_DEBUG, "woke up");
 		idle_activity(server);
 	}
@@ -281,6 +285,11 @@ void idle_init(struct tw_server *server) {
 		server->suspend_after_ms = 0;
 	}
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);
+	if (server->idle_timer == NULL) {
+		wlr_log(WLR_ERROR, "cannot time idleness: the screen will not blank, "
+			"nor the machine suspend, by itself");
+		server->blank_after_ms = server->suspend_after_ms = 0;
+	}
 	idle_timer_start(server);
 	if (server->session != NULL) {
 		server->session_active.notify = handle_session_active;
@@ -301,7 +310,9 @@ void idle_finish(struct tw_server *server) {
 	if (server->session != NULL) {
 		wl_list_remove(&server->session_active.link);
 	}
-	wl_event_source_remove(server->idle_timer);
+	if (server->idle_timer != NULL) {
+		wl_event_source_remove(server->idle_timer);
+	}
 	if (server->resume_watch != NULL) {
 		wl_event_source_remove(server->resume_watch);
 	}

@@ -123,6 +123,17 @@ static const char *type_end(const char *signature) {
 	return signature;
 }
 
+static void skip_one(struct bus_reader *reader, const char **signature, int depth);
+
+/* Passes over a variant's value, whose type has been read: one complete
+ * type, as the specification has it, and not none or two. */
+static void skip_variant(struct bus_reader *reader, const char *type, int depth) {
+	skip_one(reader, &type, depth);
+	if (*type != '\0') {
+		reader->failed = true;
+	}
+}
+
 /* Passes over one value of the type at *signature and moves *signature past
  * that type. */
 static void skip_one(struct bus_reader *reader, const char **signature, int depth) {
@@ -151,11 +162,9 @@ static void skip_one(struct bus_reader *reader, const char **signature, int dept
 	case 'g':
 		bus_read_signature(reader);
 		break;
-	case 'v': {
-		const char *inner = bus_read_signature(reader);
-		skip_one(reader, &inner, depth + 1);
+	case 'v':
+		skip_variant(reader, bus_read_signature(reader), depth + 1);
 		break;
-	}
 	case 'a': {
 		/* An array says how long it is, so its elements need no look. */
 		if (**signature == '\0') {
@@ -247,7 +256,7 @@ bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *mes
 		} else if (code == 8 && strcmp(type, "g") == 0) {
 			message->signature = bus_read_signature(&reader);
 		} else {
-			skip_one(&reader, &type, 0);
+			skip_variant(&reader, type, 0);
 		}
 	}
 	return !reader.failed && message->serial != 0;
@@ -288,7 +297,7 @@ bool bus_notify_read(const struct bus_message *message, struct bus_notify *notif
 				strcmp(type, "s") == 0) {
 			notify->tag = bus_read_string(&reader);
 		} else {
-			bus_skip(&reader, type);
+			skip_variant(&reader, type, 0);
 		}
 	}
 	reader.failed = reader.failed || reader.pos != end;

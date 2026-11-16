@@ -15,7 +15,10 @@
  *   click          press and release the left button
  *   down, up       press the left button, let it go: a drag in between
  *   pause:MS       wait, holding what is held, as a hand does; the button
- *                  is let go when this program exits
+ *                  is let go before this program exits
+ *
+ * Each action has been handled by tw by the time the next one starts, and
+ * all of them by the time this program exits; it fails if tw goes away.
  */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -37,6 +40,14 @@ static struct wl_seat *seat;
 static struct zwp_virtual_keyboard_manager_v1 *manager;
 static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 static struct zwlr_virtual_pointer_v1 *pointer; /* made with the first mouse action */
+
+/* Waits until tw has handled everything sent so far. */
+static void sync_display(struct wl_display *display) {
+	if (wl_display_roundtrip(display) < 0) {
+		fprintf(stderr, "lost the connection to the compositor\n");
+		exit(1);
+	}
+}
 
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version) {
@@ -88,7 +99,7 @@ static bool mouse_action(struct wl_display *display, const char *action, uint32_
 		}
 	}
 	zwlr_virtual_pointer_v1_frame(pointer);
-	wl_display_roundtrip(display);
+	sync_display(display);
 	return true;
 }
 
@@ -125,7 +136,7 @@ int main(int argc, char *argv[]) {
 	}
 	struct wl_registry *registry = wl_display_get_registry(display);
 	wl_registry_add_listener(registry, &registry_listener, NULL);
-	wl_display_roundtrip(display);
+	sync_display(display);
 	if (seat == NULL || manager == NULL) {
 		fprintf(stderr, "compositor is missing wl_seat or the virtual keyboard protocol\n");
 		return 1;
@@ -133,8 +144,12 @@ int main(int argc, char *argv[]) {
 
 	/* The protocol makes the client supply the keymap. */
 	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
-		XKB_KEYMAP_COMPILE_NO_FLAGS);
+	struct xkb_keymap *keymap = context == NULL ? NULL :
+		xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+	if (keymap == NULL) {
+		fprintf(stderr, "cannot compile the default keymap\n");
+		return 1;
+	}
 	char *keymap_string = xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
 	size_t keymap_size = strlen(keymap_string) + 1;
 	int fd = memfd_create("tw-test-keymap", MFD_CLOEXEC);
@@ -149,6 +164,7 @@ int main(int argc, char *argv[]) {
 		(uint32_t)keymap_size);
 	close(fd);
 	free(keymap_string);
+	sync_display(display);
 
 	uint32_t time = 1;
 	for (int i = 1; i < argc; i++) {
@@ -157,14 +173,15 @@ int main(int argc, char *argv[]) {
 		}
 		int ms;
 		if (sscanf(argv[i], "pause:%d", &ms) == 1) {
-			/* What was done before the pause has happened by its start. */
-			wl_display_roundtrip(display);
 			usleep((useconds_t)ms * 1000);
-			wl_display_roundtrip(display);
 			continue;
 		}
 		uint32_t mods = 0;
 		char *combo = strdup(argv[i]);
+		if (combo == NULL) {
+			perror("strdup");
+			return 1;
+		}
 		char *key = combo;
 		for (char *plus; (plus = strchr(key, '+')) != NULL && plus[1] != '\0'; key = plus + 1) {
 			*plus = '\0';
@@ -194,18 +211,18 @@ int main(int argc, char *argv[]) {
 		zwp_virtual_keyboard_v1_key(keyboard, time++, code - 8, WL_KEYBOARD_KEY_STATE_PRESSED);
 		zwp_virtual_keyboard_v1_key(keyboard, time++, code - 8, WL_KEYBOARD_KEY_STATE_RELEASED);
 		zwp_virtual_keyboard_v1_modifiers(keyboard, 0, 0, 0, 0);
-		/* Wait until the compositor has handled this combination. */
-		wl_display_roundtrip(display);
+		sync_display(display);
 		free(combo);
 	}
 
-	zwp_virtual_keyboard_v1_destroy(keyboard);
-	wl_display_roundtrip(display);
-	xkb_keymap_unref(keymap);
-	xkb_context_unref(context);
+	/* Destroying the pointer lets go of a button still held. */
 	if (pointer != NULL) {
 		zwlr_virtual_pointer_v1_destroy(pointer);
 	}
+	zwp_virtual_keyboard_v1_destroy(keyboard);
+	sync_display(display);
+	xkb_keymap_unref(keymap);
+	xkb_context_unref(context);
 	wl_registry_destroy(registry);
 	wl_display_disconnect(display);
 	return 0;

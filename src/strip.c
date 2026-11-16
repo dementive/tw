@@ -180,6 +180,14 @@ static struct tw_window *first_floating(struct tw_workspace *workspace) {
 	return window;
 }
 
+/* Puts a dialog that is in no list in front of the workspace's others: first
+ * in the list and on top in the scene, as the focused one is. A dialog that
+ * maps again is still wherever it was in the scene. */
+static void floating_push(struct tw_workspace *workspace, struct tw_window *window) {
+	wl_list_insert(&workspace->floating, &window->link);
+	wlr_scene_node_raise_to_top(&window->scene_tree->node);
+}
+
 /* Takes the window out of its workspace and passes its focus on: a closed
  * dialog to the next dialog or back to the strip, a closed tiled window to
  * whatever took its place. */
@@ -253,8 +261,9 @@ static void workspace_place(struct tw_server *server, struct tw_workspace *works
 	struct tw_column *column;
 	struct tw_window *window;
 	/* A column sticking out past the edge of this output would show up on
-	 * the one next to it. With a single output there is nothing to trim. */
-	bool trim = wl_list_length(&server->outputs) > 1;
+	 * the one next to it. With a single output in the layout (the laptop's
+	 * own one may be out of it, behind the lid) there is nothing to trim. */
+	bool trim = wl_list_length(&server->output_layout->outputs) > 1;
 	int edge_left = full->x, edge_right = full->x + full->width;
 
 	wl_list_for_each(column, &workspace->columns, link) {
@@ -589,10 +598,8 @@ void window_focus(struct tw_server *server, struct tw_window *window) {
 	workspace_activate(server, workspace_index(server, workspace));
 	workspace->focused = window;
 	if (window->floating) {
-		/* The focused dialog is on top of the others. */
 		wl_list_remove(&window->link);
-		wl_list_insert(&workspace->floating, &window->link);
-		wlr_scene_node_raise_to_top(&window->scene_tree->node);
+		floating_push(workspace, window);
 	} else {
 		workspace->tiled = window;
 		window->column->active = window;
@@ -610,21 +617,22 @@ static void window_float(struct tw_window *window) {
 	if (workspace->tiled == window) {
 		workspace->tiled = next;
 	}
-	wl_list_insert(&workspace->floating, &window->link);
 	window_set_floating(window, true);
-	wlr_scene_node_raise_to_top(&window->scene_tree->node);
+	floating_push(workspace, window);
 }
 
-/* Puts a floating window into the strip. */
+/* Puts a floating window into the strip. The strip's focus moves to it if
+ * it had the focus, and is never left NULL while the strip has a column. */
 static bool window_tile(struct tw_window *window) {
 	struct tw_workspace *workspace = window->workspace;
+	struct wl_list *prev = window->link.prev;
 	wl_list_remove(&window->link);
 	if (!strip_insert(workspace, window)) {
-		wl_list_insert(&workspace->floating, &window->link);
+		wl_list_insert(prev, &window->link);
 		return false;
 	}
 	window_set_floating(window, false);
-	if (workspace->focused == window) {
+	if (workspace->focused == window || workspace->tiled == NULL) {
 		workspace->tiled = window;
 	}
 	return true;
@@ -659,14 +667,7 @@ bool strip_add(struct tw_window *window) {
 	window->fullscreen = window->float_after_fullscreen = false;
 	if (window->floating) {
 		window->workspace = workspace;
-		wl_list_insert(&workspace->floating, &window->link);
-		if (window->fullscreen_applied && !fullscreen) {
-			/* Told it was fullscreen at its first commit, which it no
-			 * longer wants: it is a dialog after all. */
-			window_set_floating(window, true);
-		} else {
-			window_restack(window);
-		}
+		floating_push(workspace, window);
 	} else if (strip_insert(workspace, window)) {
 		workspace->tiled = window;
 	} else {
@@ -674,6 +675,12 @@ bool strip_add(struct tw_window *window) {
 	}
 	workspace->focused = window;
 	window_set_fullscreen(window, fullscreen);
+	if (window->floating && window->fullscreen_applied) {
+		/* Told it was fullscreen at its first commit, which it no longer
+		 * wants or, having a parent now, may not have: it is a dialog
+		 * after all, sized by itself. */
+		window_set_floating(window, true);
+	}
 	focus_update(server);
 	strip_arrange(server);
 	return true;
@@ -874,10 +881,8 @@ static void workspace_take_column(struct tw_server *server, size_t index) {
 
 	if (window->floating) {
 		window_remove(window);
-		wl_list_insert(&to->floating, &window->link);
 		window->workspace = to;
-		/* In front of the dialogs already there, as the focused one is. */
-		wlr_scene_node_raise_to_top(&window->scene_tree->node);
+		floating_push(to, window);
 	} else {
 		struct tw_column *column = window->column;
 		struct tw_column *heir = column_heir(column);

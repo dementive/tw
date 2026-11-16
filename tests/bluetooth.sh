@@ -170,8 +170,9 @@ PATH="$rootbin:\$PATH" TW_SYS="$sys" TW_RUN="$run" TW_BLUETOOTH_CONF="$conf" \\
 	"$data/tw-bluetooth-root" "\$word" 2>>"$journal"
 EOF
 # The drivers are on the disk for the running kernel, unless a test says a
-# kernel update has taken them away.
-printf '#!/bin/sh\n[ ! -e "%s/no-modules" ]\n' "$state" >"$rootbin/modinfo"
+# kernel update has taken them all away, or names one that is not there.
+printf '#!/bin/sh\n[ ! -e "%s/no-modules" ] && ! grep -qx "$1" "%s/not-on-disk" 2>/dev/null\n' \
+	"$state" "$state" >"$rootbin/modinfo"
 chmod +x "$rootbin"/* "$bin"/*
 
 machine() { # the laptop as it boots with tw installed: no driver, no adapter
@@ -291,6 +292,15 @@ all_off || fail "Bluetooth stayed on with nothing connected"
 	fail "the modules were unloaded before the service was stopped"
 bluetooth status
 said '^Bluetooth: off$' || fail "status after Bluetooth went off by itself"
+# The file also names a driver for another machine, not on this one's disk:
+# only what is loaded has to come back, so off by itself all the same.
+machine
+printf '%s\n' 'blacklist btusb' 'blacklist btother' >"$conf"
+echo btother >"$state/not-on-disk"
+bluetooth on || fail "on failed with a driver named for another machine"
+touch -d '-11 minutes' "$run/tw-bluetooth"
+root idle || fail "idle failed with a driver named for another machine"
+all_off || fail "a driver named for another machine kept Bluetooth on"
 
 # A machine where Bluetooth is on from boot is left alone by the timer, and
 # says so; `off` works there too.
@@ -404,6 +414,19 @@ said 'could not switch Bluetooth on' || fail "a refused on does not say so"
 all_off || fail "a refused on changed something"
 bluetooth off && fail "off reported success although the unit was refused"
 
+# --- One at a time -----------------------------------------------------------
+# The timer running out during an `on` or `off` by hand waits for it.
+machine
+(flock "$run/tw-bluetooth.lock" sh -c ": >'$tmp/locked'; sleep 0.6; rm '$tmp/locked'" &)
+tries=0
+until [ -e "$tmp/locked" ]; do
+	tries=$((tries + 1))
+	[ "$tries" -le 100 ] || fail "timed out waiting for the lock to be taken"
+	sleep 0.05
+done
+root off
+[ ! -e "$tmp/locked" ] || fail "the helper switched off while another switch was under way"
+
 # --- Asked the wrong thing ----------------------------------------------------
 status=0
 bluetooth sideways || status=$?
@@ -441,4 +464,4 @@ if udevadm verify --help >/dev/null 2>&1; then
 		fail "udev does not accept the rules"
 fi
 
-echo "ok: off at boot, on, off by itself and by hand, a program holding on, failures switching on"
+echo "ok: off at boot, on, off by itself and by hand, a program holding on, failures switching on, one at a time"

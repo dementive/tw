@@ -126,6 +126,39 @@ static size_t notify_cut(uint8_t *data, size_t capacity, int cut) {
 	return bus_write_end(&writer);
 }
 
+/* A plain Notify call with one hint, `key`, of variant type `type`, whose
+ * value is `size` bytes aligned to `alignment`. */
+static size_t notify_hint(uint8_t *data, size_t capacity, const char *type,
+		const void *value, size_t size, size_t alignment) {
+	struct bus_writer writer;
+	bus_write_begin(&writer, data, capacity, &(struct bus_header){
+		.type = BUS_CALL, .serial = 9, .path = "/org/freedesktop/Notifications",
+		.member = "Notify", .signature = "susssasa{sv}i"});
+	bus_write_string(&writer, "a program");
+	bus_write_u32(&writer, 0);
+	bus_write_string(&writer, "");
+	bus_write_string(&writer, "Title");
+	bus_write_string(&writer, "");
+	bus_write_array_end(&writer, bus_write_array_begin(&writer, 4), 4);
+	size_t hints = bus_write_array_begin(&writer, 8);
+	variant(&writer, "key", type);
+	bus_write_align(&writer, alignment);
+	bus_write_bytes(&writer, value, size);
+	bus_write_array_end(&writer, hints, 8);
+	bus_write_u32(&writer, 0);
+	return bus_write_end(&writer);
+}
+
+/* Whether a Notify call with that one hint is taken. */
+static bool hint_taken(const char *type, const void *value, size_t size, size_t alignment) {
+	uint8_t data[256];
+	struct bus_message message;
+	struct bus_notify notify;
+	size_t length = notify_hint(data, sizeof(data), type, value, size, alignment);
+	return length > 0 && bus_message_parse(data, length, &message) &&
+		bus_notify_read(&message, &notify);
+}
+
 /* Parses a copy that ends exactly where the message does, then reads its
  * body as tw-notify would. */
 static bool parse_copy(const uint8_t *data, size_t size, struct bus_notify *notify) {
@@ -338,6 +371,26 @@ int main(void) {
 	bus_skip(&reader, "v");
 	CHECK(!reader.failed && reader.pos == reader.size);
 
+	/* A variant holds one complete type, not none or two, wherever it is:
+	 * otherwise what follows is read from the wrong place. Each of these
+	 * would be read through to the end if the rest of the type were let be. */
+	CHECK(hint_taken("u", "\1\0\0\0", 4, 4));
+	CHECK(hint_taken("v", "\1y\0\7", 4, 1));
+	CHECK(!hint_taken("uu", "\1\0\0\0\2\0\0\0", 8, 4));
+	CHECK(!hint_taken("", "", 0, 1));
+	CHECK(!hint_taken("v", "\2yy\0\7\7", 6, 1));
+	CHECK(!hint_taken("v", "\0\0", 2, 1));
+	/* In the header: field 9 as "tt", whose second number reads as a field
+	 * of its own (8, the signature, "") if the first alone is passed over. */
+	static const uint8_t two[40] = {
+		'l', BUS_CALL, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 22, 0, 0, 0,
+		9, 2, 't', 't', 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0,
+		8, 1, 'g', 0, 0, 0, 0, 0,
+	};
+	CHECK(bus_message_size(two, sizeof(two)) == (long)sizeof(two));
+	CHECK(!bus_message_parse(two, sizeof(two), &message));
+
 	/* An array that claims to be longer than what is left of the message. */
 	bus_write_begin(&writer, reply, sizeof(reply), &(struct bus_header){
 		.type = BUS_RETURN, .serial = 11, .reply_serial = 8, .signature = "as"});
@@ -351,7 +404,7 @@ int main(void) {
 
 	if (failures == 0) {
 		printf("ok: write and read back, layout, replies, truncation, byte order, damage, "
-			"strict Notify bodies, nesting\n");
+			"strict Notify bodies, nesting, variants\n");
 	}
 	return failures != 0;
 }

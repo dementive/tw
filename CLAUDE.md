@@ -67,7 +67,7 @@ what it would do and starts nothing.
 | `src/lock.c` | Session lock for swaylock; locking by itself (`lock_now()`) and starting the locker |
 | `src/power.c` | On battery: learns from udev when the power cable moves, slows the outputs, runs the power-profile command, warns and suspends on a low battery |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
-| `src/layout.c` | Strip maths: column widths, stacking, scrolling, the spring; which refresh rate on battery; what a falling charge calls for. Pure functions, no wlroots, unit tested |
+| `src/layout.c` | Strip maths: column widths, stacking, scrolling, the spring; which refresh rate on battery; what a falling charge and the lid call for, and which screen is the laptop's own. Pure functions, no wlroots, unit tested |
 | `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation, text through fontconfig and FreeType), `bus.c` (D-Bus messages with no library; pure, unit tested), `config.h` |
 | `data/tw-session` | Session start script: picks the GPUs, points programs at the keyring, keeps the accessibility bus off, says what to do when tw cannot start |
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |

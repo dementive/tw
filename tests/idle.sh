@@ -66,6 +66,25 @@ last_line_matches c configure "suspended=1" || fail "releasing the keys woke the
 press x
 expect_state c "$on" "the next key press to turn the screen back on"
 
+# A lock client tw did not start dies: the session stays locked. A key press
+# then starts the locker only if it is installed; tw does not run a missing
+# program to find out (the shell would say "not found"). Another lock client
+# takes over and unlocks.
+start_client outside --lock
+outside_pid=$last_client_pid
+expect_line outside locked "the outside lock client to lock"
+kill "$outside_pid"
+press x
+sleep 0.3
+last_line_matches c configure "suspended=1" || fail "the session unlocked when the lock client died"
+if grep -q 'not found' "$run_dir/tw.log"; then
+	fail "a key press ran the locker, which is not installed"
+fi
+start_client rescue --lock
+expect_line rescue locked "a new lock client to take over the abandoned lock"
+press Return
+expect_state c "$on" "the new lock client to unlock"
+
 stop_tw
 
 # --- Locking -------------------------------------------------------------------
@@ -175,4 +194,4 @@ sleep 2.5
 	fail "after the inhibitor went, the next attempt was not a period away"
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart, suspend, the clock after an inhibitor"
+echo "ok: blanking, inhibitors, manual power-off, abandoned lock without a locker, lock on idle, locker restart, suspend, the clock after an inhibitor"

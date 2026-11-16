@@ -45,6 +45,10 @@ struct tw_lock_surface {
 	struct wl_list link; /* tw_lock.surfaces */
 	struct tw_lock *lock;
 	struct wlr_session_lock_surface_v1 *lock_surface;
+	/* Placed and shown by lock_surface_arrange(). The surface's own tree
+	 * inside it is wlroots', shown while the surface is mapped: on that
+	 * alone, a lock surface whose output left the layout before its first
+	 * picture would appear at 0,0, over another output's. */
 	struct wlr_scene_tree *tree;
 	int width, height; /* last size sent, to avoid redundant configures */
 	struct wl_listener commit; /* until its first picture, then detached */
@@ -144,7 +148,8 @@ static void handle_surface_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&surface->commit.link);
 	wl_list_remove(&surface->destroy.link);
 	wl_list_remove(&surface->link);
-	/* Its scene tree goes with the wl_surface, or with lock->tree. */
+	/* The wl_surface may outlive its role (its output was unplugged). */
+	wlr_scene_node_destroy(&surface->tree->node);
 	free(surface);
 	focus_update(server);
 }
@@ -160,8 +165,12 @@ static void handle_new_surface(struct wl_listener *listener, void *data) {
 	}
 	surface->lock = lock;
 	surface->lock_surface = lock_surface;
-	surface->tree = wlr_scene_subsurface_tree_create(lock->tree, lock_surface->surface);
-	if (surface->tree == NULL) {
+	surface->tree = wlr_scene_tree_create(lock->tree);
+	if (surface->tree == NULL ||
+			wlr_scene_subsurface_tree_create(surface->tree, lock_surface->surface) == NULL) {
+		if (surface->tree != NULL) {
+			wlr_scene_node_destroy(&surface->tree->node);
+		}
 		free(surface);
 		wl_resource_post_no_memory(lock_surface->resource);
 		return;
@@ -227,9 +236,11 @@ static void lock_enter(struct tw_server *server) {
 	strip_arrange(server);
 }
 
+/* Checked each time: a key press must not run a locker that an update
+ * removed, only to find out that it is gone. */
 static void locker_start(struct tw_server *server) {
 	server->locker_started_ms = now_ms();
-	spawn(locker);
+	spawn_installed(locker);
 }
 
 void lock_now(struct tw_server *server) {

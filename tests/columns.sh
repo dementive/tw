@@ -117,9 +117,15 @@ expect_state b "$on" "the strip's window to be active again"
 # A dialog can be sent to another workspace like a column.
 start_client dialog3 --fixed
 expect_state dialog3 "$on" "a third dialog to be focused"
+point=$(lines dialog3)
 press super+ctrl+2
 expect_state b "suspended=1" "workspace 1 to be hidden"
-last_line_matches dialog3 configure "$on" || fail "the dialog did not stay focused on workspace 2"
+press x
+dialog3_key() { since dialog3 "$point" | grep -q '^key '; }
+wait_until "the dialog to keep the keyboard on workspace 2" dialog3_key
+if since dialog3 "$point" | sed '/^key /q' | grep '^configure' | grep -qv "$on"; then
+	fail "the dialog did not stay focused on workspace 2: $(since dialog3 "$point")"
+fi
 
 # --- A game of a fixed size goes fullscreen ------------------------------------
 # It floats like a dialog, but its own fullscreen key takes it into the strip
@@ -152,10 +158,10 @@ menu_placed() { [ "$(grep -c '^menu at' "$run_dir/menu.log")" -ge 2 ]; }
 wait_until "the menu to be moved to the edge" menu_placed
 # The menu window is the first column, at 0,0; its menu is 100x50.
 set -- $(grep '^menu at' "$run_dir/menu.log" | tail -n 1)
-menu_x=$3 menu_y=$4
-[ "$menu_x" -ge 40 ] && [ "$((menu_y + 20))" -ge 10 ] ||
-	fail "the menu at $menu_x,$menu_y is not over the dialog (40,10 to 1240,710)"
-pointer_to $((menu_x + 20)) $((menu_y + 20))
+x=$(($3 + 20)) y=$(($4 + 20))
+[ "$x" -ge 40 ] && [ "$x" -lt 1240 ] && [ "$y" -ge 10 ] && [ "$y" -lt 710 ] ||
+	fail "the menu's point $x,$y is not over the dialog (40,10 to 1240,710)"
+pointer_to "$x" "$y"
 expect_line menu "pointer enter menu 20 20" "the pointer to reach the menu over the dialog"
 
 # --- A window that maps again starts afresh ------------------------------------
@@ -174,5 +180,44 @@ first_after_unmap | grep -q 'configure 0x0 activated=0 suspended=0 fullscreen=0 
 	fail "the window was told what it was before it unmapped: $(first_after_unmap)"
 expect_state remap "configure 0x0 $on fullscreen=0 tiled=0" "the window to come back as a dialog"
 
+# --- A dialog that maps again is drawn in front ---------------------------------
+# A large dialog, then a small one inside it. Clicking the large one brings
+# it to the front; the small one, losing the keyboard, takes its window down
+# and puts it up again, and is then in front, where the pointer reaches it.
+press super+7
+start_client back --fixed 800x600
+expect_state back "configure 0x0 $on" "the large dialog to float"
+start_client inner --remap-on-leave
+expect_state inner "configure 0x0 $on" "the small dialog to float"
+pointer_to 300 100
+click
+expect_line back "keyboard enter" "a click on the large dialog to focus it"
+expect_line inner unmapped "the small dialog to take itself down"
+# Mapped again, it takes the focus as any new window does.
+inner_back() { sed -n '/^unmapped$/,$p' "$run_dir/inner.log" | grep -q '^keyboard enter'; }
+wait_until "the small dialog to be mapped again" inner_back
+point=$(lines inner)
+pointer_to 640 360
+inner_entered() { since inner "$point" | grep -q '^pointer enter'; }
+wait_until "the pointer over the dialog that mapped again to reach it" inner_entered
+
+# --- A game that goes fullscreen unfocused keeps the focus where it is ------
+# On a workspace with nothing in the strip, a game behind a focused dialog
+# goes fullscreen: it joins the strip without the focus, and once the dialog
+# is closed, the keyboard goes to it.
+press super+8
+start_client front --fixed 800x600
+expect_state front "configure 0x0 $on" "the dialog to float"
+start_client late --game-late
+expect_state late "configure 0x0 $on" "the game to float"
+pointer_to 300 100
+click
+expect_state front "$on" "a click on the dialog to focus it"
+expect_line late "ask fullscreen" "the game to ask for fullscreen without the focus"
+expect_state late "fullscreen=1" "the unfocused game to go fullscreen"
+press super+q
+expect_line front closed "Mod+Q to close the dialog"
+expect_keyboard late enter "the keyboard to go to the fullscreen game"
+
 stop_tw
-echo "ok: stacked columns, floating dialogs, mapping again"
+echo "ok: stacked columns, floating dialogs, mapping again, a remapped dialog in front, a game fullscreen without the focus"

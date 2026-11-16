@@ -162,7 +162,14 @@ static int handle_readable(int fd, uint32_t mask, void *data) {
 	struct tw_blob *blob = clip->incoming;
 	clip->answered = true;
 	if (blob == NULL || blob->size == clip->capacity) {
+		/* Doubling, but never past one byte more than the copy may hold:
+		 * that byte is how a copy that is too large shows itself. */
+		size_t size = blob != NULL ? blob->size : 0;
+		size_t most = size + (clipboard_keep_bytes - clip->bytes) + 1;
 		size_t capacity = clip->capacity == 0 ? 4096 : clip->capacity * 2;
+		if (capacity > most) {
+			capacity = most;
+		}
 		blob = realloc(clip->incoming, sizeof(*blob) + capacity);
 		if (blob == NULL) {
 			wlr_log(WLR_ERROR, "clipboard: out of memory, the copy stays with its program");
@@ -221,20 +228,25 @@ static void read_next(struct tw_clipboard *clip) {
 		wlr_log(WLR_DEBUG, "clipboard: kept %zu formats in %zu bytes", kept, clip->bytes);
 		return;
 	}
-	int fds[2];
-	if (pipe(fds) < 0) {
-		wlr_log_errno(WLR_ERROR, "clipboard: pipe failed");
-		return;
-	}
 	/* Only tw's end must not block. The other end is the program's, to
 	 * write to as it is used to. */
-	if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0) {
+	int fds[2];
+	if (pipe(fds) < 0) {
+		fds[0] = -1;
+	} else if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0 &&
+			fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0) {
 		clip->readable = wl_event_loop_add_fd(clip->server->loop, fds[0],
 			WL_EVENT_READABLE, handle_readable, clip);
 	}
 	if (clip->readable == NULL) {
-		close(fds[0]);
-		close(fds[1]);
+		/* Taking what was read so far would take the format before as
+		 * whole on no evidence (see handle_set_selection()). */
+		wlr_log_errno(WLR_ERROR, "clipboard: cannot read the copy, it stays with its program");
+		if (fds[0] >= 0) {
+			close(fds[0]);
+			close(fds[1]);
+		}
+		forget(clip);
 		return;
 	}
 	clip->fd = fds[0];

@@ -52,7 +52,8 @@ fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart
 # Stand-ins for the launcher and the terminal, to see their keys start them.
 fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
 launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log")" = "$1" ]; }
-fake_program foot "echo opened >>'$run_dir/terminal.log'"
+fake_program foot "[ ! -e /proc/\$\$/fd/9 ] || echo 'fd 9' >>'$run_dir/leaked.log'
+echo opened >>'$run_dir/terminal.log'"
 # And for what the laptop keys run: each changes a level and shows it. The
 # text tools they read the level with are the real ones.
 ln -s "$(command -v awk)" "$(command -v cut)" "$bin_dir/"
@@ -62,7 +63,11 @@ case \"\$*\" in *info*) echo 'asus::kbd_backlight,leds,1,33%,3';; esac"
 fake_program notify-send "echo \"notify-send \$*\" >>'$run_dir/levels.log'"
 levels() { grep -qxF -- "$1" "$run_dir/levels.log" 2>/dev/null; }
 
+# A file tw was handed open is not handed on to the programs it starts
+# (a GPU device left open in one would keep that GPU on).
+exec 9>"$run_dir/inherited"
 start_tw
+exec 9>&-
 
 press super+space
 wait_until "Mod+Space to start the launcher" launched 1
@@ -70,6 +75,7 @@ press super+d
 wait_until "Mod+D to start the launcher" launched 2
 press super+t
 wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
+[ ! -e "$run_dir/leaked.log" ] || fail "a program tw started inherited a file tw was given"
 press XF86KbdBrightnessUp
 wait_until "the keyboard-light key to raise it" levels 'brightnessctl -q --device=*::kbd_backlight set 1+'
 wait_until "the new level to show" levels 'notify-send --app-name=tw --urgency=low --expire-time=1500 --hint=string:x-canonical-private-synchronous:keyboard-light Keyboard light 33%'

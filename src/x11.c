@@ -45,15 +45,13 @@ struct tw_x11 {
 	struct tw_server *server;
 	int display;
 	char display_name[16]; /* ":<display>" */
-	char program[PATH_MAX]; /* the helper, found on PATH before each fork */
 	int fds[2];            /* listening sockets: the file in SOCKET_DIR, then the abstract one */
 	/* Watching for a client. NULL while the helper runs: the sockets are its
 	 * business then, and a connection it has not accepted yet would keep
 	 * waking us. */
 	struct wl_event_source *watch[2];
 	pid_t pid; /* the running helper, or 0 */
-	int pidfd;
-	struct wl_event_source *exit_source;
+	struct wl_event_source *exit_source; /* readable when it exits */
 	/* Fires once, some time after the helper started or a window closed, to
 	 * see whether any X11 application is left. NULL if the helper is never
 	 * stopped. */
@@ -65,6 +63,11 @@ struct tw_x11 {
 
 static void lock_path(char *path, size_t size, int display) {
 	snprintf(path, size, "/tmp/.X%d-lock", display);
+}
+
+/* Also the abstract socket's name, after its leading NUL. */
+static int socket_path(char *path, size_t size, int display) {
+	return snprintf(path, size, SOCKET_DIR "/X%d", display);
 }
 
 /* X servers refuse a socket directory that another user could swap out. */
@@ -142,7 +145,7 @@ static bool open_sockets(struct tw_x11 *x11, int display) {
 
 	/* The path clients look for first, and the same name in Linux's abstract
 	 * namespace, which reaches into sandboxes that hide /tmp. */
-	int length = snprintf(addr.sun_path, sizeof(addr.sun_path), SOCKET_DIR "/X%d", display);
+	int length = socket_path(addr.sun_path, sizeof(addr.sun_path), display);
 	unlink(addr.sun_path); /* we hold the lock, so a leftover is stale */
 	x11->fds[0] = listen_on(&addr, base + (socklen_t)length + 1);
 	if (x11->fds[0] < 0) {
@@ -150,11 +153,11 @@ static bool open_sockets(struct tw_x11 *x11, int display) {
 	}
 
 	addr.sun_path[0] = '\0';
-	length = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, SOCKET_DIR "/X%d", display);
+	socket_path(addr.sun_path + 1, sizeof(addr.sun_path) - 1, display);
 	x11->fds[1] = listen_on(&addr, base + 1 + (socklen_t)length);
 	if (x11->fds[1] < 0) {
 		close(x11->fds[0]);
-		snprintf(addr.sun_path, sizeof(addr.sun_path), SOCKET_DIR "/X%d", display);
+		socket_path(addr.sun_path, sizeof(addr.sun_path), display);
 		unlink(addr.sun_path);
 		return false;
 	}
@@ -165,7 +168,7 @@ static void close_display(struct tw_x11 *x11) {
 	char path[64];
 	close(x11->fds[0]);
 	close(x11->fds[1]);
-	snprintf(path, sizeof(path), SOCKET_DIR "/X%d", x11->display);
+	socket_path(path, sizeof(path), x11->display);
 	unlink(path);
 	lock_path(path, sizeof(path), x11->display);
 	unlink(path);
@@ -222,6 +225,9 @@ static void watch(struct tw_x11 *x11, bool turn_away) {
 		}
 		x11->watch[i] = wl_event_loop_add_fd(x11->server->loop, x11->fds[i],
 			WL_EVENT_READABLE, handle_client, x11);
+		if (x11->watch[i] == NULL) {
+			wlr_log(WLR_ERROR, "cannot watch the X11 socket of %s", x11->display_name);
+		}
 	}
 }
 
@@ -240,7 +246,6 @@ static int handle_helper_exit(int fd, uint32_t mask, void *data) {
 	}
 	wl_event_source_remove(x11->exit_source);
 	x11->exit_source = NULL;
-	close(x11->pidfd);
 	x11->pid = 0;
 	if (x11->idle_timer != NULL) {
 		wl_event_source_timer_update(x11->idle_timer, 0);
@@ -356,7 +361,7 @@ static bool clients_connected(struct tw_x11 *x11) {
 		return true;
 	}
 	char name[40];
-	snprintf(name, sizeof(name), SOCKET_DIR "/X%d", x11->display);
+	socket_path(name, sizeof(name), x11->display);
 	bool connected = false;
 	char *line = NULL;
 	size_t size = 0;
@@ -424,7 +429,8 @@ void x11_window_closed(struct tw_server *server) {
 
 static bool helper_start(struct tw_x11 *x11) {
 	/* Looked for again each time: an update may have moved it. */
-	if (!program_find(x11_helper, x11->program, sizeof(x11->program))) {
+	char program[PATH_MAX];
+	if (!program_find(x11_helper, program, sizeof(program))) {
 		wlr_log(WLR_ERROR, "%s is no longer installed", x11_helper);
 		return false;
 	}
@@ -434,7 +440,7 @@ static bool helper_start(struct tw_x11 *x11) {
 	char fd_file[12], fd_abstract[12];
 	snprintf(fd_file, sizeof(fd_file), "%d", x11->fds[0]);
 	snprintf(fd_abstract, sizeof(fd_abstract), "%d", x11->fds[1]);
-	char *argv[] = {x11->program, x11->display_name,
+	char *argv[] = {program, x11->display_name,
 		"-listenfd", fd_file, "-listenfd", fd_abstract, NULL};
 
 	/* Our environment minus DISPLAY: the helper is the display. */
@@ -455,7 +461,7 @@ static bool helper_start(struct tw_x11 *x11) {
 
 	pid_t pid = fork();
 	if (pid == 0) {
-		child_reset_signals();
+		child_reset();
 		/* The sockets are close-on-exec so that no other program inherits
 		 * them. The helper is the one that must. */
 		fcntl(x11->fds[0], F_SETFD, 0);
@@ -471,7 +477,7 @@ static bool helper_start(struct tw_x11 *x11) {
 				close(null);
 			}
 		}
-		execve(x11->program, argv, envp);
+		execve(program, argv, envp);
 		_exit(127);
 	}
 	free(envp);
@@ -480,22 +486,22 @@ static bool helper_start(struct tw_x11 *x11) {
 		return false;
 	}
 
+	/* The event source keeps a duplicate of the pidfd. */
 	int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
 	struct wl_event_source *source = pidfd < 0 ? NULL : wl_event_loop_add_fd(
 		x11->server->loop, pidfd, WL_EVENT_READABLE, handle_helper_exit, x11);
+	if (pidfd >= 0) {
+		close(pidfd);
+	}
 	if (source == NULL) {
 		/* Without this we would never learn that it exited. */
 		wlr_log(WLR_ERROR, "cannot watch %s, stopping it", x11_helper);
-		if (pidfd >= 0) {
-			close(pidfd);
-		}
 		kill(pid, SIGKILL);
 		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
 		}
 		return false;
 	}
 	x11->pid = pid;
-	x11->pidfd = pidfd;
 	x11->exit_source = source;
 	check_later(x11);
 	wlr_log(WLR_DEBUG, "started %s for display %s", x11_helper, x11->display_name);
@@ -554,7 +560,6 @@ void x11_finish(struct tw_server *server) {
 	}
 	if (x11->pid != 0) {
 		wl_event_source_remove(x11->exit_source);
-		close(x11->pidfd);
 		/* It would notice our socket closing anyway; this is just prompt. */
 		kill(x11->pid, SIGTERM);
 	}

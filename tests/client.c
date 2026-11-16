@@ -34,6 +34,13 @@
  *   --remap       an ordinary window that, the first time it is suspended,
  *                 takes its window down ("unmapped") and puts it back up as
  *                 one that cannot be resized, like a dialog
+ *   --remap-on-leave [<w>x<h>]  a dialog (as --fixed) that, the first time
+ *                 it is told it lost the focus, takes its window down and
+ *                 puts it back up at once ("unmapped"), as a program does
+ *                 that hides a dialog and shows it again
+ *   --game-late   the game, asking for fullscreen the first time it loses
+ *                 the keyboard ("ask fullscreen"), as one does that goes
+ *                 fullscreen when its loading is done
  *   --inhibit     a window that asks to keep the screen on, like a video player
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
@@ -150,7 +157,7 @@ static size_t output_count;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen, pending_tiled;
-static bool fixed_size, game, fickle, remap;
+static bool fixed_size, game, fickle, remap, remap_on_leave, game_late;
 static int32_t fixed_width = 300, fixed_height = 200;
 static struct xdg_toplevel *window_toplevel;
 static bool running = true;
@@ -345,9 +352,12 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 		pending_width, pending_height, pending_activated, pending_suspended,
 		pending_fullscreen, pending_tiled);
 	fflush(stdout);
-	if (remap && pending_suspended) {
+	/* Unmapped here, once this configure is acked: one acked after the window
+	 * started over would be refused. */
+	if ((remap && pending_suspended) ||
+			(remap_on_leave && was_activated && !pending_activated)) {
 		/* A null buffer unmaps it; the next commit starts it over. */
-		remap = false;
+		remap = remap_on_leave = false;
 		wl_surface_attach(surface, NULL, 0, 0);
 		wl_surface_commit(surface);
 		fixed_size = true;
@@ -528,6 +538,11 @@ static void copy_start(void);
 static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
 		struct wl_surface *wl_surface) {
 	say("keyboard leave");
+	if (game_late) {
+		game_late = false;
+		xdg_toplevel_set_fullscreen(window_toplevel, NULL);
+		say("ask fullscreen");
+	}
 	if (copy_late && !copied) {
 		copied = true;
 		copy_start();
@@ -1187,12 +1202,14 @@ int main(int argc, char *argv[]) {
 		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
 		xdg_toplevel_set_title(toplevel, "tw-test-client");
 		fickle = strcmp(mode, "--fickle") == 0;
-		game = strcmp(mode, "--game") == 0 || fickle;
+		game_late = strcmp(mode, "--game-late") == 0;
+		game = strcmp(mode, "--game") == 0 || fickle || game_late;
 		remap = strcmp(mode, "--remap") == 0;
+		remap_on_leave = strcmp(mode, "--remap-on-leave") == 0;
 		if (fickle) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
 		}
-		if (strcmp(mode, "--fixed") == 0 || game) {
+		if (strcmp(mode, "--fixed") == 0 || game || remap_on_leave) {
 			fixed_size = true;
 			if (argc > 2 && sscanf(argv[2], "%dx%d", &fixed_width, &fixed_height) != 2) {
 				fprintf(stderr, "--fixed takes <width>x<height>\n");

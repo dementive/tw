@@ -1,4 +1,6 @@
+#define _GNU_SOURCE /* close_range() */
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
 #include <signal.h>
@@ -53,7 +55,7 @@ int64_t asleep_ms(void) {
 		(all.tv_nsec - awake.tv_nsec) / 1000000;
 }
 
-void child_reset_signals(void) {
+void child_reset(void) {
 	/* The event loop blocks SIGINT/SIGTERM for its signalfd, and a blocked
 	 * signal mask survives exec. */
 	sigset_t set;
@@ -61,6 +63,18 @@ void child_reset_signals(void) {
 	sigprocmask(SIG_SETMASK, &set, NULL);
 	/* So does a signal that is ignored, see main(). */
 	signal(SIGPIPE, SIG_DFL);
+	/* tw's own files are close-on-exec, but not necessarily those of the
+	 * libraries it loads (a GPU driver's) or those tw was started with. A
+	 * GPU device left open in a program would keep that GPU from being
+	 * switched off for as long as the program runs. */
+	close_range(3, ~0u, CLOSE_RANGE_CLOEXEC);
+	/* Not the console tw may have been started from: a program that
+	 * outlives tw would read the keys typed there next. */
+	int null = open("/dev/null", O_RDONLY);
+	if (null > STDIN_FILENO) {
+		dup2(null, STDIN_FILENO);
+		close(null);
+	}
 }
 
 void spawn(const char *cmd) {
@@ -70,7 +84,7 @@ void spawn(const char *cmd) {
 		return;
 	}
 	if (pid == 0) {
-		child_reset_signals();
+		child_reset();
 		setsid();
 		/* Fork twice so the command is reparented to init: no zombies to
 		 * reap, so no SIGCHLD handler and no wakeups when children exit. */
@@ -80,7 +94,8 @@ void spawn(const char *cmd) {
 		}
 		_exit(0);
 	}
-	waitpid(pid, NULL, 0);
+	while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+	}
 }
 
 /* A file that can be run: a directory can be "executed" too. */
@@ -167,8 +182,8 @@ static void handle_session_destroy(struct wl_listener *listener, void *data) {
 	wl_display_terminate(server->display);
 }
 
-static void usage(const char *name) {
-	printf("Usage: %s [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
+static void usage(FILE *out, const char *name) {
+	fprintf(out, "Usage: %s [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -z  suspend the machine after this long without input (0: never;\n"
@@ -230,9 +245,12 @@ int main(int argc, char *argv[]) {
 		case 's':
 			startup_cmd = optarg;
 			break;
+		case 'h':
+			usage(stdout, argv[0]);
+			return 0;
 		default:
-			usage(argv[0]);
-			return c == 'h' ? 0 : 1;
+			usage(stderr, argv[0]);
+			return 1;
 		}
 		if (seconds != NULL && !parse_seconds(optarg, seconds)) {
 			fprintf(stderr, "%s: -%c takes a number of seconds, not '%s'\n", argv[0], c, optarg);
@@ -240,7 +258,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	if (optind < argc) {
-		usage(argv[0]);
+		usage(stderr, argv[0]);
 		return 1;
 	}
 	wlr_log_init(verbosity, NULL);

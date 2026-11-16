@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
-#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
@@ -16,6 +15,8 @@
 #include <wlr/util/log.h>
 
 #include "tw.h"
+
+#define ALL_EDGES (WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT)
 
 struct tw_popup {
 	struct tw_server *server;
@@ -74,7 +75,9 @@ struct tw_window *window_at(struct tw_server *server, double lx, double ly,
 
 /* --- What the window is told, and how it is drawn --------------------------- */
 
-void window_restack(struct tw_window *window) {
+/* Moves the scene node to the tree for what the window is now (dialog,
+ * fullscreen, or tiled). */
+static void window_restack(struct tw_window *window) {
 	struct tw_server *server = window->server;
 	struct wlr_scene_tree *layer = server->window_tree;
 	if (window->floating) {
@@ -178,12 +181,14 @@ void window_set_floating(struct tw_window *window, bool floating) {
 	window_restack(window);
 	/* A tiled window is told so, and draws no shadow or rounded corners
 	 * where it meets its neighbours; a dialog keeps its own. */
-	wlr_xdg_toplevel_set_tiled(window->xdg_toplevel, floating ? WLR_EDGE_NONE :
-		WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
+	wlr_xdg_toplevel_set_tiled(window->xdg_toplevel, floating ? WLR_EDGE_NONE : ALL_EDGES);
+	/* A dialog was last told 0x0, whatever size window_centre() recorded
+	 * for it since, so a window going into the strip is sent its size by
+	 * the next window_place() even if it happens to match. */
+	window->width = window->height = 0;
 	if (floating) {
 		/* Its size is its own from now on; window_centre() records it. */
 		window->cut_left = window->cut_right = 0;
-		window->width = window->height = 0;
 		wlr_xdg_toplevel_set_size(window->xdg_toplevel, 0, 0);
 	}
 }
@@ -289,8 +294,7 @@ static void initial_commit(struct tw_window *window) {
 		.fields = WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES,
 		.wm_capabilities = WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN,
 		.fullscreen = fullscreen,
-		.tiled = tiled ? WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT :
-			WLR_EDGE_NONE,
+		.tiled = tiled ? ALL_EDGES : WLR_EDGE_NONE,
 		.width = width,
 		.height = height,
 	};
@@ -498,11 +502,14 @@ static void popup_unconstrain(struct tw_popup *popup) {
 	struct wlr_xdg_popup *xdg_popup = popup->xdg_popup;
 	struct tw_window *window = popup_window(xdg_popup);
 	struct wlr_box area, full;
-	int lx, ly;
 	if (window != NULL) {
+		/* Every window of a shown workspace is placed, drawn or not: a menu
+		 * opened while the window is off screen, or the screen is off, is
+		 * kept on the output all the same. */
 		if (window->workspace != NULL &&
-				workspace_boxes(popup->server, window->workspace, &area, &full) &&
-				wlr_scene_node_coords(&window->popup_tree->node, &lx, &ly)) {
+				workspace_boxes(popup->server, window->workspace, &area, &full)) {
+			int lx, ly;
+			wlr_scene_node_coords(&window->popup_tree->node, &lx, &ly);
 			area.x -= lx - window->xdg_toplevel->base->geometry.x;
 			area.y -= ly - window->xdg_toplevel->base->geometry.y;
 			wlr_xdg_popup_unconstrain_from_box(xdg_popup, &area);

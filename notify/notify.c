@@ -70,6 +70,7 @@ static bool verbose;
 static int timeout_ms = default_timeout_ms;
 
 _Noreturn static void quit(int status);
+_Noreturn static void die(const char *why);
 
 static void say(const char *format, ...) {
 	if (verbose) {
@@ -397,13 +398,14 @@ static void handle_message(const struct bus_message *message) {
 		/* Without the name but with something to show: one that was on its
 		 * way as this one was leaving. It is shown, and then this one goes. */
 	} else if (answer && leaving && message->reply_serial == release_serial) {
+		/* What is left of this read is still answered before leaving
+		 * (main()): a program that had our unique name may have sent it
+		 * after the bus took the well-known one away. */
 		leaving = false;
 		have_name = false;
-		if (note_count == 0) {
-			say("leave");
-			quit(0);
+		if (note_count > 0) {
+			name_request();
 		}
-		name_request();
 	} else if (message->type == BUS_CALL) {
 		handle_call(message);
 	}
@@ -420,7 +422,7 @@ static void bus_read(void) {
 	if (in_capacity - in_size < room) {
 		uint8_t *grown = realloc(in, in_size + room);
 		if (grown == NULL) {
-			quit(1);
+			die("no memory for what the bus sent");
 		}
 		in = grown;
 		in_capacity = in_size + room;
@@ -453,10 +455,8 @@ static void bus_read(void) {
 		if (whole < 0) {
 			/* Not even where this message ends can be told, so nothing
 			 * after it can be read either. The bus does not send such a
-			 * thing; if it does, the notifications go properly. */
-			fprintf(stderr, "tw-notify: cannot read what the bus sent\n");
-			notes_close_all();
-			quit(1);
+			 * thing. */
+			die("cannot read what the bus sent");
 		}
 		if (whole == 0 || (size_t)whole > in_size - pos) {
 			break;
@@ -630,7 +630,7 @@ static void font_open(void) {
 	faces = calloc((size_t)fonts->nfont, sizeof(*faces));
 	unusable = calloc((size_t)fonts->nfont, sizeof(*unusable));
 	if (faces == NULL || unusable == NULL) {
-		quit(1);
+		die("no memory for the fonts");
 	}
 }
 
@@ -1022,8 +1022,7 @@ static void window_draw(void) {
 		pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	}
 	if (pixels == MAP_FAILED) {
-		fprintf(stderr, "tw-notify: no memory for the picture\n");
-		quit(1);
+		die("no memory for the picture");
 	}
 	/* Urgent ones last: neighbours share a border, and theirs is the one
 	 * that should show. */
@@ -1289,10 +1288,26 @@ _Noreturn static void quit(int status) {
 	exit(status);
 }
 
+/* Leaving on a failure, with the notifications closed properly first. */
+_Noreturn static void die(const char *why) {
+	fprintf(stderr, "tw-notify: %s\n", why);
+	notes_close_all();
+	quit(1);
+}
+
 /* The compositor has gone, and with it the screen: tw has stopped or
  * crashed, and the session is ending or starting it again. */
 _Noreturn static void compositor_gone(void) {
-	say("the compositor is gone");
+	/* Or it ended the connection over a request it did not take: a fault
+	 * here or there, which would otherwise end every notification unseen. */
+	const struct wl_interface *interface = NULL;
+	if (wl_display_get_error(display) == EPROTO) {
+		uint32_t code = wl_display_get_protocol_error(display, &interface, NULL);
+		fprintf(stderr, "tw-notify: the compositor refused a request (%s, error %u)\n",
+			interface != NULL ? interface->name : "unknown", code);
+	} else {
+		say("the compositor is gone");
+	}
 	notes_close_all();
 	quit(0);
 }
@@ -1353,12 +1368,13 @@ int main(int argc, char *argv[]) {
 		 * notification's time running out, or our own when none is left. */
 		int64_t now = now_ms(), wake = -1;
 		if (note_count == 0 && !leaving) {
-			if (now >= idle_at && !have_name) {
-				quit(0);
-			} else if (now >= idle_at) {
+			if (now < idle_at) {
+				wake = idle_at;
+			} else if (have_name) {
 				name_release();
 			} else {
-				wake = idle_at;
+				say("leave");
+				quit(0);
 			}
 		}
 		for (int i = 0; i < note_count; i++) {
@@ -1373,7 +1389,7 @@ int main(int argc, char *argv[]) {
 		};
 		int timeout = wake < 0 ? -1 : wake > now ? (int)(wake - now) : 0;
 		if (poll(fds, 2, timeout) < 0 && errno != EINTR) {
-			quit(1);
+			die("cannot wait for the bus and the compositor");
 		}
 		if (fds[0].revents != 0) {
 			bus_read();

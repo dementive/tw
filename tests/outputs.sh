@@ -24,6 +24,8 @@ never_on() {
 		fail "window $1 was drawn on $2"
 	fi
 }
+# only_states_since <name> <point> <regex>: every state told since matches.
+only_states_since() { ! since "$1" "$2" | grep '^configure' | grep -Eqv "$3"; }
 
 start_tw
 
@@ -44,11 +46,13 @@ press super+shift+j
 expect_state a "$on" "Mod+Shift+J to move the focus to the monitor on the left"
 expect_state b "$visible" "the other monitor to keep showing its window"
 # Nothing further left: no monitor, and no workspace before the first.
+point=$(lines a)
 press super+shift+j
-sleep 0.3
-last_line_matches a configure "$on" || fail "Mod+Shift+J did something with nothing further left"
 press super+shift+Right
 expect_state b "$on" "Mod+Shift+Right to move the focus to the monitor on the right"
+expect_state a "$visible" "the focus to leave the first monitor"
+only_states_since a "$point" "$visible" ||
+	fail "Mod+Shift+J did something with nothing further left"
 press super+shift+Left
 expect_state a "$on" "Mod+Shift+Left to move the focus back"
 
@@ -68,12 +72,12 @@ expect_line c "output enter $left" "a window opened then to appear on that monit
 press super+2
 expect_state a "$on" "Mod+2 to return the focus to the monitor showing workspace 2"
 expect_state c "$visible" "workspace 1 to stay on its monitor"
+c_point=$(lines c) # c is not to be touched until it is clicked on
 
 # A hidden workspace replaces the one on the focused monitor only.
 press super+3
 expect_state a "$hidden" "Mod+3 to replace workspace 2 on the focused monitor"
 expect_state b "$hidden" "all of workspace 2 to be hidden"
-last_line_matches c configure "$visible" || fail "switching workspace on one monitor disturbed the other"
 start_client d
 expect_line d "output enter $right" "a window on workspace 3 to appear on the second monitor"
 
@@ -81,7 +85,6 @@ expect_line d "output enter $right" "a window on workspace 3 to appear on the se
 # workspaces of this monitor instead.
 press super+shift+l
 expect_state d "$hidden" "Mod+Shift+L, with no monitor further right, to go to the next workspace"
-last_line_matches c configure "$visible" || fail "Mod+Shift+L disturbed the other monitor"
 press super+shift+i
 expect_state d "$on" "Mod+Shift+I, with no monitor above, to go to the previous workspace"
 
@@ -89,17 +92,18 @@ expect_state d "$on" "Mod+Shift+I, with no monitor above, to go to the previous 
 press super+Page_Up
 expect_state a "$on" "Mod+Page_Up to go from workspace 3 to workspace 2"
 expect_state d "$hidden" "workspace 3 to be hidden again"
+point=$(lines a)
 press super+Page_Up
-sleep 0.3
-last_line_matches a configure "$on" ||
-	fail "Mod+Page_Up took the workspace away from the other monitor"
-last_line_matches c configure "$visible" || fail "Mod+Page_Up disturbed the other monitor"
 
 # --- The mouse across monitors --------------------------------------------------
 pointer_to 100 100
 click
 expect_state c "$on" "a click on a window on the other monitor to focus it"
 expect_state a "$visible" "the window that lost the focus to stay visible"
+only_states_since a "$point" "$visible" ||
+	fail "Mod+Page_Up took the workspace away from the other monitor"
+only_states_since c "$c_point" "$on" ||
+	fail "switching workspaces on one monitor disturbed the other"
 
 # A click on an empty monitor moves the focus there.
 press super+shift+l super+4
@@ -124,12 +128,13 @@ expect_keyboard e enter "the keyboard to return to the window"
 # goes. wlroots counts the room only once the bar is mapped.
 e_size=$(current_size e)
 c_size=$(current_size c)
+c_point=$(lines c) # nor until the focus returns to it below
 start_client bar --bar
 expect_line bar "layer configure 1280x30" "a bar to be configured across its monitor"
 wait_until "a bar to take its height off the windows on its monitor" \
 	last_line_matches e configure "^configure ${e_size%x*}x$((${e_size#*x} - 30)) "
+expect_line bar "output enter $right" "the bar to be drawn on its monitor"
 never_on bar $left
-[ "$(current_size c)" = "$c_size" ] || fail "a bar on one monitor resized a window on the other"
 kill "$last_client_pid"
 wait_until "the room a bar kept to come back when it goes" \
 	last_line_matches e configure "^configure $e_size "
@@ -139,19 +144,24 @@ press super+shift+f
 expect_state e "$on fullscreen=1" "Mod+Shift+F to make the window fullscreen"
 [ "$(current_size e)" = 1280x720 ] || fail "fullscreen is $(current_size e), not one monitor"
 never_on e $left
-last_line_matches c configure "$visible" || fail "fullscreen on one monitor hid the other"
 press super+shift+f
+expect_state e "^configure $e_size $on fullscreen=0" "Mod+Shift+F again to give the window its column back"
 
 # --- A column sticking out of its monitor is not drawn on the next --------------
 # On the left monitor c is widened to two thirds, so the column after it hangs
 # over the right edge, where the other monitor begins.
-press super+shift+j super+r
+press super+shift+j
+expect_state c "$on" "the focus to return to the first monitor"
+only_states_since c "$c_point" "^configure $c_size activated=[01] suspended=0 " ||
+	fail "a bar or fullscreen on one monitor changed a window on the other"
+press super+r
 start_client f
 expect_state f "$on" "the new column to be focused"
+expect_line f "output enter $left" "the new column to be drawn on its monitor"
 press super+j
 expect_state c "$on" "Mod+J to scroll back to the first column"
 expect_state f "$visible" "the second column to stay partly in view"
-sleep 0.6 # let the scroll animation finish
+sleep 0.6 # nothing marks the end of the scroll; let it finish
 never_on f $right
 never_on c $right
 

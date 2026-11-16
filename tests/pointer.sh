@@ -14,6 +14,8 @@ on='activated=1 suspended=0'
 # count <name> <pattern>: matching lines in a client's log.
 count() { grep -c "$2" "$run_dir/$1.log" || true; }
 has() { [ "$(count "$1" "$2")" = "$3" ]; }
+# line_of <name> <exact line>: where the line first is in a client's log.
+line_of() { grep -n -m 1 -x "$2" "$run_dir/$1.log" | cut -d: -f1; }
 
 start_tw
 start_client a
@@ -38,26 +40,30 @@ wait_until "keys to follow the click" grep -q '^key ' "$run_dir/a.log"
 pointer_to 800 100
 expect_line a "pointer leave" "the pointer to leave the first window"
 expect_line game "pointer enter 160 100" "the pointer to enter the game"
-sleep 0.3
-has game '^pointer locked' 0 || fail "a window without the keyboard locked the pointer"
 click
 expect_line game "pointer locked" "the focused window under the pointer to get its lock"
+[ "$(line_of game "pointer locked")" -gt "$(line_of game "button 272 pressed")" ] ||
+	fail "a window without the keyboard locked the pointer"
 
 # Locked: the mouse arrives as raw movement and the cursor stays put, however
 # far the mouse goes.
-motions=$(count game '^pointer motion')
+point=$(lines game)
 pointer_by 40 -15
 expect_line game "relative 40 -15" "raw movement to reach the game"
 pointer_by -3000 0
 expect_line game "relative -3000 0" "raw movement to be unbounded"
 pointer_to 100 100
-sleep 0.3
-has game '^pointer motion' "$motions" || fail "the cursor moved while the pointer was locked"
-has game '^pointer leave' 0 || fail "the cursor left the game while the pointer was locked"
 
 # A focus binding always gets the user out; the cursor is free again.
 press super+j
 expect_line game "pointer unlocked" "moving the focus away to release the lock"
+while_locked() { since game "$point" | sed '/^pointer unlocked$/q'; }
+if while_locked | grep -q '^pointer motion'; then
+	fail "the cursor moved while the pointer was locked"
+fi
+if while_locked | grep -q '^pointer leave'; then
+	fail "the cursor left the game while the pointer was locked"
+fi
 expect_state a "$on" "Mod+J to focus the first window"
 pointer_by 4 0
 expect_line game "pointer motion 164 100" "the cursor to move again once unlocked"
@@ -81,11 +87,10 @@ expect_line box "pointer enter 21 30" "a window opening under the pointer to get
 expect_line box "pointer confined" "the focused window under the pointer to confine it"
 pointer_by 500 0
 pointer_by 0 500
-sleep 0.3
+expect_line box "pointer motion 99 99" "the pointer to stop at the corner of the region"
 if grep '^pointer motion' "$run_dir/box.log" | awk '$3 > 99 || $4 > 99 { bad = 1 } END { exit !bad }'; then
 	fail "the pointer escaped the region it is confined to"
 fi
-grep -q '^pointer motion 99 ' "$run_dir/box.log" || fail "the pointer did not reach the region's edge"
 has box '^pointer leave' 0 || fail "the pointer left the window it is confined to"
 press super+j
 expect_line box "pointer unconfined" "moving the focus away to end the confinement"
@@ -96,22 +101,25 @@ expect_line box "pointer unconfined" "moving the focus away to end the confineme
 # without the pointer moving: a click goes to the lock screen, not to the
 # window.
 pointer_to 100 100
-sleep 0.2
-buttons() { cat "$run_dir/a.log" "$run_dir/game.log" "$run_dir/box.log" | grep -c '^button' || true; }
-buttons_before=$(buttons)
+wait_until "the pointer to rest on the first window" \
+	last_line_matches a pointer "pointer (enter|motion) 100 100"
 start_client locker --lock
 expect_line locker locked "the session to lock"
 expect_line locker "pointer enter 100 100" "the lock screen to get the pointer resting under it"
-before=$(count a '^pointer\|^button')
+wait_until "the window to lose the pointer to the lock screen" \
+	last_line_matches a pointer "pointer leave"
+point=$(lines a)
 click
 expect_line locker "button 272 pressed" "a click without moving the pointer to go to the lock screen"
-[ "$(buttons)" = "$buttons_before" ] || fail "a click without moving the pointer reached a window behind the lock"
 pointer_by 5 0
 expect_line locker "pointer motion 105 100" "movement to go to the lock screen"
-sleep 0.3
-has a '^pointer\|^button' "$before" || fail "a window got pointer input while the session was locked"
 press Return
 expect_line locker unlocked "the lock client to unlock"
+# The window gets the pointer back; nothing came to it in between.
+wait_until "the window to get the pointer back as the session unlocks" \
+	last_line_matches a pointer "pointer enter 105 100"
+[ "$(since a "$point" | grep -c '^pointer\|^button')" = 1 ] ||
+	fail "a window got pointer input while the session was locked: $(since a "$point")"
 
 # A button held down as the session locks (mouse-look, a selection being
 # made) does not keep the pointer on the window behind the curtain: not even
@@ -126,11 +134,12 @@ released=$(count a '^button 272 released')
 start_client locker3 --lock
 expect_line locker3 locked "the session to lock with a button held"
 wait_until "the window to lose the pointer as the session locks" last_line_matches a pointer "pointer leave"
-wait "$held"
-sleep 0.2
-has a '^button 272 released' "$released" || fail "a button let go while locked reached the window behind the lock"
+wait "$held" # tw has had the release when tw-test-keys exits
 press Return
 expect_line locker3 unlocked "the lock client to unlock"
+wait_until "the window to get the pointer back as the session unlocks" \
+	last_line_matches a pointer "pointer enter 100 100"
+has a '^button 272 released' "$released" || fail "a button let go while locked reached the window behind the lock"
 
 # --- An open menu does not keep the keyboard through a lock ---------------------
 # A menu holds the keyboard and the pointer while it is open. When the session
@@ -158,7 +167,8 @@ start_client p2
 expect_state p2 "$on" "the newest window to be focused"
 press super+Home
 pointer_to 100 100
-expect_line a "pointer enter 100 100" "the pointer to enter the first window"
+wait_until "the pointer to rest on the first window" \
+	last_line_matches a pointer "pointer (enter|motion) 100 100"
 press super+End
 wait_until "the window the strip glides under the pointer to get it" \
 	grep -q '^pointer enter' "$run_dir/p1.log"
@@ -175,6 +185,18 @@ wait_until "the window under the pointer to lose it as the screens go off" \
 press x
 wait_until "the window under the pointer to get it back as the screens come on" \
 	last_line_matches p1 pointer "pointer enter 100 100"
+
+# --- A held button stays with its window -----------------------------------------
+# Dragged past the window's edge (a selection, a scrollbar), the pointer stays
+# with the window the press went to, in its coordinates, so that the release
+# reaches it. Let go, the pointer goes to what it is over.
+point=$(lines p1)
+press down "move:900,100:$screen_size" up
+wait_until "the window the button was let go over to get the pointer" \
+	last_line_matches p2 pointer "pointer enter 260 100"
+held=$(since p1 "$point" | grep -E '^(pointer|button)' | tr '\n' ';')
+[ "$held" = 'button 272 pressed;pointer motion 900 100;button 272 released;pointer leave;' ] ||
+	fail "a held button did not keep the pointer on its window: $held"
 
 # --- Drag and drop ---------------------------------------------------------------
 # Text dragged from one window to the one beside it arrives there. The two
@@ -207,4 +229,4 @@ expect_keyboard drag leave "the keyboard to follow the focus once the drag is ov
 [ "$(grep -c '^drop$' "$run_dir/drop.log")" = 1 ] || fail "a drag let go over an empty workspace landed on a hidden window"
 
 stop_tw
-echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off"
+echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off, a held button"

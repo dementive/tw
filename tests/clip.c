@@ -22,7 +22,7 @@
  * of copy's "content" line: the text itself, or for more than 100 bytes
  * their number and sum. Without a format it prints the formats alone. It
  * prints "nothing" when the clipboard is empty and "no <format>" when the
- * copy lacks that format. Two readers that misbehave:
+ * copy lacks that format. Readers that misbehave:
  *
  *   paste-slow <format>   waits a second before it reads
  *   paste-part <format>   reads the first bytes and closes ("left after ...")

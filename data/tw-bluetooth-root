@@ -164,8 +164,11 @@ idle)
 	[ -n "$(find "$flag" -mmin +5)" ] || exit 0
 	# After a kernel update the running kernel's modules are gone from the
 	# disk until the next boot: unloaded now, Bluetooth could not come back.
-	for driver in $(drivers); do
-		modinfo "$driver" >/dev/null 2>&1 || exit 0
+	# What counts is what switch_off would unload; a driver $conf names for
+	# another machine is not loaded here, and must not keep Bluetooth on.
+	for holder in "$sys"/module/bluetooth/holders/*; do
+		[ -e "$holder" ] || continue
+		modinfo "${holder##*/}" >/dev/null 2>&1 || exit 0
 	done
 	switch_off
 	;;

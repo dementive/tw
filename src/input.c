@@ -358,11 +358,50 @@ static void pointer_enter(struct tw_server *server, uint32_t time_msec,
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
 }
 
-/* The pointer moved: it goes to whatever is under it now. */
+struct surface_origin {
+	struct wlr_surface *surface;
+	bool found;
+	int x, y;
+};
+
+/* wlroots draws each surface as a buffer node inside a tree at the surface's
+ * origin, offset from it only by the clip (window_update_clip()). */
+static void surface_origin_find(struct wlr_scene_buffer *buffer, int lx, int ly, void *data) {
+	struct surface_origin *origin = data;
+	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+	if (!origin->found && scene_surface != NULL && scene_surface->surface == origin->surface) {
+		origin->found = true;
+		origin->x = lx - buffer->node.x;
+		origin->y = ly - buffer->node.y;
+	}
+}
+
+/*
+ * The pointer moved: it goes to whatever is under it now. But a held button
+ * keeps it on the surface the press went to, wherever the pointer goes, as
+ * long as that surface is drawn: wlroots forgets the buttons of a surface the
+ * pointer leaves, so the release would reach nobody, and a selection or a
+ * scrollbar dragged past the window's edge would stay stuck to the pointer.
+ * A grab has its own rules (a drag, or an open menu, which a press-drag-
+ * release must reach), and a lock takes the pointer away.
+ */
 static void pointer_update(struct tw_server *server, uint32_t time_msec) {
+	struct wlr_seat *seat = server->seat;
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
 	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	struct wlr_surface *held = seat->pointer_state.focused_surface;
+	if (held != NULL && surface != held && seat->pointer_state.button_count > 0 &&
+			seat->pointer_state.grab == seat->pointer_state.default_grab &&
+			!server->locked) {
+		struct surface_origin origin = {.surface = held};
+		wlr_scene_node_for_each_buffer(&server->scene->tree.node, surface_origin_find, &origin);
+		if (origin.found) {
+			surface = held;
+			sx = server->cursor->x - origin.x;
+			sy = server->cursor->y - origin.y;
+		}
+	}
 	pointer_enter(server, time_msec, surface, sx, sy);
 }
 
@@ -540,22 +579,29 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 	idle_activity(server);
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
 
-	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
-		double sx, sy;
-		struct wlr_surface *surface = NULL;
-		struct tw_window *window = window_at(server,
-			server->cursor->x, server->cursor->y, &surface, &sx, &sy);
-		if (window != NULL) {
-			window_focus(server, window);
-			strip_arrange(server);
-		} else if (!server->locked) {
-			/* A click on another screen outside any window (on its empty
-			 * part, its wallpaper, a notification) moves the focus there,
-			 * so that the next window opens on it. */
-			struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
-			if (output != NULL) {
-				strip_focus_output(server, output);
-			}
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		/* The last button is up: the pointer, held by the surface the
+		 * press went to (pointer_update()), goes to what it is over. */
+		if (server->seat->pointer_state.button_count == 0) {
+			pointer_refocus(server);
+		}
+		return;
+	}
+
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	struct tw_window *window = window_at(server,
+		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	if (window != NULL) {
+		window_focus(server, window);
+		strip_arrange(server);
+	} else if (!server->locked) {
+		/* A click on another screen outside any window (on its empty
+		 * part, its wallpaper, a notification) moves the focus there,
+		 * so that the next window opens on it. */
+		struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
+		if (output != NULL) {
+			strip_focus_output(server, output);
 		}
 	}
 }

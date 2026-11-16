@@ -7,9 +7,9 @@
  * The kernel announces every change of a power supply, and udev passes that
  * on to whoever asked for that kind of device. So this costs one socket that
  * is silent until a cable moves or the battery reports a new level, and
- * nothing at all on a machine without a battery. tw does not read what the
- * announcement says: it looks at the supplies again and acts if the answer
- * changed.
+ * nothing at all on a machine without a battery. Of an announcement tw reads
+ * only whose supply it is, to pass over a mouse's battery: for any other it
+ * looks at the supplies again and acts if the answer changed.
  */
 #define _GNU_SOURCE /* syscall(), for pidfd_open */
 #include <dirent.h>
@@ -36,10 +36,11 @@ struct tw_power {
 	struct tw_battery battery;
 	/* The power profile command while it runs, and the state it is for. */
 	pid_t profile_pid;
-	int profile_pidfd;
 	struct wl_event_source *profile_exit;
 	bool profile_on_battery;
-	bool fresh;        /* the next look at the charge is the first of its kind */
+	/* The next reading of the charge is the first since the cable was
+	 * pulled, tw started or the machine woke (see tw_battery_look()). */
+	bool fresh;
 	int64_t asleep_ms; /* how long the machine had slept at the last look */
 	char dir[];        /* where the kernel lists the power supplies */
 };
@@ -120,7 +121,6 @@ static int handle_profile_exit(int fd, uint32_t mask, void *data) {
 	}
 	wl_event_source_remove(power->profile_exit);
 	power->profile_exit = NULL;
-	close(power->profile_pidfd);
 	/* The cable moved while it ran: what holds now is what is set last. */
 	if (power->profile_on_battery != server->on_battery) {
 		profile_run(server);
@@ -155,20 +155,21 @@ static void profile_run(struct tw_server *server) {
 		return;
 	}
 	if (pid == 0) {
-		child_reset_signals();
+		child_reset();
 		setsid();
 		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 		_exit(127);
 	}
+	/* The event source keeps a duplicate of the pidfd. */
 	int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
 	struct wl_event_source *source = pidfd < 0 ? NULL : wl_event_loop_add_fd(
 		server->loop, pidfd, WL_EVENT_READABLE, handle_profile_exit, server);
+	if (pidfd >= 0) {
+		close(pidfd);
+	}
 	if (source == NULL) {
 		/* It cannot be waited for without blocking tw, so it is stopped and
 		 * the command runs unordered instead. */
-		if (pidfd >= 0) {
-			close(pidfd);
-		}
 		kill(pid, SIGKILL);
 		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
 		}
@@ -176,7 +177,6 @@ static void profile_run(struct tw_server *server) {
 		return;
 	}
 	power->profile_pid = pid;
-	power->profile_pidfd = pidfd;
 	power->profile_exit = source;
 	power->profile_on_battery = server->on_battery;
 }
@@ -304,7 +304,6 @@ void power_finish(struct tw_server *server) {
 	/* A profile command still running finishes on its own; init reaps it. */
 	if (power->profile_exit != NULL) {
 		wl_event_source_remove(power->profile_exit);
-		close(power->profile_pidfd);
 	}
 	if (power->monitor != NULL) {
 		udev_monitor_unref(power->monitor);

@@ -65,10 +65,12 @@ stop_bus() {
 	rm -f "$run_dir/bus"
 }
 
-call() {
+# service <interface> <method> [<signature> <arguments>]
+service() {
 	busctl --address="$bus" call org.freedesktop.Notifications \
-		/org/freedesktop/Notifications org.freedesktop.Notifications "$@"
+		/org/freedesktop/Notifications "$@"
 }
+call() { service org.freedesktop.Notifications "$@"; }
 
 # note <replaces> <title> <text> <actions and hints> <timeout>: sends a
 # notification and prints its id. Actions and hints as busctl takes arrays.
@@ -142,6 +144,10 @@ busctl --address="$bus" introspect org.freedesktop.Notifications \
 	/org/freedesktop/Notifications | grep -q '^\.Notify .* susssasa{sv}i  *u ' ||
 	fail "tw-notify does not describe itself"
 call Nonsense 2>&1 | grep -q 'no such method' || fail "an unknown method got no error"
+# What libraries ask of any service: a ping, and its properties (none).
+service org.freedesktop.DBus.Peer Ping || fail "tw-notify does not answer a ping"
+properties=$(service org.freedesktop.DBus.Properties GetAll s org.freedesktop.Notifications)
+[ "$properties" = 'a{sv} 0' ] || fail "properties: $properties"
 
 # An urgent one stays until it is closed.
 urgent_id=$(note 0 'Urgent' 'Stays.' "$urgent" -1)

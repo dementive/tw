@@ -1,5 +1,6 @@
 /*
- * Scrolling-strip maths.
+ * Scrolling-strip maths, and the decisions about refresh rate, battery and
+ * lid that follow from a few numbers.
  *
  * Pure functions: no wlroots, no allocation, no global state, so they can be
  * unit tested without a compositor (tests/layout_test.c).
@@ -49,10 +50,12 @@ bool tw_column_visible(int view_x, int view_width, int col_x, int col_width);
 
 /*
  * Advances a critically damped spring by `dt` seconds: *pos moves toward
- * `target` as fast as it can without overshooting, carrying on from whatever
- * *vel (units per second) it had. `omega` is sqrt(stiffness). The step is the
- * exact solution, so it is correct for any frame time, and a retarget or a
- * touchpad swipe that ends with some speed just continues from that state.
+ * `target`, carrying on from whatever *vel (units per second) it had. From
+ * rest it gets there as fast as it can without overshooting; flung toward
+ * the target it may pass it once and come back. `omega` is sqrt(stiffness).
+ * The step is the exact solution, so it is correct for any frame time, and a
+ * retarget or a touchpad swipe that ends with some speed just continues from
+ * that state.
  */
 void tw_spring_step(double *pos, double *vel, double target, double omega, double dt);
 
@@ -63,7 +66,8 @@ bool tw_spring_settled(double pos, double vel, double target);
  * Whether an output on battery should use a mode that refreshes `candidate`
  * mHz in place of one that refreshes `current` mHz: only a slower one, and
  * none slower than `floor_hz`. Rates count in whole Hz, because what a
- * monitor calls 60 Hz is 59.94 or 59.999.
+ * monitor calls 60 Hz is 59.94 or 59.999, and trading one for the other
+ * would blink the screen for no saving.
  */
 bool tw_refresh_saves(int candidate, int current, int floor_hz);
 

@@ -116,6 +116,12 @@ last_line_matches() { # <name> <line prefix> <regex>
 	grep "^$2" "$run_dir/$1.log" | tail -n 1 | grep -Eq "$3"
 }
 
+# A client reads its events in the order tw sent them: once a later event has
+# arrived, everything tw sent that client before it has too, so what a window
+# was told between two points is checked without sleeping.
+lines() { wc -l <"$run_dir/$1.log"; }                 # <name>: the point its log has reached
+since() { tail -n +"$(($2 + 1))" "$run_dir/$1.log"; } # <name> <point>: what followed it
+
 # expect_state <name> <regex> <description>: the latest window state.
 expect_state() {
 	wait_until "$3" last_line_matches "$1" configure "$2"

@@ -211,12 +211,14 @@ static const size_t clipboard_keep_bytes = 64 << 20;
 #define TW_MACHINE_H "machines/default.h"
 #endif
 #include TW_MACHINE_H
+#undef AUTO
 
 /* --- Key bindings ------------------------------------------------------------ */
 
 /*
  * Key bindings, following niri's defaults where tw has the feature.
- * Mod is Super on real hardware and Alt when tw runs inside another session.
+ * Mod is Super on real hardware and Alt when tw runs inside another session,
+ * where a Mod+Alt binding therefore does not exist.
  * Keys are written unshifted: Mod+Shift+E is {MOD | SHIFT, XKB_KEY_e}.
  */
 #define MOD TW_MOD
@@ -313,5 +315,11 @@ static const struct tw_binding bindings[] = {
 	{0,             XKB_KEY_XF86KbdBrightnessUp,   action_spawn,            {.s = keyboard_light_up}},
 	{0,             XKB_KEY_XF86KbdBrightnessDown, action_spawn,            {.s = keyboard_light_down}},
 };
+#undef DIRECTION
+#undef WORKSPACE
+#undef MOD
+#undef SHIFT
+#undef CTRL
+#undef ALT
 
 #endif

@@ -184,6 +184,8 @@ struct tw_server {
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
 	struct wl_listener renderer_lost;
+	/* Idle: a new renderer takes over after a GPU reset. */
+	struct wl_event_source *renderer_restart;
 
 	/* layer.c */
 	struct wlr_layer_shell_v1 *layer_shell;
@@ -283,11 +285,15 @@ struct tw_server {
 	/* The client holding the lock. NULL while locked means there is none:
 	 * it died, or tw locked by itself and the locker has not arrived yet. */
 	struct tw_lock *lock;
-	int64_t locker_started_ms; /* when tw last started the locker; 0 if never */
+	/* When tw last tried to start the locker (it may not be installed); 0 if
+	 * never. */
+	int64_t locker_started_ms;
 
 	/* power.c */
-	struct tw_power *power; /* NULL on a machine without a battery */
-	bool on_battery;        /* nothing but its battery supplies the machine */
+	/* NULL without a battery, or when tw does not run the machine (no
+	 * session). */
+	struct tw_power *power;
+	bool on_battery; /* nothing but its battery supplies the machine */
 
 	/* x11.c */
 	struct tw_x11 *x11; /* NULL when X11 support is off */
@@ -327,8 +333,10 @@ int64_t now_ms(void);
 int64_t asleep_ms(void);
 /* Runs a shell command, detached from tw. */
 void spawn(const char *cmd);
-/* In a child of tw, before exec: the signals as a new program expects them. */
-void child_reset_signals(void);
+/* In a child of tw, before exec: the signals as a new program expects them,
+ * stdin from /dev/null, and no file of tw's left open across exec (a
+ * caller that hands one on clears its close-on-exec flag afterwards). */
+void child_reset(void);
 /*
  * Looks up the program a shell command starts (its first word) on PATH,
  * without running anything. On success `path` holds where it is.
@@ -434,9 +442,6 @@ void window_apply_fullscreen(struct tw_window *window);
 /* Sets window->floating and tells the client: a dialog picks its own size
  * and is not tiled. */
 void window_set_floating(struct tw_window *window, bool floating);
-/* Moves the scene node to the tree for what the window is now (dialog,
- * fullscreen, or tiled). */
-void window_restack(struct tw_window *window);
 
 /* strip.c */
 void strip_init(struct tw_server *server);

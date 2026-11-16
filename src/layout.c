@@ -53,8 +53,12 @@ bool tw_spring_settled(double pos, double vel, double target) {
 	return fabs(pos - target) < 0.5 && fabs(vel) < 10.0;
 }
 
+static int whole_hz(int mhz) {
+	return (mhz + 500) / 1000;
+}
+
 bool tw_refresh_saves(int candidate, int current, int floor_hz) {
-	return candidate < current && (candidate + 500) / 1000 >= floor_hz;
+	return whole_hz(candidate) < whole_hz(current) && whole_hz(candidate) >= floor_hz;
 }
 
 int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,

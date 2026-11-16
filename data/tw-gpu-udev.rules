@@ -1,8 +1,9 @@
-# An NVIDIA GPU whose driver has been unloaded may be powered down. The NVIDIA
-# rule CachyOS ships (71-nvidia.rules, in cachyos-settings) forbids that at this point, which leaves the GPU
-# running with nothing to put it to sleep. tw-gpu takes the GPU off the bus
-# right after unloading the driver, which powers it down anyway; this rule is
-# for a driver unloaded by hand, or a GPU that could not be taken off the
-# bus. This file sorts after theirs, so it wins.
+# An NVIDIA GPU whose driver has been unloaded may be powered down. The
+# NVIDIA rule CachyOS ships (71-nvidia.rules, in cachyos-settings) forbids
+# that at this point, which leaves the GPU running with nothing to put it to
+# sleep. tw-gpu takes the GPU off the bus right after unloading the driver,
+# which powers it down anyway; this rule is for a driver unloaded by hand, or
+# a GPU that could not be taken off the bus. This file sorts after theirs, so
+# it wins.
 ACTION=="unbind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03[0-9]*", \
     TEST=="power/control", ATTR{power/control}="auto"

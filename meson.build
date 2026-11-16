@@ -6,7 +6,6 @@ project(
 		'c_std=c11',
 		'warning_level=2',
 		'b_ndebug=if-release',
-		'seatd:default_library=static',
 	],
 )
 
@@ -32,6 +31,13 @@ add_project_arguments(
 # protocols) is dropped from the binary, and no system update can change
 # wlroots under an installed tw.
 #
+# libseat and wayland-protocols come from the system (docs/setup.md). Where
+# one is missing or too old, wlroots would fetch it from the latest commit
+# through its own wrap files, unpinned. Asking for both here first, with no
+# fallback, makes the build stop and name the missing package instead.
+dependency('libseat', version: '>=0.2.0')
+wayland_protos = dependency('wayland-protocols', version: '>=1.47')
+
 # libdisplay-info, with which wlroots reads what a monitor says about itself,
 # is the one library under tw whose file name changes with its releases
 # (libdisplay-info.so.3). A system update that brings the next one would
@@ -105,13 +111,6 @@ summary('machine', 'src/machines/@0@.h@1@'.format(machine, machine_note), sectio
 
 # --- Protocols ---------------------------------------------------------------
 
-# Declared after wlroots, which can supply wayland-protocols as a subproject.
-wayland_protos = dependency(
-	'wayland-protocols',
-	version: '>=1.32',
-	fallback: 'wayland-protocols',
-	default_options: ['tests=false'],
-)
 wayland_scanner = find_program(
 	dependency('wayland-scanner', native: true).get_variable('wayland_scanner'),
 	native: true,

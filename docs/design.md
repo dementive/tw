@@ -87,13 +87,20 @@ goes, and `tw_lid_look()` in `layout.c` decides. Blanking leaves the screen
 behind the lid off, and the lock does not wait for it.
 
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
-it made with it. `handle_renderer_lost()` in `output.c` makes a new
-renderer and allocator and hands them to the compositor and every output;
-without that the screens would stay black until tw was started again.
+it made with it. `handle_renderer_lost()` in `output.c` hears it in the
+middle of drawing a frame, so it only schedules `renderer_replace()` on an
+idle callback: the old renderer cannot be freed under its own signal. That
+makes a new renderer and allocator and hands them to the compositor and
+every output; without that the screens would stay black until tw was
+started again.
 Each output that took them is asked for one frame, drawn whole, since
 nothing else would repaint an idle screen (the lock screen after a bad
 wake-up). If an output cannot take the new ones, the old ones are not
-freed: drawing with them fails, but freed they would crash tw.
+freed: drawing with them fails, but freed they would crash tw. The pointer's
+image goes with the old renderer, and wlr_cursor uploads it again only when
+it changes, so the cursor is attached to the output layout anew. A client's
+window whose buffer wlroots no longer holds (shared memory, already
+uploaded) stays blank until that client draws again.
 
 **Arranging.** `strip_arrange()` decides where the view of each workspace on
 screen should be (`view_x`) and places everything. Call it after anything
@@ -146,9 +153,16 @@ to nobody.
 The pointer's focus follows the windows, not only the mouse:
 `strip_arrange()` ends with `pointer_refocus()`, which gives the pointer to
 whatever is under it now (unless a button is held, but even then when the
-session locks), and so does each step of a glide or a swipe. Without that, a click or a scroll after a lock, a
-workspace change, a window closing or the strip gliding went to the window
-that had been under the pointer before.
+session locks), and so does each step of a glide or a swipe. Without that,
+a click or a scroll after a lock, a workspace change, a window closing or
+the strip gliding went to the window that had been under the pointer
+before. A held button keeps the pointer on the surface its press went to,
+wherever the pointer goes (`pointer_update()`), as long as that surface is
+drawn and no grab (a drag, an open menu) is in charge: wlroots has no
+implicit grab and forgets the buttons of a surface the pointer leaves, so a
+selection or a scrollbar dragged past a window's edge would never hear the
+release. When the last button comes up, the pointer goes to what it is
+over.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event and
@@ -393,9 +407,12 @@ What that comes to, measured: 28 kB for a line of text, and 20.4 MB for a
 text of 20 MB offered in five formats (`wl-clip-persist` held 98 MB for
 it), back down after the next small copy.
 
-Writing to a reader that has left would kill tw, so tw ignores SIGPIPE, and
-`spawn()` and the start of the X11 helper set it back for the programs tw
-starts.
+Writing to a reader that has left would kill tw, so tw ignores SIGPIPE.
+Every program tw starts gets it back through `child_reset()` (`main.c`),
+which also gives it `/dev/null` for stdin rather than the console tw may
+have been started from, and lets no file tw has open, its libraries'
+included, through exec: a GPU device left open in a program would keep
+`tw-gpu` from switching that GPU off.
 
 **A program that dies while being read.** A pipe ends the same way when its
 program has written everything and when the program died over it. The
@@ -443,7 +460,10 @@ test that heard the real battery once warned of the made-up one).
 
 **Slower outputs.** On battery every output runs in the slowest mode of its
 preferred size that is not below `battery_refresh_hz` (60), because a
-program that animates draws as often as the output refreshes.
+program that animates draws as often as the output refreshes. Rates count
+in whole Hz, so a 60 Hz monitor is not switched to the 59.94 Hz mode it
+also lists: that would blink the screen for no saving
+(`tw_refresh_saves()`).
 `output_mode()` is the one place that says which mode an output should be
 in; a new output, an output coming back on and a change of power supply all
 ask it. wlroots refuses a mode for an output that is off, so
@@ -494,7 +514,8 @@ makes the session bus start it when a program sends a notification or asks
 for its capabilities, and it exits `linger_ms` (one second) after the last
 notification has closed or the last question was answered. Leaving must not
 lose a notification that is on its way, so it first gives up its name on
-the bus (`ReleaseName`) and exits when the answer to that arrives: whatever
+the bus (`ReleaseName`) and exits when the answer to that arrives, after
+answering whatever came with it: whatever
 was sent before the bus took the name away has been delivered by then, and
 whatever is sent after starts a new `tw-notify`. One that arrived in
 between is shown, and the name asked for again; if a new `tw-notify` has
@@ -522,13 +543,17 @@ since two cut to the same length could replace each other.
 (with or without its interface named), an empty `GetAll`, `Introspect`, and
 the signals. Everything read off the socket is checked against the bytes
 that are there, and a `Notify` body must be exactly what its signature
-says, to the byte; `bus.c` reads it (`bus_notify_read()`), so the unit test
+says, to the byte; a variant, in the header or in a value, holds exactly
+one complete type; `bus.c` reads it (`bus_notify_read()`), so the unit test
 reads it with the code that runs. `tests/bus_test.c` is mostly about
 messages that are cut short or damaged. A message that cannot be read is
 passed over: a call among them gets `InvalidArgs` back if its header got as
 far as its sender, and a big-endian one, which is not read, is passed over
 by its length. Only a message whose length cannot be told (another version
-of the protocol) ends `tw-notify`, which closes its notifications first.
+of the protocol) ends `tw-notify`; that and every other failure it cannot
+go on from (no memory, no picture) close its notifications first, so their
+programs are told. A protocol error from the compositor is written to
+stderr.
 Signals go to the program that sent the notification and to nobody else.
 
 **Text.** The font is `font` in `notify/config.h`, found through
@@ -802,9 +827,10 @@ service. A start that the condition refuses is one line in the journal.
 ten minutes, with no process waiting for that. The kernel keeps each
 connection as a device next to its adapter (`hci0:256`); a udev rule starts
 the timer over whenever one is removed, and when the timer runs out the
-helper (`idle`) switches off unless a connection exists, or the drivers
-are no longer on the disk for the running kernel (after a kernel update,
-until the next boot). Both only while
+helper (`idle`) switches off unless a connection exists, or a Bluetooth
+module it would unload is no longer on the disk for the running kernel
+(after a kernel update, until the next boot; a driver the file names that
+is not loaded here does not count). Both only while
 `/run/tw-bluetooth` is there, so a machine that has Bluetooth on from boot
 (built with `-Dbluetooth=false`, or before its first reboot) is left alone.
 A second udev rule lets a USB adapter sleep (`power/control` to `auto`),

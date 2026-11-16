@@ -1,4 +1,4 @@
-/* Unit tests for the scrolling-strip maths. Runs without a compositor. */
+/* Unit tests for src/layout.c. Runs without a compositor. */
 #include <math.h>
 #include <stdio.h>
 
@@ -25,6 +25,8 @@ int main(void) {
 	CHECK(1 * tw_column_width(view, gap, full) + 2 * gap == view);
 	/* Degenerate outputs never produce a zero or negative width. */
 	CHECK(tw_column_width(0, gap, half) == 1);
+	CHECK(tw_column_width(10, 20, half) == 1);
+	CHECK(tw_column_width(-100, gap, full) == 1);
 
 	int w = tw_column_width(view, gap, half);
 	int col0 = gap, col1 = col0 + w + gap, col2 = col1 + w + gap;
@@ -40,6 +42,8 @@ int main(void) {
 	CHECK(tw_view_fit(view_x, view, col0, w, gap) == 0);
 	/* A column wider than the output is shown from its left edge. */
 	CHECK(tw_view_fit(0, view, col2, 2 * view, gap) == col2 - gap);
+	/* So is one exactly as wide, such as a fullscreen column with no margin. */
+	CHECK(tw_view_fit(0, view, col1, view, 0) == col1);
 
 	CHECK(tw_column_visible(0, view, col0, w));
 	CHECK(tw_column_visible(0, view, col1, w));
@@ -73,6 +77,10 @@ int main(void) {
 	}
 	/* Too many windows for the height still get a positive size. */
 	CHECK(tw_stack_height(10, gap, 4, 0) >= 1);
+	for (int i = 0; i < 1000; i++) {
+		CHECK(tw_stack_height(10, gap, 1000, i) >= 1);
+		CHECK(tw_stack_height(-50, gap, 1000, i) >= 1);
+	}
 
 	/* The scroll spring. From rest it approaches the target monotonically
 	 * and never passes it. */
@@ -99,6 +107,23 @@ int main(void) {
 	tw_spring_step(&flung_pos, &flung_vel, target, omega, 0.05);
 	tw_spring_step(&rest_pos, &rest_vel, target, omega, 0.05);
 	CHECK(flung_pos > rest_pos);
+	/* However it starts, far away, flung either way, at any frame rate up
+	 * to the 0.1 s a step is capped at, it settles within two seconds, so
+	 * the animation always ends. */
+	const double starts[][2] = {{-20000, 0}, {0, 50000}, {0, -50000}, {499, 0}};
+	const double steps[] = {1.0 / 300.0, 1.0 / 60.0, 0.1};
+	for (size_t s = 0; s < sizeof(starts) / sizeof(starts[0]); s++) {
+		for (size_t d = 0; d < sizeof(steps) / sizeof(steps[0]); d++) {
+			pos = starts[s][0];
+			vel = starts[s][1];
+			double t = 0;
+			while (!tw_spring_settled(pos, vel, target) && t < 2.0) {
+				tw_spring_step(&pos, &vel, target, omega, steps[d]);
+				t += steps[d];
+			}
+			CHECK(tw_spring_settled(pos, vel, target));
+		}
+	}
 	/* A zero-length step changes nothing. */
 	double still_pos = 123, still_vel = 45;
 	tw_spring_step(&still_pos, &still_vel, target, omega, 0);
@@ -116,6 +141,12 @@ int main(void) {
 	CHECK(!tw_refresh_saves(48000, 300000, 60));
 	CHECK(!tw_refresh_saves(59499, 300000, 60));
 	CHECK(tw_refresh_saves(48000, 300000, 48));
+	/* 59.94 Hz is no saving over 60: the screen would blink for nothing. */
+	CHECK(!tw_refresh_saves(59940, 60000, 60));
+	CHECK(!tw_refresh_saves(59940, 60000, 30));
+	CHECK(!tw_refresh_saves(143856, 144000, 60));
+	/* A mode whose rate is not known (0) is never taken. */
+	CHECK(!tw_refresh_saves(0, 60000, 1));
 
 	/* A battery running down from 12%, warning at 10 and suspending at 5.
 	 * The first reading is where it starts from. */

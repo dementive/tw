@@ -73,6 +73,13 @@ supply ADP0 type=Mains online=0
 supply ucsi-source-psy-1 type=USB online=1 scope=Device
 expect "a laptop on battery charging a phone" battery "saver"
 
+# What the kernel lists varies by machine. As in the kernel's own rule, a
+# supply without a type is passed over, and so is a charger without "online".
+supply BAT0 type=Battery status=Discharging
+supply ADP0 type=Mains
+supply odd online=1
+expect "a laptop with odd supplies" battery "saver"
+
 # A battery that is already low as tw starts is left for its next
 # announcement. So tw does not warn before the session is up to show it, and
 # does not suspend a machine that somebody has just logged in to.
@@ -98,13 +105,28 @@ if [ -e "$profile_log" ] || grep -q 'running on \(battery\|mains\)$' "$run_dir/t
 fi
 stop_tw
 
-# Without the program tw runs nothing and says so.
-rm "$bin_dir/tw-power"
 supply BAT0 type=Battery status=Discharging
 supply ADP0 type=Mains online=0
+
+# A command that fails is reported.
+fake_program tw-power "exit 1"
+start_tw -d
+wait_until "tw to say the command failed" \
+	grep -q 'the power profile command for battery failed' "$run_dir/tw.log"
+stop_tw
+
+# One still running as tw stops is left to finish, and tw stops cleanly.
+fake_program tw-power "echo \$\$ >'$run_dir/profile.pid'; exec /bin/sleep 10"
+start_tw -d
+wait_until "the command to start" test -s "$run_dir/profile.pid"
+stop_tw
+kill "$(cat "$run_dir/profile.pid")" 2>/dev/null || true
+
+# Without the program tw runs nothing and says so.
+rm "$bin_dir/tw-power"
 start_tw -d
 wait_until "tw to say the command is not installed" \
 	grep -q 'not installed: tw-power saver' "$run_dir/tw.log"
 stop_tw
 
-echo "ok: no battery, mains, battery, USB-C charger, a device's supply, low at startup, not the session, missing command"
+echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command"

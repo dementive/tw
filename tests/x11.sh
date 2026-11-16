@@ -94,6 +94,15 @@ expect_line x5 "x11 closed" "a client to be turned away when the helper cannot s
 sleep 0.5
 attempts $((before + 1)) || fail "tw kept restarting a helper that fails to start"
 
+# --- The helper uninstalled while tw runs: turned away, with a reason ---------
+mv "$bin_dir/xwayland-satellite" "$run_dir/uninstalled"
+spawn_client x5b --x11 abstract "$display"
+expect_line x5b "x11 closed" "a client to be turned away when the helper is gone"
+grep -q 'xwayland-satellite is no longer installed' "$run_dir/tw.log" ||
+	fail "tw did not say that the helper is no longer installed"
+attempts $((before + 1)) || fail "tw ran a helper that is no longer installed"
+mv "$run_dir/uninstalled" "$bin_dir/xwayland-satellite"
+
 rm "$run_dir/broken"
 spawn_client x6 --x11 path "$display"
 x6_pid=$last_client_pid
@@ -138,4 +147,26 @@ stop_tw
 [ ! -e "/tmp/.X$number-lock" ] || fail "the X11 lock file was left behind"
 wait_until "the helper to be stopped with tw" gone "$last_helper"
 
-echo "ok: X11 display $display, helper on demand, restart, failure, stopped when unused, cleanup"
+# --- tw killed: the next tw takes over the display it left behind --------------
+rm -f "$run_dir/display"
+start_tw -s "$startup"
+wait_until "the startup command to run" test -s "$run_dir/display"
+display=$(cat "$run_dir/display")
+number=${display#:}
+kill -KILL "$tw_pid"
+{ wait "$tw_pid"; } 2>/dev/null || true
+tw_pid=
+[ -S "/tmp/.X11-unix/X$number" ] && [ -e "/tmp/.X$number-lock" ] ||
+	fail "a killed tw left no X11 socket and lock behind to take over"
+rm -f "$run_dir/display" "$run_dir/wayland-0" "$run_dir/wayland-0.lock"
+start_tw -s "$startup"
+wait_until "the startup command to run" test -s "$run_dir/display"
+[ "$(cat "$run_dir/display")" = "$display" ] ||
+	fail "tw took $(cat "$run_dir/display"), not $display that a killed tw left behind"
+[ "$(tr -d ' \n' <"/tmp/.X$number-lock")" = "$tw_pid" ] ||
+	fail "the lock file a killed tw left behind was not taken over"
+stop_tw
+[ ! -e "/tmp/.X11-unix/X$number" ] && [ ! -e "/tmp/.X$number-lock" ] ||
+	fail "the X11 socket or lock file was left behind after a takeover"
+
+echo "ok: X11 display $display, helper on demand, restart, failure, uninstalled, stopped when unused, cleanup, takeover after a crash"

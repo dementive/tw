@@ -5,6 +5,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -136,16 +137,15 @@ void outputs_update_mode(struct tw_server *server) {
 	}
 }
 
-/* Commits power, a scale above 0 and a mode other than NULL to an output,
- * or with `test` only asks whether it would take them. */
-static bool output_try(struct wlr_output *wlr_output, bool on, float scale,
+/* Commits power, the scale config.h gives the output and a mode (NULL keeps
+ * the one it has), or with `test` only asks whether it would take them.
+ * wlroots leaves out of the commit what would not change. */
+static bool output_try(struct wlr_output *wlr_output, bool on,
 		struct wlr_output_mode *mode, bool test) {
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, on);
-	if (scale > 0) {
-		wlr_output_state_set_scale(&state, scale);
-	}
+	wlr_output_state_set_scale(&state, output_rule(wlr_output->name)->scale);
 	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
 	}
@@ -156,26 +156,26 @@ static bool output_try(struct wlr_output *wlr_output, bool on, float scale,
 }
 
 /*
- * Turns an output on, in the mode it should be in now, or off; a scale above
- * 0 is set as well. A dark screen is the one failure this must not have, so
- * a mode the output refuses gives way to its preferred one, then to the mode
- * it had, then to the first of its modes it takes: a dock, a hub or a cable
- * may not carry the preferred one, and a monitor just plugged in has no mode
- * to keep.
+ * A dark screen is the one failure this must not have, so a mode the output
+ * refuses gives way to its preferred one, then to the mode it had, then to
+ * the first of its modes it takes: a dock, a hub or a cable may not carry
+ * the preferred one, and a monitor just plugged in has no mode to keep. The
+ * scale goes with every commit, so that an output that refused to come on
+ * the first time still gets it when it does.
  */
-static bool output_commit(struct tw_output *output, bool on, float scale) {
+bool output_set_power(struct tw_output *output, bool on) {
 	struct wlr_output *wlr_output = output->wlr_output;
 	struct wlr_output_mode *wanted = on ? output_mode(output) : NULL;
-	bool done = output_try(wlr_output, on, scale, wanted, false);
+	bool done = output_try(wlr_output, on, wanted, false);
 	/* Only an output with modes has others to fall back on. */
-	if (wanted != NULL) {
+	if (!done && wanted != NULL) {
 		struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr_output);
 		struct wlr_output_mode *had = wlr_output->current_mode;
-		if (!done && preferred != wanted) {
-			done = output_try(wlr_output, on, scale, preferred, false);
+		if (preferred != wanted) {
+			done = output_try(wlr_output, on, preferred, false);
 		}
 		if (!done && had != NULL && had != wanted && had != preferred) {
-			done = output_try(wlr_output, on, scale, NULL, false);
+			done = output_try(wlr_output, on, had, false);
 		}
 		struct wlr_output_mode *mode;
 		wl_list_for_each(mode, &wlr_output->modes, link) {
@@ -183,8 +183,8 @@ static bool output_commit(struct tw_output *output, bool on, float scale) {
 				break;
 			}
 			if (mode != wanted && mode != preferred && mode != had &&
-					output_try(wlr_output, on, scale, mode, true)) {
-				done = output_try(wlr_output, on, scale, mode, false);
+					output_try(wlr_output, on, mode, true)) {
+				done = output_try(wlr_output, on, mode, false);
 			}
 		}
 	}
@@ -193,10 +193,6 @@ static bool output_commit(struct tw_output *output, bool on, float scale) {
 		lock_confirm(output->server);
 	}
 	return done;
-}
-
-bool output_set_power(struct tw_output *output, bool on) {
-	return output_commit(output, on, 0);
 }
 
 static void handle_frame(struct wl_listener *listener, void *data) {
@@ -216,7 +212,7 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 
 	/* A scroll animation moves one step per frame of the output showing the
 	 * strip, and asks for the next frame only while it is still moving. */
-	if (output->animating && strip_animate(output)) {
+	if (strip_animate(output)) {
 		wlr_output_schedule_frame(output->wlr_output);
 	}
 
@@ -233,7 +229,7 @@ static void handle_present(struct wl_listener *listener, void *data) {
 	struct tw_output *output = wl_container_of(listener, output, present);
 	const struct wlr_output_event_present *event = data;
 	if (!output->server->locked || output->curtain_shown || !event->presented ||
-			event->commit_seq <= output->lock_seq) {
+			(int32_t)(event->commit_seq - output->lock_seq) <= 0) { /* wraps */
 		return;
 	}
 	output->curtain_shown = true;
@@ -326,7 +322,7 @@ static void output_enter(struct tw_output *output) {
 
 	/* While the screens are off a new one stays off with them, until the
 	 * next input turns them all on (idle.c). */
-	if (!output_commit(output, !server->blanked, rule->scale)) {
+	if (!output_set_power(output, !server->blanked)) {
 		wlr_log(WLR_ERROR, "output %s: could not be set up", wlr_output->name);
 	}
 	/* Coming in while locked: its first frame has the curtain on it. */
@@ -341,8 +337,9 @@ static void output_enter(struct tw_output *output) {
 		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	if (layout_output == NULL || scene_output == NULL) {
-		/* Out of memory. The output stays dark; its frame handler copes. */
-		wlr_log(WLR_ERROR, "output %s: out of memory, left dark", wlr_output->name);
+		/* Out of memory, or no sync timeline. The output stays dark; its
+		 * frame handler copes. */
+		wlr_log(WLR_ERROR, "output %s: cannot draw on it, left dark", wlr_output->name);
 		wlr_scene_output_destroy(scene_output);
 		return;
 	}
@@ -463,9 +460,9 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
  * black until tw was started again. The scene drops the textures of the old
  * one by itself and clients' buffers are imported again as they are drawn.
  */
-static void handle_renderer_lost(struct wl_listener *listener, void *data) {
-	struct tw_server *server = wl_container_of(listener, server, renderer_lost);
-	wlr_log(WLR_INFO, "the GPU was reset; starting the renderer again");
+static void renderer_replace(void *data) {
+	struct tw_server *server = data;
+	server->renderer_restart = NULL;
 	struct wlr_renderer *renderer = wlr_renderer_autocreate(server->backend);
 	struct wlr_allocator *allocator = renderer != NULL ?
 		wlr_allocator_autocreate(server->backend, renderer) : NULL;
@@ -478,7 +475,6 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data) {
 	struct wlr_allocator *old_allocator = server->allocator;
 	server->renderer = renderer;
 	server->allocator = allocator;
-	wl_list_remove(&server->renderer_lost.link);
 	wl_signal_add(&renderer->events.lost, &server->renderer_lost);
 	wlr_compositor_set_renderer(server->compositor, renderer);
 	bool all = true;
@@ -495,9 +491,31 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data) {
 	}
 	/* An output that could not switch still draws with the old ones: they
 	 * fail on a GPU that was reset, but freed they would crash tw. */
-	if (all) {
-		wlr_allocator_destroy(old_allocator);
-		wlr_renderer_destroy(old_renderer);
+	if (!all) {
+		return;
+	}
+	wlr_allocator_destroy(old_allocator);
+	wlr_renderer_destroy(old_renderer);
+	/* The pointer's image went with the old renderer, and wlr_cursor
+	 * uploads it again only when it changes or an output joins the layout:
+	 * joining them all anew puts it back. */
+	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
+}
+
+/*
+ * The old renderer says it is lost in the middle of drawing a frame, so the
+ * new one takes over once that frame has been given up: freed under its own
+ * signal, the old one would crash tw.
+ */
+static void handle_renderer_lost(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, renderer_lost);
+	wlr_log(WLR_INFO, "the GPU was reset; starting the renderer again");
+	/* Every output drawing until then hears the same: once is enough. */
+	wl_list_remove(&server->renderer_lost.link);
+	wl_list_init(&server->renderer_lost.link);
+	server->renderer_restart = wl_event_loop_add_idle(server->loop, renderer_replace, server);
+	if (server->renderer_restart == NULL) {
+		wlr_log(WLR_ERROR, "out of memory; restart tw");
 	}
 }
 
@@ -546,6 +564,10 @@ void output_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_output.link);
 	wl_list_remove(&server->layout_change.link);
 	wl_list_remove(&server->renderer_lost.link);
+	if (server->renderer_restart != NULL) {
+		wl_event_source_remove(server->renderer_restart);
+		server->renderer_restart = NULL;
+	}
 	/* The backend destroys the outputs only after the scene and the
 	 * renderer are gone, so none of tw's handlers may run then: an output
 	 * going would bring the laptop's own screen back, drawn with what was

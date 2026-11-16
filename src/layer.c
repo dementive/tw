@@ -20,9 +20,10 @@ struct tw_layer_surface {
 	struct tw_server *server;
 	struct wlr_layer_surface_v1 *layer_surface;
 	struct wlr_scene_layer_surface_v1 *scene;
-	/* Set from unmap until the next initial commit. A configure sent in that
-	 * window would carry a serial wlroots is about to forget, and a client
-	 * that acked it would be killed with a protocol error. */
+	/* Set from unmap, or as its output goes, until the next initial commit.
+	 * A configure sent in that window would carry a serial wlroots is about
+	 * to forget, and a client that acked it would be killed with a protocol
+	 * error. */
 	bool awaiting_initial_commit;
 	/* What it was last configured for: the output's box, the room left by
 	 * the surfaces before it, and the room it left. While neither those
@@ -44,8 +45,8 @@ struct wlr_surface *layer_keyboard_surface(struct tw_server *server) {
 
 /*
  * The keyboard goes to the topmost mapped surface on the top or overlay layer
- * that asks for exclusive focus (a launcher, a lock prompt). On-demand focus
- * is not implemented: such surfaces get pointer input only.
+ * that asks for exclusive focus (a launcher). On-demand focus is not
+ * implemented: such surfaces get pointer input only.
  */
 static void layers_update_keyboard(struct tw_server *server) {
 	struct tw_layer_surface *best = NULL, *surface;
@@ -116,7 +117,14 @@ void layers_arrange(struct tw_server *server) {
 }
 
 void layers_output_destroyed(struct tw_server *server, struct wlr_output *output) {
+	/* Each one closing rearranges and gives the others on the output more
+	 * room; they are closing too, and are not told of it first. */
 	struct tw_layer_surface *surface, *tmp;
+	wl_list_for_each(surface, &server->layer_surfaces, link) {
+		if (surface->layer_surface->output == output) {
+			surface->awaiting_initial_commit = true;
+		}
+	}
 	wl_list_for_each_safe(surface, tmp, &server->layer_surfaces, link) {
 		if (surface->layer_surface->output == output) {
 			/* Sends `closed` and runs handle_destroy(), which unlinks it. */
@@ -130,7 +138,8 @@ static void handle_map(struct wl_listener *listener, void *data) {
 	 * mapping changes is who may have the keyboard. And the room it keeps:
 	 * wlroots takes a surface's exclusive zone off the room only once it
 	 * is mapped, so a bar is arranged again now (and told the same size
-	 * once more). */
+	 * once more). strip_arrange() also hands the pointer to the surface now
+	 * under it and recounts the visible idle inhibitors. */
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, map);
 	if (surface->layer_surface->current.exclusive_zone > 0) {
 		surface->configured = false;
