@@ -3,6 +3,9 @@
  * compositor tells it, one line per event:
  *
  *   configure <w>x<h> activated=<0|1> suspended=<0|1> fullscreen=<0|1>
+ *   capabilities <name...>                              what the window may ask
+ *                      for besides moving and resizing: fullscreen, maximize,
+ *                      minimize, menu
  *   layer configure <w>x<h>                             with --layer
  *   scale <n>                                           with --layer: the
  *                      screen's scale in 120ths, as soon as it is told
@@ -10,7 +13,8 @@
  *   keyboard enter | keyboard leave                     keyboard focus; "with
  *                      <n> keys held" if it is told keys are down as it enters
  *   key <code> <pressed|released>                       keys it received
- *   pointer enter <x> <y> | pointer leave               pointer focus
+ *   pointer enter <x> <y> | pointer leave               pointer focus; "pointer
+ *                      enter menu <x> <y>" when it enters the menu (--menu)
  *   output enter <name> | output leave <name>           which monitor shows it
  *   pointer motion <x> <y>, button <code> <pressed|released>
  *   closed                                              asked to close; it exits
@@ -20,10 +24,14 @@
  * Modes:
  *   (none)        one ordinary window
  *   --fullscreen  a window that asks to start fullscreen
- *   --fixed       a 300x200 window that cannot be resized, like a dialog
+ *   --fixed [<w>x<h>]  a window that cannot be resized, like a dialog;
+ *                 300x200 unless given
+ *   --game        a 300x200 window that cannot be resized, like a game, and
+ *                 that asks for fullscreen or to leave it when F is pressed
  *   --inhibit     a window that asks to keep the screen on, like a video player
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
+ *   --layer-inhibit  the same, asking to keep the screen on
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
  *   --drag        a window that starts dragging text each time a button is
  *                 pressed in it: "drag started", then "drag dropped" and
@@ -44,6 +52,8 @@
  *                      for it back with the token in <file>
  *   --activate-forged  the same, but with a token it made up without any
  *                      input event, which must not work
+ *   --token-no-surface <file>  as --token, but the token does not say which
+ *                      surface had the event, which must not work either
  *
  * Holding the pointer, as games and 3D editors do:
  *   --lock-pointer     a window that locks the pointer when it enters. It
@@ -91,7 +101,8 @@
 #include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
-#define KEY_RETURN 28 /* evdev code of the Return key */
+#define KEY_RETURN 28 /* evdev codes of the Return and F keys */
+#define KEY_F 33
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -126,12 +137,14 @@ static size_t output_count;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen;
-static bool fixed_size;
+static bool fixed_size, game;
+static int32_t fixed_width = 300, fixed_height = 200;
+static struct xdg_toplevel *window_toplevel;
 static bool running = true;
 
 /* Focus modes. */
 static const char *token_path;
-static bool issue_token, use_token, forge_token;
+static bool issue_token, use_token, forge_token, token_without_surface;
 static bool token_requested, was_activated, activation_sent;
 
 /* Pointer modes. */
@@ -279,7 +292,9 @@ static void request_token(uint32_t serial) {
 	xdg_activation_token_v1_add_listener(token, &token_listener, NULL);
 	if (serial != 0) {
 		xdg_activation_token_v1_set_serial(token, serial, seat);
-		xdg_activation_token_v1_set_surface(token, surface);
+		if (!token_without_surface) {
+			xdg_activation_token_v1_set_surface(token, surface);
+		}
 	}
 	xdg_activation_token_v1_commit(token);
 }
@@ -315,7 +330,8 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 		ask_for_focus();
 	}
 	/* 0x0 means "pick your own size". */
-	int32_t own_width = fixed_size ? 300 : 640, own_height = fixed_size ? 200 : 480;
+	int32_t own_width = fixed_size ? fixed_width : 640;
+	int32_t own_height = fixed_size ? fixed_height : 480;
 	draw(pending_width > 0 ? pending_width : own_width,
 		pending_height > 0 ? pending_height : own_height);
 }
@@ -352,6 +368,20 @@ static void toplevel_configure_bounds(void *data, struct xdg_toplevel *toplevel,
 
 static void toplevel_wm_capabilities(void *data, struct xdg_toplevel *toplevel,
 		struct wl_array *capabilities) {
+	static const char *const names[] = {
+		[XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU] = "menu",
+		[XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE] = "maximize",
+		[XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN] = "fullscreen",
+		[XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE] = "minimize",
+	};
+	uint32_t *capability;
+	printf("capabilities");
+	wl_array_for_each(capability, capabilities) {
+		printf(" %s", *capability < sizeof(names) / sizeof(names[0]) &&
+			names[*capability] != NULL ? names[*capability] : "unknown");
+	}
+	printf("\n");
+	fflush(stdout);
 }
 
 static const struct xdg_toplevel_listener toplevel_listener = {
@@ -471,6 +501,16 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
 		locked_pointer = NULL;
 		say("pointer released");
 	}
+	if (game && key == KEY_F && pressed) {
+		/* A game's own fullscreen key, as F11 is in many. */
+		if (pending_fullscreen) {
+			xdg_toplevel_unset_fullscreen(window_toplevel);
+			say("leave fullscreen");
+		} else {
+			xdg_toplevel_set_fullscreen(window_toplevel, NULL);
+			say("ask fullscreen");
+		}
+	}
 	if (session_lock != NULL && key == KEY_RETURN && pressed) {
 		/* "Password accepted". */
 		ext_session_lock_v1_unlock_and_destroy(session_lock);
@@ -539,7 +579,8 @@ static const struct zwp_relative_pointer_v1_listener relative_listener = {
 
 static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
 		struct wl_surface *wl_surface, wl_fixed_t x, wl_fixed_t y) {
-	printf("pointer enter %d %d\n", wl_fixed_to_int(x), wl_fixed_to_int(y));
+	printf("pointer enter %s%d %d\n", wl_surface != NULL && wl_surface == menu_surface ?
+		"menu " : "", wl_fixed_to_int(x), wl_fixed_to_int(y));
 	fflush(stdout);
 	if (constraint_requested || !(lock_pointer || confine_pointer)) {
 		return;
@@ -955,7 +996,8 @@ int main(int argc, char *argv[]) {
 	if (argc > 2) {
 		token_path = argv[2];
 	}
-	issue_token = strcmp(mode, "--token") == 0;
+	token_without_surface = strcmp(mode, "--token-no-surface") == 0;
+	issue_token = strcmp(mode, "--token") == 0 || token_without_surface;
 	use_token = strcmp(mode, "--activate") == 0;
 	forge_token = strcmp(mode, "--activate-forged") == 0;
 	lock_pointer = strcmp(mode, "--lock-pointer") == 0;
@@ -992,7 +1034,10 @@ int main(int argc, char *argv[]) {
 
 	surface = wl_compositor_create_surface(compositor);
 	wl_surface_add_listener(surface, &surface_listener, NULL);
-	if (strcmp(mode, "--layer") == 0) {
+	if (strcmp(mode, "--layer") == 0 || strcmp(mode, "--layer-inhibit") == 0) {
+		if (strcmp(mode, "--layer-inhibit") == 0) {
+			zwp_idle_inhibit_manager_v1_create_inhibitor(inhibit_manager, surface);
+		}
 		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
 			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "tw-test");
 		zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
@@ -1017,12 +1062,18 @@ int main(int argc, char *argv[]) {
 		window_xdg_surface = xdg_surface;
 		xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
 		struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg_surface);
+		window_toplevel = toplevel;
 		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
 		xdg_toplevel_set_title(toplevel, "tw-test-client");
-		if (strcmp(mode, "--fixed") == 0) {
+		game = strcmp(mode, "--game") == 0;
+		if (strcmp(mode, "--fixed") == 0 || game) {
 			fixed_size = true;
-			xdg_toplevel_set_min_size(toplevel, 300, 200);
-			xdg_toplevel_set_max_size(toplevel, 300, 200);
+			if (argc > 2 && sscanf(argv[2], "%dx%d", &fixed_width, &fixed_height) != 2) {
+				fprintf(stderr, "--fixed takes <width>x<height>\n");
+				return 1;
+			}
+			xdg_toplevel_set_min_size(toplevel, fixed_width, fixed_height);
+			xdg_toplevel_set_max_size(toplevel, fixed_width, fixed_height);
 		} else if (strcmp(mode, "--fullscreen") == 0) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
 		} else if (strcmp(mode, "--inhibit") == 0) {

@@ -37,11 +37,16 @@ struct bus_message {
 
 /*
  * How long the message at the start of `data` is, 0 if `size` bytes are too
- * few to tell, or -1 if this is not a message this code reads (big-endian,
- * or larger than the protocol allows).
+ * few to tell, or -1 if not even its length can be read (another version of
+ * the protocol, or larger than the protocol allows). A big-endian message has
+ * a length, so that it can be passed over, but is not taken apart.
  */
 long bus_message_size(const uint8_t *data, size_t size);
-/* Takes apart the message that fills `data`. False if it is malformed. */
+/*
+ * Takes apart the message that fills `data`. False if it is malformed or
+ * big-endian; `message` then holds what was read before the fault, so that a
+ * call can still be answered, and "" or 0 for the rest.
+ */
 bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *message);
 
 uint8_t bus_read_byte(struct bus_reader *reader);
@@ -55,11 +60,25 @@ size_t bus_read_array(struct bus_reader *reader, size_t alignment);
 /* Passes over the values this signature describes. */
 void bus_skip(struct bus_reader *reader, const char *signature);
 
+/* What tw-notify takes from a Notify call. The strings point into the
+ * message's bytes. */
+struct bus_notify {
+	uint32_t replaces;       /* the id of the notification it replaces; 0: none */
+	const char *summary, *body;
+	bool has_default;        /* among its actions, the one a click stands for */
+	uint8_t urgency;         /* 0 low, 1 normal, 2 critical */
+	int32_t expire;          /* in ms; -1: the server decides, 0: never */
+};
+/* Reads a Notify call's body. False unless it is exactly what the signature
+ * "susssasa{sv}i" describes, to the byte. */
+bool bus_notify_read(const struct bus_message *message, struct bus_notify *notify);
+
 /* What a message says about itself. Leave out what does not apply. */
 struct bus_header {
 	uint8_t type;
 	uint32_t serial, reply_serial;
 	const char *destination, *path, *interface, *member, *error, *signature;
+	const char *sender; /* the bus fills this in; only tests write it */
 };
 
 /* A message being put together in a buffer of the caller's. If it does not

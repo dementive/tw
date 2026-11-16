@@ -28,19 +28,19 @@ tests run each script against a made-up machine: a directory standing in for
 | Test | What it covers |
 | --- | --- |
 | `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery decision |
-| `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
-| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held |
-| `columns` | windows sharing a column, floating dialogs |
-| `pointer` | pointer focus, click to focus, pointer lock, confinement; a window opening under a resting pointer gets it, and so does one the strip glides under it; while locked, a click without moving reaches no window, and an open menu gives the keyboard up to the lock screen; a menu its client moves off the screen is kept on it; drag and drop between two windows, and a drag carried to an empty workspace landing nowhere |
+| `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end; big-endian ones passed over by their length; what a broken header still says; `Notify` bodies read to the byte by the same `bus_notify_read()` tw-notify uses |
+| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held; windows offered fullscreen and nothing else; focus requests with a made-up token or one naming no surface refused |
+| `columns` | windows sharing a column, floating dialogs; a game of a fixed size going fullscreen in the strip and floating again after; a tiled window's menu drawn above a dialog |
+| `pointer` | pointer focus, click to focus, pointer lock, confinement; a window opening under a resting pointer gets it, and so does one the strip glides under it; while locked, a click without moving reaches no window, and an open menu gives the keyboard up to the lock screen; a menu its client moves off the screen is kept on it; drag and drop between two windows, and a drag carried to an empty workspace landing nowhere, the keyboard following the focus once it is over; a button held as the session locks keeps nothing on the window behind the curtain |
 | `outputs` | two monitors: a workspace on each, focus and columns between them |
-| `idle` | screen blanking and inhibitors with a two-second timeout; locking on idle; suspend (a stand-in command) |
+| `idle` | screen blanking and inhibitors with a two-second timeout; locking on idle; suspend (a stand-in command); a layer surface's inhibitor holding nothing off behind the lock |
 | `x11` | the X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
-| `clipboard` | a copy outlives its program; an emptied clipboard stays empty; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read |
+| `clipboard` | a copy outlives its program; an emptied clipboard stays empty; a copy marked secret is not kept; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read |
 | `power` | what tw makes of the power supplies it finds as it starts, and the command it runs |
-| `notify` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
-| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (a second GPU that is a 3D controller too), what it passes on to services and takes back from them, a tw that cannot start; a GPU left on when nouveau drives it, when tw has every GPU open, and after a kernel update; a GPU that does not come back stays known |
+| `notify` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving; another program replacing and closing a notification by its id, as `notify-send -r` does; an urgent one kept when the list overflows; notifications closed when tw goes |
+| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (a second GPU that is a 3D controller too; no GPU with `boot_vga`, by the built-in panel and else by vendor), what it passes on to services and takes back from them, a tw that cannot start; a GPU left on when nouveau drives it, when tw has every GPU open, and after a kernel update; a GPU that does not come back stays known; the wait for a GPU kept open giving up; a failed unit told apart from a GPU in use, and no driver installed from a kernel update; NVIDIA's two daemons not counted as use; the GPU's sound function let sleep; `on` and `off` in the root helper one at a time (`flock`); desktop entries in subdirectories and by `DESKTOP_ENTRY_PATH` |
 | `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, the performance governor, nothing written twice, refusals. Not that two units at once wait for each other (`flock`) |
-| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail, staying on after a kernel update, an adapter whose driver is not btusb coming back on |
+| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail, staying on after a kernel update, an adapter whose driver is not btusb coming back on. Of the udev rules only that udev accepts them, not that the sleep rule finds an adapter |
 | `thunderbolt` | that the Thunderbolt rule is still the kernel guide's and udev accepts it |
 | `install` | `data/post-install.sh`: what it reloads after a real install, that a staged or rootless one reloads nothing, and that it removes what an option now off left, and nothing outside the prefix |
 | `budget` | release build only: idle wakeups and memory, see below |
@@ -48,7 +48,12 @@ tests run each script against a made-up machine: a directory standing in for
 The clipboard, `tw-notify`, `tw-power`, `tw-bluetooth`, the
 accessibility part of `tw-session` and the Thunderbolt rule were each
 checked by breaking the code one way at a time and seeing a test fail
-every time.
+every time; so were the newer focus, lock, inhibitor, menu and fullscreen
+tests.
+
+A check that a test repeats must be a function or a command that reads
+anew each time: `wait_until "..." test "$(count ...)" -gt 1` reads once,
+before `wait_until` starts, and passes or times out on that one reading.
 
 ## The budgets
 
@@ -96,8 +101,9 @@ must be empty.
 - **Touchpad gestures.** The headless backend has no touchpad and no way
   to inject gestures,
   so the gesture handlers in `input.c` and the swipe functions in
-  `window.c` (`strip_swipe_*`, `workspace_snap()`) are untested glue. Keep
-  them thin, and put anything with logic in `layout.c`.
+  `window.c` (`strip_swipe_*`, `workspace_snap()`, and with it a dialog
+  keeping the keyboard through a swipe) are untested glue. Keep them thin,
+  and put anything with logic in `layout.c`.
 - **Windows that unmap and map again, and popups of windows with a
   client-drawn shadow.** The test client does neither, so two things rest
   only on reading wlroots' source: that a remapped window is not left
@@ -112,7 +118,8 @@ must be empty.
   bindings left out) are untested.
 - **A GPU reset.** The software renderer is never lost, so
   `handle_renderer_lost()` in `output.c` has never run. It follows what
-  sway does.
+  sway does. Nor can a headless output be one that is not for a desktop
+  (`non_desktop`).
 - **The lid switch.** The handler in `input.c` is untested; what it calls
   (`lock_now()`) is tested through locking on idle.
 - **Plugging and unplugging an output.** Headless outputs are all there
@@ -121,14 +128,18 @@ must be empty.
   monitor plugged in while the screens are off, and `tw-notify` showing its
   list again on a monitor plugged in after its own went away are untested.
 - **Suspend and wake-up.** The machine cannot be suspended or the clock set
-  from a test, so the wake-up watch in `idle.c` is untested, and the
-  suspend command is a stand-in.
+  from a test, so the wake-up watch in `idle.c` (and its telling a wake-up
+  from the time being set) is untested, and the suspend command is a
+  stand-in. That `locked` waits for the curtain to be presented is seen
+  only in that it still arrives: the headless backend presents every frame
+  at once.
 - **Refresh rates.** Its outputs have no modes, so of the battery mode only
   the choice is tested (`tw_refresh_saves()`), not the loop over an
   output's modes in `output_mode()`, nor `outputs_update_mode()`, nor the
   mode half of `output_set_power()`.
 - **A power supply changing.** Only the kernel can announce one, so
-  `handle_change()` in `power.c` is untested, and with it everything about
+  `handle_change()` in `power.c` is untested (with it, that a mouse's
+  battery announcing itself is passed over), and with it everything about
   a low battery but the decision (`tw_battery_look()`). `tests/power.sh`
   covers what tw does with the state it finds as it starts.
 - **A GPU appearing** while tw runs with `WLR_DRM_DEVICES` unset (tw
@@ -141,7 +152,11 @@ must be empty.
 - **What a notification looks like.** `tests/notify.sh` reads what
   `tw-notify` says it does (`-d`) and what `dbus-monitor` sees on the bus,
   not the screen; the text layout is tested only for not crashing. The
-  test's bus is dbus-daemon, not dbus-broker.
+  test's bus is dbus-daemon, not dbus-broker. Not reached there: a monitor
+  unplugged under the list (the headless outputs stay), a message whose
+  header tw-notify cannot read (dbus-daemon checks every header first;
+  `bus_test.c` covers the reading), a click while the list is changing,
+  and a `Ping` that names no interface (neither busctl nor gdbus sends one).
 - **Real hardware behind the scripts.** `tests/gpu.sh`, `profile.sh`,
   `bluetooth.sh` and `thunderbolt.sh` cannot show that a real GPU, kernel,
   adapter or dock does what the made-up machine does, nor that the polkit
@@ -163,8 +178,8 @@ last column once it has been seen; the figures that go with these are in
 | Clipboard | in a headless tw with real programs: a copy from foot outliving foot and pasted into another foot; `wl-copy --foreground`; a PNG byte for byte; `wl-copy --clear`; no wakeup while holding a copy | the installed build in daily use; copies from Chromium, GTK or Qt; a copy through xwayland-satellite, and tw stopping that helper while it owns the clipboard |
 | Battery | announcements of an unchanged battery and charger every 35 to 110 s, acted on only when something changed; a made-up battery running down with real announcements: one warning, suspends at 5%, 4% and 2% and none on the charger; at a login on battery, the panel at 60 Hz from its first modeset and power-saver; at a login on mains, `tw-power balanced` without a password prompt | the panel changing mode while tw runs, and whether the screen blinks; a USB-C charger as a supply; the root helper writing the real `/sys`; a real suspend from a low battery; a wake-up told from the clocks |
 | Notifications | `notify-send`, `busctl` and `dbus-send` all agree with `bus.c`; wrapping, the urgent border, one picture per change; under dbus-broker, tw's entry in `/usr/local` winning and each start a transient unit of its own; with fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and symbols, each from the first font that has them | the fontconfig build on a real screen at 1.25; a notification from the Claude app and its window coming forward after a click; a monitor going away under the list |
-| NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go | a window on the real screen drawn by the GPU; a monitor on it; suspend while it is off; a machine whose GPU is a 3D controller; the guard after a kernel update |
-| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB |
+| NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go | a window on the real screen drawn by the GPU; a monitor on it; suspend while it is off; a machine whose GPU is a 3D controller; a machine whose first GPU has no `boot_vga`; the guard after a kernel update, and the message with no driver installed; `nvidia-persistenced` stopped and started with the GPU; a GPU whose slot stayed powered for want of its sound function sleeping |
+| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB; the sleep rule matching by the adapter's interface after a boot (`udevadm test` in its dry-run mode matched it to the G533ZW's adapter, which also calls itself Bluetooth as a whole device); a Wi-Fi and Bluetooth chip that does not |
 | Thunderbolt | udev accepts the rule; nothing more | any device at all; whether a dock's USB ports and display outputs work before it is approved |
 
 Nothing that needs a suspend can be seen on the G533ZW: it did not wake

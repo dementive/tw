@@ -120,5 +120,36 @@ press super+ctrl+2
 expect_state b "suspended=1" "workspace 1 to be hidden"
 last_line_matches dialog3 configure "$on" || fail "the dialog did not stay focused on workspace 2"
 
+# --- A game of a fixed size goes fullscreen ------------------------------------
+# It floats like a dialog, but its own fullscreen key takes it into the strip
+# for as long as it is fullscreen.
+press super+3
+start_client game --game
+expect_state game "configure 0x0 $on fullscreen=0" "a game of a fixed size to float"
+press f
+expect_line game "ask fullscreen" "the game to ask for fullscreen"
+expect_state game "configure 1280x720 $on fullscreen=1" "a game of a fixed size to go fullscreen"
+press f
+expect_line game "leave fullscreen" "the game to ask to leave fullscreen"
+expect_state game "configure 0x0 $on fullscreen=0" "the game to float again after fullscreen"
+
+# --- Menus are drawn above dialogs ---------------------------------------------
+# A dialog almost as large as the screen, then a window whose menu opens over
+# the dialog's corner: the menu is in front, so the pointer reaches it.
+press super+4
+start_client cover --fixed 1200x700
+expect_state cover "configure 0x0 $on" "the large dialog to float"
+start_client menu --menu
+expect_line menu "menu shown" "the menu to open"
+menu_placed() { [ "$(grep -c '^menu at' "$run_dir/menu.log")" -ge 2 ]; }
+wait_until "the menu to be moved to the edge" menu_placed
+# The menu window is the first column, at 0,0; its menu is 100x50.
+set -- $(grep '^menu at' "$run_dir/menu.log" | tail -n 1)
+menu_x=$3 menu_y=$4
+[ "$menu_x" -ge 40 ] && [ "$((menu_y + 20))" -ge 10 ] ||
+	fail "the menu at $menu_x,$menu_y is not over the dialog (40,10 to 1240,710)"
+pointer_to $((menu_x + 20)) $((menu_y + 20))
+expect_line menu "pointer enter menu 20 20" "the pointer to reach the menu over the dialog"
+
 stop_tw
 echo "ok: stacked columns, floating dialogs"

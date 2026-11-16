@@ -34,36 +34,70 @@ export MOZ_ENABLE_WAYLAND=1
 export GNOME_DESKTOP_SESSION_ID=this-is-deprecated
 
 # On a laptop with two GPUs, render on the one wired to the built-in panel
-# (the "boot VGA" device). The other GPU is used only if a monitor is plugged
-# into one of its ports as the session starts: opening it loads its driver
-# and keeps it powered, which is not worth paying just in case. A monitor
-# plugged into such a port later needs a new login (or TW_ALL_GPUS=1); ports
-# wired to the first GPU work at any time.
+# (usually the "boot VGA" device). The other GPU is used only if a monitor is
+# plugged into one of its ports as the session starts: opening it loads its
+# driver and keeps it powered, which is not worth paying just in case. A
+# monitor plugged into such a port later needs a new login (or
+# TW_ALL_GPUS=1); ports wired to the first GPU work at any time.
 sys=${TW_SYS:-/sys}             # the tests point these at a made-up machine
 share=${TW_SHARE:-/usr/share}
 run=${TW_RUN:-/run}
 gpu_step=
+primary=
+why=
+# connected <card> <connector types...>: true if a monitor is connected to one
+# of the card's connectors of these types (all of them with none named).
+connected() {
+	connectors=$sys/class/drm/$1-
+	shift
+	[ $# -gt 0 ] || set -- ''
+	for type in "$@"; do
+		for status in "$connectors$type"*/status; do
+			[ -e "$status" ] && [ "$(cat "$status")" = connected ] && return 0
+		done
+	done
+	return 1
+}
 if [ -z "${WLR_DRM_DEVICES:-}" ] && [ -z "${TW_ALL_GPUS:-}" ]; then
 	gpus=0
-	primary=
+	cards=
 	others=
-	# A GPU is any display controller: VGA (0x0300), which is the only kind
-	# with a boot_vga file, but also 3D (0x0302) and other (0x0380), which is
-	# what the second GPU of many laptops calls itself.
+	# A GPU is any display controller: VGA (0x0300), but also 3D (0x0302)
+	# and other (0x0380), which is what the second GPU of many laptops calls
+	# itself, and the first of some.
 	for card in "$sys"/class/drm/card[0-9]*; do
 		case ${card##*/} in *-*) continue ;; esac # a connector, not a card
 		case $(cat "$card/device/class" 2>/dev/null) in 0x03*) ;; *) continue ;; esac
 		gpus=$((gpus + 1))
+		cards="$cards ${card##*/}"
 		if [ "$(cat "$card/device/boot_vga" 2>/dev/null)" = 1 ]; then
 			primary=${card##*/}
-			continue
+			why="the boot VGA device"
 		fi
-		for status in "$card"-*/status; do
-			if [ -e "$status" ] && [ "$(cat "$status")" = connected ]; then
-				others="$others:/dev/dri/${card##*/}"
+	done
+	# Only a VGA controller has a boot_vga file. With none, the first GPU is
+	# the one with the built-in panel connected, else the first that is not
+	# NVIDIA's: a laptop's second GPU is.
+	if [ -z "$primary" ]; then
+		for card in $cards; do
+			if connected "$card" eDP LVDS DSI; then
+				primary=$card
+				why="the built-in panel"
 				break
 			fi
 		done
+	fi
+	if [ -z "$primary" ]; then
+		for card in $cards; do
+			if [ "$(cat "$sys/class/drm/$card/device/vendor" 2>/dev/null)" != 0x10de ]; then
+				primary=$card
+				why="not NVIDIA's"
+				break
+			fi
+		done
+	fi
+	for card in $cards; do
+		[ "$card" != "$primary" ] && connected "$card" && others="$others:/dev/dri/$card"
 	done
 	# A GPU whose driver is not loaded has no card, and one that tw-gpu has
 	# switched off is not even on the bus. Both count all the same: tw-gpu
@@ -138,6 +172,7 @@ forget_step=
 
 if [ -n "${TW_SESSION_PRINT:-}" ]; then
 	echo "WLR_DRM_DEVICES=${WLR_DRM_DEVICES-}"
+	echo "first GPU=$primary${why:+, $why}"
 	echo "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES-}"
 	echo "VK_LOADER_DRIVERS_DISABLE=${VK_LOADER_DRIVERS_DISABLE-}"
 	echo "once tw is up=$gpu_step"

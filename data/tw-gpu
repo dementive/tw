@@ -12,7 +12,8 @@
 #   tw-gpu on                   switch it on and leave it on.
 #   tw-gpu off                  switch it off. If something still uses it,
 #                               it goes off when that has let go.
-#   tw-gpu status
+#   tw-gpu                      say whether it is on, and whether it is
+#                               powered (also: tw-gpu status).
 #
 # Off means the NVIDIA kernel driver is unloaded and the GPU is off the PCI
 # bus: it is powered down, the memory the driver keeps (about 380 MB) is
@@ -33,8 +34,12 @@ flag=${TW_RUN:-/run}/tw-gpu-off
 lock=$runtime/tw-gpu.lock
 # Present while `tw-gpu on` is in force.
 keep=$runtime/tw-gpu.keep
-# Seconds between looks while waiting for a GPU in use; the tests shorten it.
+# Seconds between looks while waiting for a GPU in use, and how many looks
+# in a row that find nothing changed end the wait; the tests shorten both.
 pause=${TW_GPU_PAUSE:-5}
+looks=${TW_GPU_LOOKS:-120}
+# Where the kernels' modules are, one directory for each kernel installed.
+modules=${TW_MODULES:-/usr/lib/modules}
 
 usage() {
 	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
@@ -82,9 +87,10 @@ drives_a_monitor() {
 }
 
 gpu_on() {
-	# Off the bus or merely without its driver: the unit sees to both.
+	# Off the bus or merely without its driver: the unit sees to both. What
+	# systemctl says on a failure (polkit refusing, say) is let through.
 	if ! [ -d "$sys/module/nvidia_drm" ]; then
-		systemctl start tw-gpu@on.service 2>/dev/null || return 1
+		systemctl start tw-gpu@on.service || return 1
 	fi
 	device=$(gpu_device) || return 1
 	tries=0
@@ -95,39 +101,75 @@ gpu_on() {
 	done
 }
 
-# Fails if the GPU is still on the bus afterwards: something is using it.
+# Fails with 1 if the GPU is still on the bus afterwards: something is using
+# it. Fails with 2 if the unit failed, which it does not for a GPU in use.
 gpu_off() {
 	device=$(gpu_device) || return 0 # off already, or no such GPU
 	drives_a_monitor "$device" && return 1
-	systemctl start tw-gpu@off.service 2>/dev/null
+	systemctl start tw-gpu@off.service || return 2
 	! gpu_device >/dev/null
 }
 
-# False after a kernel update, until the next boot: the running kernel's
-# modules are gone from the disk, so a driver unloaded now cannot be loaded
-# again.
+# False if the driver cannot be loaded: after a kernel update, until the next
+# boot, because the running kernel's modules are gone from the disk; or
+# because no NVIDIA driver is installed. A driver unloaded now could not be
+# loaded again.
 driver_on_disk() { modinfo nvidia_drm >/dev/null 2>&1; }
+
+# Says why the GPU could not be switched on. The two reasons for a missing
+# driver are told apart by the running kernel's own modules: a kernel update
+# takes them away too, a driver that was never installed does not.
+explain_on() {
+	if driver_on_disk; then
+		echo "tw-gpu: why: journalctl -b -u tw-gpu@on.service" >&2
+	elif [ -d "$modules/$(uname -r)/kernel" ]; then
+		echo "tw-gpu: no NVIDIA driver is installed for the running kernel" >&2
+	else
+		echo "tw-gpu: the running kernel's modules are gone from the disk; reboot after a kernel update" >&2
+	fi
+}
 
 # How much uses the driver, as a string that changes when a user comes or goes.
 use_count() { cat "$sys"/module/nvidia*/refcnt 2>/dev/null | tr '\n' ' '; }
 
-# True if the desktop entry with this ID asks for the discrete GPU.
-wants_gpu() {
-	[ -n "$1" ] || return 1
-	old_ifs=$IFS
-	IFS=:
-	for dir in ${XDG_DATA_HOME:-$HOME/.local/share} ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
-		IFS=$old_ifs
-		[ -r "$dir/applications/$1" ] || continue
-		# The first entry found is the one the launcher started.
-		grep -Eq '^(PrefersNonDefaultGPU|X-KDE-RunOnDiscreteGpu)=true' "$dir/applications/$1"
-		return
+# entry_file <directory> <ID>: prints the file of the desktop entry with
+# this ID in this applications directory. An ID names a file in a
+# subdirectory with a dash for the slash (kde-foo.desktop can be
+# kde/foo.desktop), so each dash may stand for either.
+entry_file() {
+	[ -f "$1/$2" ] && echo "$1/$2" && return
+	prefix=
+	rest=$2
+	while :; do
+		case $rest in *-*) ;; *) return 1 ;; esac
+		prefix=$prefix${rest%%-*}
+		rest=${rest#*-}
+		# In a subshell, which keeps this call's prefix and rest.
+		[ -d "$1/$prefix" ] && (entry_file "$1/$prefix" "$rest") && return
+		prefix=$prefix-
 	done
-	IFS=$old_ifs
-	return 1
 }
 
-case ${1:-} in
+# wants_gpu <file> <ID>: true if the desktop entry the launcher started asks
+# for the discrete GPU. The launcher may say which file it read (fuzzel
+# does); else it is the first one with that ID.
+wants_gpu() {
+	file=$1
+	if ! [ -r "$file" ]; then
+		[ -n "$2" ] || return 1
+		old_ifs=$IFS
+		IFS=:
+		for dir in ${XDG_DATA_HOME:-$HOME/.local/share} ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
+			IFS=$old_ifs
+			file=$(entry_file "$dir/applications" "$2") && break
+		done
+		IFS=$old_ifs
+		[ -r "$file" ] || return 1
+	fi
+	grep -Eq '^(PrefersNonDefaultGPU|X-KDE-RunOnDiscreteGpu)=true' "$file"
+}
+
+case ${1:-status} in
 run)
 	shift
 	[ $# -gt 0 ] || usage
@@ -148,7 +190,7 @@ run)
 		export __GLX_VENDOR_LIBRARY_NAME=nvidia
 	else
 		echo "tw-gpu: could not switch the NVIDIA GPU on; running without it" >&2
-		driver_on_disk || echo "tw-gpu: its driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+		explain_on
 	fi
 	exec "$@"
 	;;
@@ -156,25 +198,40 @@ try) # internal, run holding the lock: off, unless it was asked to stay on
 	[ -e "$keep" ] || gpu_off
 	;;
 settle) # internal, run holding the lock: nothing started with run is left
-	"$0" try || setsid -f "$0" retry </dev/null >/dev/null 2>&1
+	"$0" try
+	# 1: in use, so wait for it to let go. Not 2: the unit failed, and
+	# trying again would fail the same way.
+	if [ $? = 1 ]; then
+		setsid -f "$0" retry </dev/null >/dev/null 2>&1
+	fi
 	;;
 retry) # internal: the GPU is still in use by something not started here
 	# Typically a program that only watches the GPU (btop), or at login the
 	# login screen, which lets go a few seconds late. Try again whenever the
 	# driver's use counts have changed, looking at them now and then. One of
 	# these is enough, and it ends when the GPU is off or meant to be on.
+	# It also ends when nothing has changed for a while (ten minutes): a
+	# holder that stays (nvtop left open, a daemon) would otherwise cost a
+	# wakeup every few seconds for good. The next run or off tries again.
 	exec 8>"$runtime/tw-gpu.retry"
 	flock -n 8 || exit 0
 	while :; do
 		# Taken before the try, so that a user leaving during it is noticed.
 		before=$(use_count)
-		flock -x -o "$lock" "$0" try && exit 0
+		flock -x -o "$lock" "$0" try
+		case $? in
+		0) exit 0 ;;
+		2) exit 1 ;; # the unit failed: nothing to wait for
+		esac
+		look=0
 		while :; do
 			[ -e "$keep" ] && exit 0
 			device=$(gpu_device) || exit 0
 			drives_a_monitor "$device" && exit 0
 			loaded || exit 1 # no driver and still not off: nothing to wait for
 			driver_on_disk || exit 1 # the root helper will not unload it
+			look=$((look + 1))
+			[ "$look" -le "$looks" ] || exit 1
 			sleep "$pause"
 			[ "$(use_count)" = "$before" ] || break
 		done
@@ -186,7 +243,7 @@ login) # internal, run by tw-session once tw is up
 launch)
 	shift
 	[ $# -gt 0 ] || usage
-	if wants_gpu "${DESKTOP_ENTRY_ID:-${FUZZEL_DESKTOP_FILE_ID:-}}"; then
+	if wants_gpu "${DESKTOP_ENTRY_PATH:-}" "${DESKTOP_ENTRY_ID:-${FUZZEL_DESKTOP_FILE_ID:-}}"; then
 		exec "$0" run "$@"
 	fi
 	exec "$@"
@@ -202,7 +259,7 @@ on)
 	if ! gpu_on; then
 		rm -f "$keep"
 		echo "tw-gpu: could not switch the NVIDIA GPU on" >&2
-		driver_on_disk || echo "tw-gpu: its driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+		explain_on
 		exit 1
 	fi
 	;;
@@ -213,11 +270,19 @@ off)
 		echo "tw-gpu: a program started with tw-gpu is still running; the GPU goes off when it exits" >&2
 		exit 1
 	fi
-	if ! gpu_off; then
+	gpu_off
+	case $? in
+	0) ;;
+	2)
+		echo "tw-gpu: could not switch the NVIDIA GPU off. Why: journalctl -b -u tw-gpu@off.service" >&2
+		exit 1
+		;;
+	*)
 		setsid -f "$0" retry 9>&- </dev/null >/dev/null 2>&1
 		echo "tw-gpu: the NVIDIA GPU is in use; it goes off when that has let go" >&2
 		exit 1
-	fi
+		;;
+	esac
 	;;
 status)
 	if device=$(gpu_device); then

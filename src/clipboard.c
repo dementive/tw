@@ -246,6 +246,15 @@ static void read_next(struct tw_clipboard *clip) {
 /* Starts reading a copy a program has just made. */
 static void follow(struct tw_clipboard *clip, struct wlr_data_source *source) {
 	size_t count = source->mime_types.size / sizeof(char *);
+	char **mime;
+	/* A password manager marks what it copies as secret, and empties the
+	 * clipboard again soon after. Kept here, it would outlive that. */
+	wl_array_for_each(mime, &source->mime_types) {
+		if (strcmp(*mime, "x-kde-passwordManagerHint") == 0) {
+			wlr_log(WLR_DEBUG, "clipboard: a secret, left with its program");
+			return;
+		}
+	}
 	if (count == 0) {
 		return;
 	}
@@ -254,7 +263,6 @@ static void follow(struct tw_clipboard *clip, struct wlr_data_source *source) {
 		return;
 	}
 	copy->server = clip->server;
-	char **mime;
 	wl_array_for_each(mime, &source->mime_types) {
 		copy->formats[copy->count].mime = strdup(*mime);
 		if (copy->formats[copy->count].mime == NULL) {
@@ -402,14 +410,17 @@ static void handle_set_selection(struct wl_listener *listener, void *data) {
 	 * when it does say so). What was read of the copy is offered again,
 	 * once every program has been told that the clipboard is empty.
 	 *
-	 * Not the format on its way, and not always the one read before it. A
-	 * pipe ends the same way whether its program closed it or died over
-	 * it, and the kernel closes a dying program's pipe before its
-	 * connection, so tw may have taken a format cut short for a whole one
-	 * and asked for the next. What tells the two apart is that a program
-	 * that died never reacts to that next request. So the newest format
-	 * read counts only if something came of the one after it. The last
-	 * format a program offers has none after it and is taken as it is.
+	 * Not the format on its way: whether it was all written cannot be
+	 * told. Nor always the one read before it. A pipe ends the same way
+	 * whether its program closed it or died over it, and tw may hear of
+	 * the pipe before it hears of the connection (the kernel closes a
+	 * dying program's files in the order of their numbers, but in which
+	 * order tw is told is not certain). Then it took a format cut short
+	 * for a whole one and asked for the next. What tells the two apart is
+	 * that a program that died never reacts to that next request. So the
+	 * newest format read counts only if something came of the one after
+	 * it. The last format a program offers has none after it and is taken
+	 * as it is.
 	 */
 	struct tw_copy *copy = clip->copy;
 	if (copy != NULL && clip->next > 0 && clip->next < copy->count && !clip->answered) {

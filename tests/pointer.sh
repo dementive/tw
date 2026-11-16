@@ -112,6 +112,25 @@ has a '^pointer\|^button' "$before" || fail "a window got pointer input while th
 press Return
 expect_line locker unlocked "the lock client to unlock"
 
+# A button held down as the session locks (mouse-look, a selection being
+# made) does not keep the pointer on the window behind the curtain: not even
+# the button's release reaches it.
+pointer_to 100 100
+pressed=$(count a '^button 272 pressed')
+press down pause:1500 &
+held=$!
+button_down() { [ "$(count a '^button 272 pressed')" -gt "$pressed" ]; }
+wait_until "the button to go down in the window" button_down
+released=$(count a '^button 272 released')
+start_client locker3 --lock
+expect_line locker3 locked "the session to lock with a button held"
+wait_until "the window to lose the pointer as the session locks" last_line_matches a pointer "pointer leave"
+wait "$held"
+sleep 0.2
+has a '^button 272 released' "$released" || fail "a button let go while locked reached the window behind the lock"
+press Return
+expect_line locker3 unlocked "the lock client to unlock"
+
 # --- An open menu does not keep the keyboard through a lock ---------------------
 # A menu holds the keyboard and the pointer while it is open. When the session
 # locks with one open, the lock screen still gets the keys: the menu closes.
@@ -119,7 +138,8 @@ start_client menu --menu
 expect_line menu "menu shown" "the menu to open"
 # Moved by its client to far off the screen, it is kept on it. The window
 # is no wider than the screen, so a menu kept on it starts left of 1280.
-wait_until "the moved menu to be placed again" test "$(grep -c '^menu at' "$run_dir/menu.log")" -ge 2
+menu_placed() { [ "$(grep -c '^menu at' "$run_dir/$1.log")" -ge 2 ]; }
+wait_until "the moved menu to be placed again" menu_placed menu
 grep '^menu at' "$run_dir/menu.log" | tail -n 1 | awk '{ exit !($3 + 100 <= 1280) }' ||
 	fail "a menu its client moved went off the screen: $(grep '^menu at' "$run_dir/menu.log" | tail -n 1)"
 start_client locker2 --lock
@@ -169,6 +189,9 @@ expect_line drag "drag finished" "the drop window to finish the drag"
 pointer_to 900 100
 press down pause:300 "move:300,120:$screen_size" pause:300 super+9 pause:300 up
 expect_line drag "drag cancelled" "a drag let go over an empty workspace to come to nothing"
+# While it lasted no window had the keyboard; afterwards it is where the focus
+# went, which is nowhere on the empty workspace.
+expect_keyboard drag leave "the keyboard to follow the focus once the drag is over"
 [ "$(grep -c '^drop$' "$run_dir/drop.log")" = 1 ] || fail "a drag let go over an empty workspace landed on a hidden window"
 
 stop_tw

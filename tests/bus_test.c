@@ -5,6 +5,7 @@
  * parser are exactly as long as the message, so that in the sanitizer build
  * one byte too far is a failure.
  */
+#define _GNU_SOURCE /* memmem */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,46 +23,6 @@ static int failures;
 		} \
 	} while (0)
 
-/* What tw-notify reads out of a Notify call. */
-struct notify {
-	char summary[64], body[64];
-	uint32_t replaces;
-	int actions;
-	uint8_t urgency;
-	int32_t expire;
-	bool ok;
-};
-
-/* The same walk over a Notify call's body as in notify/notify.c. */
-static struct notify notify_read(const struct bus_message *message) {
-	struct notify notify = {.urgency = 1};
-	struct bus_reader reader = message->body;
-	bus_read_string(&reader);
-	notify.replaces = bus_read_u32(&reader);
-	bus_read_string(&reader);
-	snprintf(notify.summary, sizeof(notify.summary), "%s", bus_read_string(&reader));
-	snprintf(notify.body, sizeof(notify.body), "%s", bus_read_string(&reader));
-	size_t end = bus_read_array(&reader, 4);
-	while (reader.pos < end && !reader.failed) {
-		bus_read_string(&reader);
-		notify.actions++;
-	}
-	end = bus_read_array(&reader, 8);
-	while (reader.pos < end && !reader.failed) {
-		bus_read_align(&reader, 8);
-		const char *key = bus_read_string(&reader);
-		const char *type = bus_read_signature(&reader);
-		if (strcmp(key, "urgency") == 0 && strcmp(type, "y") == 0) {
-			notify.urgency = bus_read_byte(&reader);
-		} else {
-			bus_skip(&reader, type);
-		}
-	}
-	notify.expire = (int32_t)bus_read_u32(&reader);
-	notify.ok = !reader.failed;
-	return notify;
-}
-
 static void variant(struct bus_writer *writer, const char *key, const char *type) {
 	uint8_t length = (uint8_t)strlen(type);
 	bus_write_align(writer, 8);
@@ -78,7 +39,7 @@ static size_t notify_write(uint8_t *data, size_t capacity) {
 		.destination = "org.freedesktop.Notifications",
 		.path = "/org/freedesktop/Notifications",
 		.interface = "org.freedesktop.Notifications",
-		.member = "Notify", .signature = "susssasa{sv}i"});
+		.member = "Notify", .signature = "susssasa{sv}i", .sender = ":1.42"});
 	bus_write_string(&writer, "a program");
 	bus_write_u32(&writer, 41);
 	bus_write_string(&writer, "");
@@ -130,17 +91,54 @@ static size_t notify_write(uint8_t *data, size_t capacity) {
 	return bus_write_end(&writer);
 }
 
-/* Parses a copy that ends exactly where the message does. */
-static bool parse_copy(const uint8_t *data, size_t size, struct notify *notify) {
+/* A plain Notify call, whose actions or hints array is then made to claim
+ * one byte less than it holds (`cut` 1 or 2), or whose body has a byte too
+ * many after the last argument (`cut` 3). */
+static size_t notify_cut(uint8_t *data, size_t capacity, int cut) {
+	struct bus_writer writer;
+	bus_write_begin(&writer, data, capacity, &(struct bus_header){
+		.type = BUS_CALL, .serial = 8, .path = "/org/freedesktop/Notifications",
+		.member = "Notify", .signature = "susssasa{sv}i"});
+	bus_write_string(&writer, "a program");
+	bus_write_u32(&writer, 0);
+	bus_write_string(&writer, "");
+	bus_write_string(&writer, "Title");
+	bus_write_string(&writer, "");
+	size_t actions = bus_write_array_begin(&writer, 4);
+	bus_write_string(&writer, "default");
+	bus_write_string(&writer, "Open");
+	bus_write_array_end(&writer, actions, 4);
+	size_t hints = bus_write_array_begin(&writer, 8);
+	variant(&writer, "urgency", "y");
+	bus_write_bytes(&writer, "\2", 1);
+	bus_write_array_end(&writer, hints, 8);
+	bus_write_u32(&writer, 0);
+	if (cut == 3) {
+		bus_write_bytes(&writer, "\0", 1);
+	}
+	size_t mark = cut == 1 ? actions : cut == 2 ? hints : 0;
+	if (mark != 0) {
+		data[mark]--; /* little-endian, and none of these lengths is 0 */
+	}
+	return bus_write_end(&writer);
+}
+
+/* Parses a copy that ends exactly where the message does, then reads its
+ * body as tw-notify would. */
+static bool parse_copy(const uint8_t *data, size_t size, struct bus_notify *notify) {
 	uint8_t *copy = malloc(size > 0 ? size : 1);
 	memcpy(copy, data, size);
 	struct bus_message message;
 	bool ok = bus_message_parse(copy, size, &message);
+	/* What could not be read is there and empty, never NULL. */
+	CHECK(message.path != NULL && message.interface != NULL && message.member != NULL &&
+		message.sender != NULL && message.signature != NULL);
 	if (ok) {
-		struct notify read = notify_read(&message);
-		if (notify != NULL) {
+		struct bus_notify read;
+		if (bus_notify_read(&message, &read) && notify != NULL) {
 			*notify = read;
 		}
+		CHECK(read.summary != NULL && read.body != NULL);
 		/* And as some other call would be read. */
 		struct bus_reader reader = message.body;
 		bus_skip(&reader, message.signature);
@@ -163,13 +161,17 @@ int main(void) {
 	CHECK(strcmp(message.interface, "org.freedesktop.Notifications") == 0);
 	CHECK(strcmp(message.member, "Notify") == 0);
 	CHECK(strcmp(message.signature, "susssasa{sv}i") == 0);
-	CHECK(strcmp(message.sender, "") == 0 && message.reply_serial == 0);
-	struct notify notify = notify_read(&message);
-	CHECK(notify.ok);
+	CHECK(strcmp(message.sender, ":1.42") == 0 && message.reply_serial == 0);
+	struct bus_notify notify;
+	CHECK(bus_notify_read(&message, &notify));
 	CHECK(strcmp(notify.summary, "Battery low") == 0);
 	CHECK(strcmp(notify.body, "Plug in the charger.") == 0);
-	CHECK(notify.replaces == 41 && notify.actions == 2);
+	CHECK(notify.replaces == 41 && notify.has_default);
 	CHECK(notify.urgency == 2 && notify.expire == -1);
+	/* Under another signature it is not a Notify call. */
+	struct bus_message other = message;
+	other.signature = "susssasa{sv}";
+	CHECK(!bus_notify_read(&other, &notify));
 	/* The whole body is passed over by its signature alone, to the byte. */
 	struct bus_reader reader = message.body;
 	bus_skip(&reader, message.signature);
@@ -231,11 +233,23 @@ int main(void) {
 		CHECK(!parse_copy(data, length, NULL));
 	}
 
-	/* Not ours to read: big-endian, another version, absurd lengths. */
+	/* Big-endian: its length is known, so that it can be passed over, but
+	 * it is not taken apart. */
 	uint8_t wrong[1024];
 	memcpy(wrong, data, size);
 	wrong[0] = 'B';
-	CHECK(bus_message_size(wrong, size) == -1 && !parse_copy(wrong, size, NULL));
+	for (int at = 4; at < 16; at += 4) {
+		for (int i = 0; i < 4; i++) {
+			wrong[at + i] = data[at + 3 - i];
+		}
+	}
+	CHECK(bus_message_size(wrong, size) == (long)size && !parse_copy(wrong, size, NULL));
+	CHECK(bus_message_parse(wrong, size, &message) == false && message.type == 0);
+	/* Not even the length is known: another byte order, another version,
+	 * absurd lengths. */
+	memcpy(wrong, data, size);
+	wrong[0] = 'x';
+	CHECK(bus_message_size(wrong, size) == -1);
 	memcpy(wrong, data, size);
 	wrong[3] = 2;
 	CHECK(bus_message_size(wrong, size) == -1);
@@ -245,6 +259,32 @@ int main(void) {
 	memcpy(wrong, data, size);
 	memset(wrong + 12, 0xff, 4);
 	CHECK(bus_message_size(wrong, size) == -1);
+
+	/* A header that breaks after the serial and the sender: what was read
+	 * is kept, so that tw-notify can still answer the call. Here the
+	 * signature field's type is made one that does not exist. */
+	memcpy(wrong, data, size);
+	uint8_t *field = memmem(wrong, size, "\10\1g", 4);
+	CHECK(field != NULL);
+	if (field != NULL) {
+		field[2] = '!';
+		CHECK(!bus_message_parse(wrong, size, &message));
+		CHECK(message.type == BUS_CALL && message.wants_reply && message.serial == 7);
+		CHECK(strcmp(message.sender, ":1.42") == 0 && strcmp(message.member, "Notify") == 0);
+	}
+
+	/* A Notify call is read to its last byte: an array that ends inside
+	 * its last element, or a byte after the last argument, is refused. */
+	uint8_t cut[256];
+	size_t cut_size = notify_cut(cut, sizeof(cut), 0);
+	CHECK(bus_message_parse(cut, cut_size, &message) && bus_notify_read(&message, &notify));
+	CHECK(strcmp(notify.summary, "Title") == 0 && notify.has_default && notify.urgency == 2);
+	CHECK(notify.expire == 0 && notify.replaces == 0);
+	for (int damage = 1; damage <= 3; damage++) {
+		cut_size = notify_cut(cut, sizeof(cut), damage);
+		CHECK(bus_message_parse(cut, cut_size, &message));
+		CHECK(!bus_notify_read(&message, &notify));
+	}
 
 	/* Damaged anywhere: whatever comes of it, nothing is read out of
 	 * bounds and nothing loops. Every byte gets every bit flipped, and then
@@ -306,7 +346,8 @@ int main(void) {
 	CHECK(reader.failed);
 
 	if (failures == 0) {
-		printf("ok: write and read back, layout, replies, truncation, damage, nesting\n");
+		printf("ok: write and read back, layout, replies, truncation, byte order, damage, "
+			"strict Notify bodies, nesting\n");
 	}
 	return failures != 0;
 }

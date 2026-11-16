@@ -148,15 +148,18 @@ logged "^close $urgent_id " && fail "an urgent notification expired"
 stays=$(note 0 'Stays' '' "$plain" 0)
 wait_until "the notification that stays" logged "^show $stays 'Stays' for 0 ms\$"
 
-# A notification can be replaced, and keeps its id and its place. Replacing
-# one that is not there makes a new one.
+# Any program may replace a notification by its id, as the specification
+# allows: each busctl here, like each `notify-send -r`, is a program of its
+# own. It keeps its id and its place. Replacing one that is not there makes
+# a new one.
 same=$(note "$urgent_id" 'Urgent, changed' '' "$urgent" -1)
 [ "$same" = "$urgent_id" ] || fail "replacing gave the id $same, not $urgent_id"
 wait_until "the replaced text" logged "^show $urgent_id 'Urgent, changed'"
 new=$(note 7 'New' '' "$plain" 0)
 [ "$new" != 7 ] || fail "replacing a notification that does not exist reused its id"
 
-# Its program can close it.
+# Any program may close one too, and the program that replaced it last is
+# told.
 call CloseNotification u "$urgent_id" >/dev/null
 wait_until "the urgent one to close" logged "^close $urgent_id reason 3\$"
 wait_until "its program to be told" signalled NotificationClosed "$urgent_id" "uint32 3"
@@ -191,15 +194,18 @@ wait_until "the token to be sent" signalled ActivationToken "$asks" 'string "[0-
 wait_until "the action to be sent" signalled ActionInvoked "$asks" 'string "default"'
 wait_until "it to close" logged "^close $asks reason 2\$"
 
-# More than fit: the oldest go.
+# More than fit: the oldest go, but not an urgent one while another can.
+keep=$(note 0 'Keep' '' "$urgent" -1)
 ids=
-for i in 1 2 3 4 5 6 7; do
+for i in 1 2 3 4 5 6; do
 	ids="$ids $(note 0 "Number $i" '' "$plain" 0)"
 done
 set -- $ids
 wait_until "the oldest to make room" logged "^close $1 reason 1\$"
 wait_until "the next to make room" logged "^close $2 reason 1\$"
 logged "^close $3 " && fail "a notification went although there was room"
+logged "^close $keep " && fail "an urgent notification was pushed out"
+held="$keep $6"
 
 # Only one tw-notify at a time: a second, started by hand, gives up.
 if DBUS_SESSION_BUS_ADDRESS=$bus "$notify_bin" 2>"$run_dir/second.log"; then
@@ -207,13 +213,11 @@ if DBUS_SESSION_BUS_ADDRESS=$bus "$notify_bin" 2>"$run_dir/second.log"; then
 fi
 grep -q 'another notification service is running' "$run_dir/second.log" ||
 	fail "a second tw-notify did not say why it left"
-for id in $3 $4 $5 $6 $7; do
-	call CloseNotification u "$id" >/dev/null
-done
 
 # Text that does not fit: longer than is kept, cut between characters and
 # not inside one; line breaks and tabs; a title with a line break. And a
-# picture of 70 kB in the hints, which is read past.
+# picture of 70 kB in the hints, which is read past. Each of the three
+# pushes out one of the numbers above.
 long=$(printf 'é%.0s' $(seq 1500))
 big=$(note 0 "$(printf 'Two\nlines\tand a tab')" "$long $(printf 'a\n\n\nb\r\n')" "$plain" 0)
 wait_until "the long one" logged "^show $big "
@@ -227,13 +231,19 @@ wait_until "the wide title, cut between letters" \
 [ "$(call GetServerInformation)" = 'ssss "tw-notify" "tw" "1" "1.2"' ] ||
 	fail "tw-notify does not answer after the long notifications"
 
-# tw goes while notifications are showing: tw-notify goes too. (stop_tw
-# would stop the bus first, as one of tw's clients.)
+# tw goes while notifications are showing: tw-notify goes too, and tells
+# their programs they are gone. (stop_tw would stop the bus first, as one of
+# tw's clients.)
+held="$held $big $picture $wide"
 others=$client_pids
 client_pids=
 stop_tw
 client_pids=$others
 wait_until "tw-notify to leave with the compositor" gone
+for id in $held; do
+	logged "^close $id reason 1\$" || fail "notification $id was not closed as tw went"
+done
+wait_until "the urgent one's program to be told" signalled NotificationClosed "$keep" "uint32 1"
 stop_bus
 
 # No compositor to show them on: the program gets an id, is told at once
@@ -249,4 +259,4 @@ if grep -q 'Sanitizer\|runtime error' "$run_dir/bus.log"; then
 	fail "sanitizer report from tw-notify"
 fi
 
-echo "ok: on demand, expiry, leaving, capabilities, urgent, replace, close, clicks, token, overflow, single instance, long text, no compositor"
+echo "ok: on demand, expiry, leaving, capabilities, urgent, replace, close, clicks, token, overflow, single instance, long text, closed with the compositor, no compositor"

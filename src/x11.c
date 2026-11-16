@@ -45,7 +45,7 @@ struct tw_x11 {
 	struct tw_server *server;
 	int display;
 	char display_name[16]; /* ":<display>" */
-	char *program;         /* the helper, resolved once so exec needs no PATH search */
+	char program[PATH_MAX]; /* the helper, found on PATH before each fork */
 	int fds[2];            /* listening sockets: the file in SOCKET_DIR, then the abstract one */
 	/* Watching for a client. NULL while the helper runs: the sockets are its
 	 * business then, and a connection it has not accepted yet would keep
@@ -423,6 +423,11 @@ void x11_window_closed(struct tw_server *server) {
 }
 
 static bool helper_start(struct tw_x11 *x11) {
+	/* Looked for again each time: an update may have moved it. */
+	if (!program_find(x11_helper, x11->program, sizeof(x11->program))) {
+		wlr_log(WLR_ERROR, "%s is no longer installed", x11_helper);
+		return false;
+	}
 	/* Everything the child needs is prepared here. After fork() it may only
 	 * make async-signal-safe calls: a driver thread could have held the
 	 * allocator lock at the moment of the fork. */
@@ -515,8 +520,7 @@ void x11_init(struct tw_server *server) {
 	if (x11_helper[0] == '\0') {
 		return;
 	}
-	char program[PATH_MAX];
-	if (!program_find(x11_helper, program, sizeof(program))) {
+	if (!program_installed(x11_helper)) {
 		wlr_log(WLR_INFO, "%s is not installed, X11 applications will not start", x11_helper);
 		return;
 	}
@@ -525,9 +529,7 @@ void x11_init(struct tw_server *server) {
 		return;
 	}
 	x11->server = server;
-	x11->program = strdup(program);
-	if (x11->program == NULL || !open_display(x11)) {
-		free(x11->program);
+	if (!open_display(x11)) {
 		free(x11);
 		return;
 	}
@@ -557,7 +559,6 @@ void x11_finish(struct tw_server *server) {
 		kill(x11->pid, SIGTERM);
 	}
 	close_display(x11);
-	free(x11->program);
 	free(x11);
 	server->x11 = NULL;
 }

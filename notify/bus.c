@@ -13,6 +13,11 @@ static uint32_t le32(const uint8_t *bytes) {
 		(uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
 }
 
+static uint32_t be32(const uint8_t *bytes) {
+	return (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 |
+		(uint32_t)bytes[2] << 8 | (uint32_t)bytes[3];
+}
+
 static size_t round_up(size_t value, size_t alignment) {
 	return (value + alignment - 1) & ~(alignment - 1);
 }
@@ -190,10 +195,17 @@ long bus_message_size(const uint8_t *data, size_t size) {
 	if (size < 16) {
 		return 0;
 	}
-	uint32_t body = le32(data + 4), fields = le32(data + 12);
 	/* 'l': little-endian, which is what every program on this machine sends.
-	 * Then the protocol's version. */
-	if (data[0] != 'l' || data[3] != 1 || fields > FIELDS_MAX || body > MESSAGE_MAX) {
+	 * 'B': big-endian, read only as far as its length, so that one program
+	 * sending it costs that program its message and not everyone theirs.
+	 * Then the protocol's version: in another, not even the length is known. */
+	bool big = data[0] == 'B';
+	if ((data[0] != 'l' && !big) || data[3] != 1) {
+		return -1;
+	}
+	uint32_t body = big ? be32(data + 4) : le32(data + 4);
+	uint32_t fields = big ? be32(data + 12) : le32(data + 12);
+	if (fields > FIELDS_MAX || body > MESSAGE_MAX) {
 		return -1;
 	}
 	size_t total = 16 + round_up(fields, 8) + body;
@@ -201,18 +213,19 @@ long bus_message_size(const uint8_t *data, size_t size) {
 }
 
 bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *message) {
+	*message = (struct bus_message){
+		.path = "", .interface = "", .member = "", .sender = "", .signature = "",
+		.body = {(const uint8_t *)"", 0, 0, true},
+	};
 	long total = bus_message_size(data, size);
-	if (total <= 0 || (size_t)total != size) {
+	if (total <= 0 || (size_t)total != size || data[0] != 'l') {
 		return false;
 	}
 	size_t fields_end = 16 + le32(data + 12);
-	*message = (struct bus_message){
-		.type = data[1],
-		.wants_reply = (data[2] & 1) == 0, /* the "no reply expected" flag */
-		.serial = le32(data + 8),
-		.path = "", .interface = "", .member = "", .sender = "", .signature = "",
-		.body = {data + round_up(fields_end, 8), le32(data + 4), 0, false},
-	};
+	message->type = data[1];
+	message->wants_reply = (data[2] & 1) == 0; /* the "no reply expected" flag */
+	message->serial = le32(data + 8);
+	message->body = (struct bus_reader){data + round_up(fields_end, 8), le32(data + 4), 0, false};
 
 	/* The header fields: an array of (code, variant). */
 	struct bus_reader reader = {data, fields_end, 16, false};
@@ -238,6 +251,46 @@ bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *mes
 		}
 	}
 	return !reader.failed && message->serial != 0;
+}
+
+bool bus_notify_read(const struct bus_message *message, struct bus_notify *notify) {
+	*notify = (struct bus_notify){.summary = "", .body = "", .urgency = 1, .expire = -1};
+	if (strcmp(message->signature, "susssasa{sv}i") != 0) {
+		return false;
+	}
+	struct bus_reader reader = message->body;
+	bus_read_string(&reader); /* the program's name */
+	notify->replaces = bus_read_u32(&reader);
+	bus_read_string(&reader); /* its icon */
+	notify->summary = bus_read_string(&reader);
+	notify->body = bus_read_string(&reader);
+
+	/* Actions come as pairs: a key, then the text for its button. Only the
+	 * one a click stands for is of use here. */
+	size_t end = bus_read_array(&reader, 4);
+	for (int i = 0; reader.pos < end && !reader.failed; i++) {
+		const char *action = bus_read_string(&reader);
+		notify->has_default = notify->has_default ||
+			(i % 2 == 0 && strcmp(action, "default") == 0);
+	}
+	/* The last element ends where the array says it does, not past it. */
+	reader.failed = reader.failed || reader.pos != end;
+
+	/* Hints: a dictionary from a name to a value of any type. */
+	end = bus_read_array(&reader, 8);
+	while (reader.pos < end && !reader.failed) {
+		bus_read_align(&reader, 8);
+		const char *key = bus_read_string(&reader);
+		const char *type = bus_read_signature(&reader);
+		if (strcmp(key, "urgency") == 0 && strcmp(type, "y") == 0) {
+			notify->urgency = bus_read_byte(&reader);
+		} else {
+			bus_skip(&reader, type);
+		}
+	}
+	reader.failed = reader.failed || reader.pos != end;
+	notify->expire = (int32_t)bus_read_u32(&reader);
+	return !reader.failed && reader.pos == reader.size;
 }
 
 /* --- Writing ---------------------------------------------------------------- */
@@ -341,6 +394,7 @@ void bus_write_begin(struct bus_writer *writer, uint8_t *data, size_t capacity,
 		bus_write_u32(writer, header->reply_serial);
 	}
 	field(writer, 6, "s", header->destination);
+	field(writer, 7, "s", header->sender);
 	field(writer, 8, "g", header->signature);
 	set_u32(writer, 12, writer->size - 16);
 	bus_write_align(writer, 8);

@@ -18,7 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
 
@@ -104,26 +103,21 @@ static void apply(struct tw_server *server) {
 	spawn_installed(server->on_battery ? battery_command : mains_command);
 }
 
-/*
- * How long the machine has been asleep since it booted: one clock stops
- * while it sleeps and the other does not. If that has grown between two
- * looks, the machine has just woken up.
- */
-static int64_t asleep_ms(void) {
-	struct timespec all, awake;
-	clock_gettime(CLOCK_BOOTTIME, &all);
-	clock_gettime(CLOCK_MONOTONIC, &awake);
-	return (int64_t)(all.tv_sec - awake.tv_sec) * 1000 +
-		(all.tv_nsec - awake.tv_nsec) / 1000000;
-}
-
 static int handle_change(int fd, uint32_t mask, void *data) {
 	struct tw_server *server = data;
 	struct tw_power *power = server->power;
 	struct udev_device *device;
-	/* Several announcements can be waiting, and one look answers them all. */
+	/* Several announcements can be waiting, and one look answers them all.
+	 * A wireless mouse or a gamepad reports its own battery every so often:
+	 * that is no reason to look. */
+	bool look = false;
 	while ((device = udev_monitor_receive_device(power->monitor)) != NULL) {
+		const char *scope = udev_device_get_property_value(device, "POWER_SUPPLY_SCOPE");
+		look = look || scope == NULL || strcmp(scope, "Device") != 0;
 		udev_device_unref(device);
+	}
+	if (!look) {
+		return 0;
 	}
 
 	bool battery, mains;

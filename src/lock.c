@@ -11,6 +11,12 @@
  * from a locker that died. That is what makes locking on lid close safe: the
  * session is locked before the machine can suspend, however long the locker
  * takes to start.
+ *
+ * The lock client is told the session is locked only once the curtain is on
+ * every screen, as the protocol requires: a frame drawn with it has been
+ * presented on each output that is on (output.c). Something that waits for
+ * that before suspending (`swaylock -f` in a sleep hook) then never wakes
+ * the machine to the last unlocked picture.
  */
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
@@ -25,6 +31,8 @@
 
 struct tw_lock {
 	struct tw_server *server;
+	struct wlr_session_lock_v1 *session_lock;
+	bool confirmed; /* it was told the session is locked */
 	/* Parent of the lock surfaces; destroying it removes them all. */
 	struct wlr_scene_tree *tree;
 	struct wl_list surfaces; /* tw_lock_surface.link */
@@ -56,6 +64,25 @@ struct wlr_surface *lock_keyboard_surface(struct tw_server *server) {
 		any = surface;
 	}
 	return any != NULL ? any->lock_surface->surface : NULL;
+}
+
+void lock_confirm(struct tw_server *server) {
+	struct tw_lock *lock = server->lock;
+	if (lock == NULL || lock->confirmed || !server->locked) {
+		return;
+	}
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		/* One that is off, or that tw could not set up to draw on, shows
+		 * nothing the curtain would have to cover. */
+		if (output->wlr_output->enabled && !output->curtain_shown &&
+				wlr_scene_get_scene_output(server->scene, output->wlr_output) != NULL) {
+			return;
+		}
+	}
+	lock->confirmed = true;
+	wlr_session_lock_v1_send_locked(lock->session_lock);
+	wlr_log(WLR_DEBUG, "session locked");
 }
 
 static void lock_surface_arrange(struct tw_lock_surface *surface) {
@@ -161,6 +188,13 @@ static void lock_enter(struct tw_server *server) {
 		return;
 	}
 	server->locked = true;
+	/* Each output's next frame shows the curtain; lock_confirm() waits for
+	 * them to be on screen. */
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		output->curtain_shown = false;
+		output->lock_seq = output->wlr_output->commit_seq;
+	}
 	lock_arrange(server);
 	wlr_scene_node_set_enabled(&server->lock_tree->node, true);
 	focus_update(server);
@@ -219,6 +253,7 @@ static void handle_new_lock(struct wl_listener *listener, void *data) {
 		return;
 	}
 	lock->server = server;
+	lock->session_lock = session_lock;
 	lock->tree = tree;
 	wl_list_init(&lock->surfaces);
 
@@ -231,8 +266,9 @@ static void handle_new_lock(struct wl_listener *listener, void *data) {
 
 	server->lock = lock;
 	lock_enter(server);
-	wlr_session_lock_v1_send_locked(session_lock);
-	wlr_log(WLR_DEBUG, "session locked");
+	/* At once if the curtain is on screen already: a new locker taking
+	 * over, or the screens are off. */
+	lock_confirm(server);
 }
 
 void lock_init(struct tw_server *server) {

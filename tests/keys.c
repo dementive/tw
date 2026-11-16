@@ -157,6 +157,8 @@ int main(int argc, char *argv[]) {
 		}
 		int ms;
 		if (sscanf(argv[i], "pause:%d", &ms) == 1) {
+			/* What was done before the pause has happened by its start. */
+			wl_display_roundtrip(display);
 			usleep((useconds_t)ms * 1000);
 			wl_display_roundtrip(display);
 			continue;

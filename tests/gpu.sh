@@ -8,8 +8,13 @@
 # that a program draws with it afterwards.
 # $1 = the data/ directory of the source tree.
 set -eu
-data=$1
 tmp=$(mktemp -d "$PWD/gpu-test.XXXXXX")
+# The scripts are run from a copy of their own, so that what this test looks
+# for and stops by its command line is this test's, and never that of the
+# same test run from another build directory at the same time.
+data=$tmp/data
+mkdir "$data"
+cp "$1/tw-gpu" "$1/tw-gpu-root" "$1/tw-session" "$1/tw-a11y.conf" "$data"
 kernel_pid=
 cleanup() {
 	pkill -f "$data/tw-gpu (settle|retry|try)" 2>/dev/null || true
@@ -26,7 +31,10 @@ rootbin=$tmp/rootbin # stand-ins for tw-gpu-root: systemctl, modprobe
 log=$tmp/log
 mkdir -p "$bin" "$rootbin" "$run" "$tmp/user" "$tmp/home"
 # The driver is on the disk for the running kernel, unless a test says a
-# kernel update has taken it away.
+# kernel update has taken it away (and the kernel's own modules with it), or
+# that it was never installed. $modules stands in for /usr/lib/modules.
+modules=$tmp/modules
+mkdir -p "$modules/$(uname -r)/kernel"
 for dir in "$bin" "$rootbin"; do
 	printf '#!/bin/sh\n[ ! -e "%s/no-modules" ]\n' "$tmp" >"$dir/modinfo"
 	chmod +x "$dir/modinfo"
@@ -68,15 +76,20 @@ flag=$run/tw-gpu-off
 on_bus() { [ -e "$bus/0000:01:00.0" ]; }
 loaded() { [ -d "$sys/module/nvidia" ]; }
 off() { ! on_bus && [ -e "$flag" ]; } # switched off, as the root helper leaves it
-# Nothing of tw-gpu is waiting to switch off any more.
-settled() { ! pgrep -f "$data/tw-gpu (settle|retry|try)" >/dev/null; }
+# Nothing of tw-gpu is waiting to switch off any more. Asked twice: a
+# process in the middle of starting another program has no command line for
+# a moment, and one of tw-gpu's can be the only one left at that moment.
+settled() {
+	! pgrep -f "$data/tw-gpu (settle|retry|try)" >/dev/null && sleep 0.1 &&
+		! pgrep -f "$data/tw-gpu (settle|retry|try)" >/dev/null
+}
 
 machine() { # the laptop as it boots: everything on the bus, driver loaded
 	rm -rf "$sys" "$dev" "$proc" "$flag" "$tmp/unplugged"
 	mkdir -p "$sys/class/drm" "$sys/module" "$dev/dri" "$bus" "$proc" \
 		"$sys/bus/pci/drivers/i915" "$sys/bus/pci/drivers/nvidia" \
 		"$intel/drm/card1" "$intel/drm/renderD128" "$sys/class/drm/card1-eDP-1" \
-		"$nvidia/power" "$port/0000:01:00.1"
+		"$nvidia/power" "$port/0000:01:00.1/power"
 	echo 0x8086 >"$intel/vendor"
 	echo 0x030000 >"$intel/class"
 	echo 1 >"$intel/boot_vga"
@@ -97,6 +110,7 @@ machine() { # the laptop as it boots: everything on the bus, driver loaded
 	echo D0 >"$nvidia/power_state"
 	echo 0x10de >"$port/0000:01:00.1/vendor" # the sound function: not a GPU
 	echo 0x040300 >"$port/0000:01:00.1/class"
+	echo on >"$port/0000:01:00.1/power/control" # kept awake, as the kernel starts it
 	ln -s "$intel" "$bus/0000:00:02.0"
 	ln -s "$port" "$bus/0000:00:01.0"
 	ln -s "$nvidia" "$bus/0000:01:00.0"
@@ -148,13 +162,19 @@ rescan)
 	;;
 esac
 EOF
-# What tw-gpu reaches the root helper through; this does the helper's work.
+# What tw-gpu reaches the root helper through; this does the helper's work,
+# one unit at a time, as systemd does with two starts of the same unit.
 cat >"$bin/systemctl" <<EOF
 #!/bin/sh
 echo "systemctl \$*" >>"$log"
+exec 7>"$tmp/systemctl.lock"
+flock 7
 case "\$*" in
 "start tw-gpu@on.service")
-	[ -e "$tmp/on-fails" ] && exit 1
+	if [ -e "$tmp/on-fails" ]; then
+		echo "Failed to start tw-gpu@on.service: Access denied" >&2
+		exit 1
+	fi
 	if [ -e "$flag" ]; then
 		"$bin/pci" rescan
 		rm "$flag"
@@ -162,6 +182,10 @@ case "\$*" in
 	"$bin/driver" load
 	;;
 "start tw-gpu@off.service")
+	if [ -e "$tmp/off-fails" ]; then
+		echo "Failed to start tw-gpu@off.service: Access denied" >&2
+		exit 1
+	fi
 	if [ ! -e "$tmp/held" ] && [ -e "$bus/0000:01:00.0" ]; then
 		"$bin/driver" unload
 		echo "$port" >"$flag"
@@ -195,8 +219,8 @@ release() {
 # variables that keep programs on the Intel GPU are set. The launcher's
 # variables are not, even if this test was started from a launched program.
 gpu() {
-	env -u DESKTOP_ENTRY_ID -u FUZZEL_DESKTOP_FILE_ID \
-		PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" TW_RUN="$run" HOME="$tmp/home" \
+	env -u DESKTOP_ENTRY_ID -u FUZZEL_DESKTOP_FILE_ID -u DESKTOP_ENTRY_PATH \
+		PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" TW_RUN="$run" TW_MODULES="$modules" HOME="$tmp/home" \
 		XDG_RUNTIME_DIR="$tmp/user" XDG_DATA_DIRS="$tmp/share" \
 		WLR_DRM_DEVICES=/dev/dri/card1 TW_GPU_PAUSE=0.2 \
 		__EGL_VENDOR_LIBRARY_FILENAMES=/mesa.json VK_LOADER_DRIVERS_DISABLE='*nvidia*' \
@@ -209,6 +233,8 @@ on_intel='offload= vulkan= glx= egl=/mesa.json icd=[*]nvidia[*]' # a regular exp
 machine
 [ "$(gpu "$data/tw-gpu" status)" = "NVIDIA GPU 0000:01:00.0: on, asleep" ] ||
 	fail "status with the driver loaded: $(gpu "$data/tw-gpu" status)"
+[ "$(gpu "$data/tw-gpu")" = "NVIDIA GPU 0000:01:00.0: on, asleep" ] ||
+	fail "tw-gpu with no argument does not say the status: $(gpu "$data/tw-gpu" 2>&1)"
 gpu "$data/tw-gpu" off || fail "off failed on an idle GPU"
 off || fail "off left the GPU on the bus"
 loaded && fail "off left the driver loaded"
@@ -243,10 +269,14 @@ wait_until "the switch-off to finish" settled
 # A program whose terminal is closed: everything in the terminal's process
 # group is hung up on, and the GPU still goes off. (On the real machine it
 # once did not, because the part that switches off was hung up on too.)
-(gpu setsid "$data/tw-gpu" run sleep 31.7 2>/dev/null &)
-wait_until "the program to start" pgrep -xf 'sleep 31.7'
+# The program is a script in this test's directory, so that it is this
+# test's that is found.
+printf '#!/bin/sh\nsleep 31.7\n' >"$bin/linger"
+chmod +x "$bin/linger"
+(gpu setsid "$data/tw-gpu" run "$bin/linger" 2>/dev/null &)
+wait_until "the program to start" pgrep -f "^/bin/sh $bin/linger\$"
 loaded || fail "the GPU is not on for a running program"
-kill -HUP -- "-$(pgrep -xf 'sleep 31.7')"
+kill -HUP -- "-$(pgrep -f "^/bin/sh $bin/linger\$")"
 wait_until "the GPU to go off after the terminal was closed" settled
 off || fail "the GPU stayed on after its program's terminal was closed"
 
@@ -329,6 +359,36 @@ wait_until "the waiting to end for a GPU driving a monitor" settled
 gpu env WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/card0 "$data/tw-gpu" status |
 	grep -q 'drives a monitor' || fail "status does not mention the monitor"
 gpu "$data/tw-gpu" off || fail "off failed once the GPU was free"
+# Something that keeps the GPU open and never lets go (nvtop left running):
+# the wait gives up after a while instead of looking for good, and the next
+# off tries again.
+"$bin/pci" rescan
+rm "$flag"
+"$bin/driver" load
+hold
+gpu env TW_GPU_LOOKS=3 "$data/tw-gpu" run report beside-nvtop
+wait_until "the wait for a GPU kept open to give up" settled
+loaded || fail "the GPU was taken from the program keeping it open"
+release
+gpu "$data/tw-gpu" off 2>"$tmp/err" || fail "off failed after the wait gave up: $(cat "$tmp/err")"
+off || fail "off after the wait gave up left the GPU on"
+# The unit itself fails (polkit refusing, say): what systemctl says is shown,
+# and where to look, and nothing waits to try again.
+"$bin/pci" rescan
+rm "$flag"
+"$bin/driver" load
+: >"$tmp/off-fails"
+before=$(calls 'start tw-gpu@off')
+if gpu "$data/tw-gpu" off 2>"$tmp/err"; then fail "off claimed success when its unit failed"; fi
+grep -q 'Access denied' "$tmp/err" || fail "off hid what systemctl said: $(cat "$tmp/err")"
+grep -q 'journalctl -b -u tw-gpu@off.service' "$tmp/err" || fail "off did not say where to look: $(cat "$tmp/err")"
+grep -q 'goes off when' "$tmp/err" && fail "off took a failed unit for a GPU in use"
+gpu "$data/tw-gpu" run report off-fails
+wait_until "the switch-off check to finish" settled
+sleep 0.5
+[ "$(calls 'start tw-gpu@off')" = $((before + 2)) ] || fail "a failed unit was tried again"
+rm "$tmp/off-fails"
+gpu "$data/tw-gpu" off || fail "off failed once its unit worked again"
 
 # --- login: what tw-session runs once tw is up ------------------------------------
 # The login screen still has the GPU open. (On the real machine one try was
@@ -376,9 +436,20 @@ gpu "$data/tw-gpu" run sh -c 'report fallback; exit 3' 2>"$tmp/err" || status=$?
 [ "$status" = 3 ] || fail "run returned $status when the GPU could not be switched on"
 expect_report "a program whose GPU could not be switched on" "^$on_intel driver=absent args=fallback\$"
 grep -q 'could not switch' "$tmp/err" || fail "run did not say the GPU could not be switched on"
-if gpu "$data/tw-gpu" on 2>/dev/null; then fail "on claimed success"; fi
+grep -q 'Access denied' "$tmp/err" || fail "run hid what systemctl said: $(cat "$tmp/err")"
+grep -q 'journalctl -b -u tw-gpu@on.service' "$tmp/err" || fail "run did not say where to look: $(cat "$tmp/err")"
+if gpu "$data/tw-gpu" on 2>"$tmp/err"; then fail "on claimed success"; fi
+grep -q 'journalctl -b -u tw-gpu@on.service' "$tmp/err" || fail "on did not say where to look: $(cat "$tmp/err")"
 [ ! -e "$tmp/user/tw-gpu.keep" ] || fail "a failed on left the GPU marked as kept on"
-rm "$tmp/on-fails"
+# No driver to load: never installed, or taken away by a kernel update.
+: >"$tmp/no-modules"
+if gpu "$data/tw-gpu" on 2>"$tmp/err"; then fail "on claimed success with no driver"; fi
+grep -q 'no NVIDIA driver is installed' "$tmp/err" || fail "on with no driver installed said: $(cat "$tmp/err")"
+mv "$modules/$(uname -r)" "$tmp/kernel-gone"
+gpu "$data/tw-gpu" run report no-driver 2>"$tmp/err"
+grep -q 'reboot after a kernel update' "$tmp/err" || fail "run after a kernel update said: $(cat "$tmp/err")"
+mv "$tmp/kernel-gone" "$modules/$(uname -r)"
+rm "$tmp/no-modules" "$tmp/on-fails"
 wait_until "the switch-off check to finish" settled
 
 # --- launch: only desktop entries that ask for the discrete GPU ------------------
@@ -387,6 +458,11 @@ printf '[Desktop Entry]\nName=Game\nPrefersNonDefaultGPU=true\n' >"$tmp/share/ap
 printf '[Desktop Entry]\nName=Old game\nX-KDE-RunOnDiscreteGpu=true\n' >"$tmp/share/applications/kde.desktop"
 printf '[Desktop Entry]\nName=Editor\n' >"$tmp/share/applications/editor.desktop"
 printf '[Desktop Entry]\nName=Notes\nPrefersNonDefaultGPU=false\n' >"$tmp/share/applications/notes.desktop"
+# An entry in a subdirectory, whose ID has a dash for the slash; one whose
+# directory has a dash in its own name too.
+mkdir -p "$tmp/share/applications/kde" "$tmp/share/applications/org-games/arcade"
+printf '[Desktop Entry]\nName=KDE game\nPrefersNonDefaultGPU=true\n' >"$tmp/share/applications/kde/game.desktop"
+printf '[Desktop Entry]\nName=Arcade\nPrefersNonDefaultGPU=true\n' >"$tmp/share/applications/org-games/arcade/pong.desktop"
 launch() { # <desktop entry id>: start `report` the way the launcher does
 	gpu env DESKTOP_ENTRY_ID="$1" "$data/tw-gpu" launch report "$1"
 	wait_until "the switch-off after $1" settled
@@ -396,10 +472,14 @@ launch game.desktop
 expect_report "an entry that prefers the discrete GPU" "^$on_nvidia args=game.desktop\$"
 launch kde.desktop
 expect_report "an entry with KDE's key" "^$on_nvidia args=kde.desktop\$"
-[ "$(calls 'start tw-gpu@on')" = $((before + 2)) ] || fail "launch did not switch the GPU on for each"
+launch kde-game.desktop
+expect_report "an entry in a subdirectory" "^$on_nvidia args=kde-game.desktop\$"
+launch org-games-arcade-pong.desktop
+expect_report "an entry two directories down" "^$on_nvidia args=org-games-arcade-pong.desktop\$"
+[ "$(calls 'start tw-gpu@on')" = $((before + 4)) ] || fail "launch did not switch the GPU on for each"
 off || fail "the GPU stayed on after the launched program exited"
 before=$(calls systemctl)
-for entry in editor.desktop notes.desktop missing.desktop ''; do
+for entry in editor.desktop notes.desktop missing.desktop kde-missing.desktop ''; do
 	launch "$entry"
 	expect_report "an entry that does not ask for the GPU ($entry)" "^$on_intel driver=absent args=$entry\$"
 done
@@ -412,6 +492,15 @@ expect_report "an entry the user changed" "^$on_nvidia args=editor.desktop\$"
 gpu env FUZZEL_DESKTOP_FILE_ID=game.desktop "$data/tw-gpu" launch report old-name
 expect_report "the entry named in FUZZEL_DESKTOP_FILE_ID" "^$on_nvidia args=old-name\$"
 wait_until "the switch-off to finish" settled
+# The file the launcher says it read is the one that counts, wherever it is.
+printf '[Desktop Entry]\nName=Elsewhere\nPrefersNonDefaultGPU=true\n' >"$tmp/elsewhere.desktop"
+gpu env DESKTOP_ENTRY_PATH="$tmp/elsewhere.desktop" DESKTOP_ENTRY_ID=elsewhere.desktop \
+	"$data/tw-gpu" launch report by-path
+expect_report "the entry named in DESKTOP_ENTRY_PATH" "^$on_nvidia args=by-path\$"
+wait_until "the switch-off to finish" settled
+gpu env DESKTOP_ENTRY_PATH="$tmp/share/applications/notes.desktop" DESKTOP_ENTRY_ID=game.desktop \
+	"$data/tw-gpu" launch report path-first
+expect_report "an ID that disagrees with DESKTOP_ENTRY_PATH" "^$on_intel driver=absent args=path-first\$"
 
 # --- A machine with no NVIDIA GPU: everything just runs the program --------------
 rm -rf "$tmp/unplugged" "$flag"
@@ -472,6 +561,7 @@ cat >"$rootbin/systemctl" <<EOF
 echo "systemctl \$*" >>"$log"
 case "\$*" in
 "is-enabled --quiet nvidia-powerd.service") [ ! -e "$tmp/powerd-disabled" ] ;;
+"is-enabled --quiet nvidia-persistenced.service") [ -e "$tmp/persistenced-enabled" ] ;;
 esac
 EOF
 printf '#!/bin/sh\necho "udevadm $*" >>"%s"\n' "$log" >"$rootbin/udevadm"
@@ -489,13 +579,14 @@ kernel() {
 }
 root() { # tw-gpu-root <on|off>, then what it ran, on one line
 	: >"$log"
-	env PATH="$rootbin:$PATH" TW_SYS="$sys" TW_PROC="$proc" TW_RUN="$run" \
+	env PATH="$rootbin:$PATH" TW_SYS="$sys" TW_PROC="$proc" TW_RUN="$run" TW_MODULES="$modules" \
 		"$data/tw-gpu-root" "$@" 2>"$tmp/err" || return
 	ran=$(tr '\n' ';' <"$log")
 }
-powerd_start='systemctl is-enabled --quiet nvidia-powerd.service;systemctl reset-failed nvidia-powerd.service;systemctl start --no-block nvidia-powerd.service;'
+powerd_start='systemctl is-enabled --quiet nvidia-powerd.service;systemctl reset-failed nvidia-powerd.service;systemctl start --no-block nvidia-powerd.service;systemctl is-enabled --quiet nvidia-persistenced.service;'
 load='udevadm settle --timeout=5;modprobe nvidia_drm;'
-unload='modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_modeset;'
+stop_daemons='systemctl stop nvidia-powerd.service;systemctl stop nvidia-persistenced.service;'
+unload="modprobe -r nvidia_drm;${stop_daemons}modprobe -r nvidia_modeset;"
 process() { # <pid> <name> <open file>: a running program with a file open
 	mkdir -p "$proc/$1/fd"
 	echo "$2" >"$proc/$1/comm"
@@ -505,7 +596,8 @@ process() { # <pid> <name> <open file>: a running program with a file open
 machine
 kernel &
 kernel_pid=$!
-process 775 nvidia-powerd /dev/nvidiactl # NVIDIA's daemon: never counts as use
+process 775 nvidia-powerd /dev/nvidiactl # NVIDIA's daemons: never count as use
+process 776 nvidia-persiste /dev/nvidia0 # the kernel's 15 characters of nvidia-persistenced
 process 900 foot /dev/pts/3
 
 # After a kernel update the driver is no longer on the disk: unloaded now,
@@ -514,6 +606,11 @@ process 900 foot /dev/pts/3
 root off || fail "the helper failed when the driver was not on the disk"
 [ -z "$ran" ] && loaded && on_bus || fail "the helper unloaded a driver that could not be loaded again: $ran"
 if root on; then fail "the helper switched on with no driver on the disk"; fi
+grep -q 'no NVIDIA driver is installed' "$tmp/err" || fail "helper on with no driver installed said: $(cat "$tmp/err")"
+mv "$modules/$(uname -r)" "$tmp/kernel-gone"
+if root on; then fail "the helper switched on after a kernel update"; fi
+grep -q 'gone from the disk' "$tmp/err" || fail "helper on after a kernel update said: $(cat "$tmp/err")"
+mv "$tmp/kernel-gone" "$modules/$(uname -r)"
 rm "$tmp/no-modules"
 # A GPU that another driver drives (nouveau) is not the helper's to take away.
 ln -sfn ../../../../bus/pci/drivers/nouveau "$nvidia/driver"
@@ -527,6 +624,8 @@ root off || fail "the helper failed to switch the GPU off"
 wait_until "the GPU to leave the bus" off
 [ "$(cat "$flag")" = "$port" ] || fail "the helper noted $(cat "$flag") as the port to scan"
 loaded && fail "helper off left the driver loaded"
+[ "$(cat "$port/0000:01:00.1/power/control")" = auto ] ||
+	fail "the helper left the GPU's sound function awake, which keeps its slot powered"
 root off || fail "the helper failed with the GPU already off"
 [ -z "$ran" ] || fail "helper off with the GPU already off ran: $ran"
 
@@ -562,7 +661,7 @@ root on
 # With the computing module loaded as well (a program asked for it earlier).
 mkdir "$sys/module/nvidia_uvm"
 root off || fail "the helper failed to unload the driver and its computing module"
-[ "$ran" = "modprobe -r nvidia_drm;systemctl stop nvidia-powerd.service;modprobe -r nvidia_uvm;modprobe -r nvidia_modeset;" ] ||
+[ "$ran" = "modprobe -r nvidia_drm;${stop_daemons}modprobe -r nvidia_uvm;modprobe -r nvidia_modeset;" ] ||
 	fail "helper off with the computing module ran: $ran"
 wait_until "the GPU to leave the bus" off
 # Off with no driver loaded: only the bus.
@@ -605,14 +704,24 @@ root off || fail "the helper reported an error for a GPU opened meanwhile"
 on_bus && [ -d "$sys/module/nvidia_drm" ] && [ ! -e "$flag" ] || fail "the helper did not put the driver back"
 rm "$tmp/computing"
 
-# The power daemon is left alone if the owner switched it off.
+# A daemon is left alone if the owner switched it off, and started again
+# if they switched it on.
 : >"$tmp/powerd-disabled"
+: >"$tmp/persistenced-enabled"
 root off
 wait_until "the GPU to leave the bus" off
 root on
-[ "$ran" = "${load}systemctl is-enabled --quiet nvidia-powerd.service;" ] ||
+[ "$ran" = "${load}systemctl is-enabled --quiet nvidia-powerd.service;systemctl is-enabled --quiet nvidia-persistenced.service;systemctl reset-failed nvidia-persistenced.service;systemctl start --no-block nvidia-persistenced.service;" ] ||
 	fail "helper on with the power daemon disabled ran: $ran"
-rm "$tmp/powerd-disabled"
+rm "$tmp/powerd-disabled" "$tmp/persistenced-enabled"
+
+# on and off one at a time: one waits until the other is done.
+(flock "$run/tw-gpu.lock" sh -c ": >'$tmp/locked'; sleep 0.6; rm '$tmp/locked'" &)
+wait_until "the lock to be taken" test -e "$tmp/locked"
+root off
+[ ! -e "$tmp/locked" ] || fail "the helper switched off while another switch was under way"
+wait_until "the GPU to leave the bus" off
+root on
 
 # The GPU does not come back: the helper looks everywhere, then says so.
 root off
@@ -656,58 +765,77 @@ step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
 a11y='NO_AT_BRIDGE=1 GTK_A11Y=none'
 told_gpu='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE;taken back='
 told_none='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y;taken back= __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE'
-expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...]
+expect_session() { # <description> <devices> <first GPU> <egl> <vulkan> <step> [VAR=value...]
 	description=$1
 	told=$told_none
-	[ -z "$3" ] || told=$told_gpu
-	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_LOADER_DRIVERS_DISABLE=$4;once tw is up=$5;$a11y;$told;"
-	shift 5
+	[ -z "$4" ] || told=$told_gpu
+	want="WLR_DRM_DEVICES=$2;first GPU=$3;__EGL_VENDOR_LIBRARY_FILENAMES=$4;VK_LOADER_DRIVERS_DISABLE=$5;once tw is up=$6;$a11y;$told;"
+	shift 6
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
 }
 
+boot_vga='card1, the boot VGA device' # which GPU tw-session takes first, and why
+
 machine
-expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
 # Many laptops call the second GPU a 3D controller, which has no boot_vga.
 echo 0x030200 >"$nvidia/class"
 rm "$nvidia/boot_vga"
-expect_session "the NVIDIA GPU as a 3D controller" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA GPU as a 3D controller" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/driver" unload
-expect_session "a 3D controller without its driver" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "a 3D controller without its driver" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/driver" load
 echo 0x030000 >"$nvidia/class"
 echo 0 >"$nvidia/boot_vga"
 # Its driver unloaded: there is no second card, and tw must still be told to
 # use the first one only, or it would open the second when the driver loads.
 "$bin/driver" unload
-expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA driver unloaded" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
 # Switched off by tw-gpu, as after logging out and in: not even on the bus.
 echo "$port" >"$flag"
 "$bin/pci" remove
-expect_session "the NVIDIA GPU switched off" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+expect_session "the NVIDIA GPU switched off" /dev/dri/card1 "$boot_vga" "$mesa_egl" "$mesa_vulkan" "$step"
 "$bin/pci" rescan
 rm "$flag"
+# No GPU is a VGA controller, so none has a boot_vga file: some laptops call
+# their first GPU a display controller of the other kind (0x0380). The first
+# one is then the one with the built-in panel, although NVIDIA's comes first.
+"$bin/driver" load
+echo 0x038000 >"$intel/class"
+rm "$intel/boot_vga"
+echo 0x030200 >"$nvidia/class"
+rm "$nvidia/boot_vga"
+expect_session "no boot VGA device" /dev/dri/card1 "card1, the built-in panel" "$mesa_egl" "$mesa_vulkan" "$step"
+# The panel not connected either: the GPU that is not NVIDIA's.
+echo disconnected >"$sys/class/drm/card1-eDP-1/status"
+expect_session "no boot VGA device or panel" /dev/dri/card1 "card1, not NVIDIA's" "$mesa_egl" "$mesa_vulkan" "$step"
+echo connected >"$sys/class/drm/card1-eDP-1/status"
+echo 0x030000 >"$intel/class"
+echo 1 >"$intel/boot_vga"
+echo 0x030000 >"$nvidia/class"
+echo 0 >"$nvidia/boot_vga"
 # A monitor on the NVIDIA GPU: tw uses both, and the GPU stays on.
 : >"$tmp/hdmi"
 "$bin/driver" load
-expect_session "a monitor on the NVIDIA GPU" /dev/dri/card1:/dev/dri/card0 '' '' ''
+expect_session "a monitor on the NVIDIA GPU" /dev/dri/card1:/dev/dri/card0 "$boot_vga" '' '' ''
 rm "$tmp/hdmi"
 "$bin/driver" load
-expect_session "all GPUs asked for" '' '' '' '' TW_ALL_GPUS=1
-expect_session "GPUs named by the user" /dev/dri/card0 '' '' '' WLR_DRM_DEVICES=/dev/dri/card0
+expect_session "all GPUs asked for" '' '' '' '' '' TW_ALL_GPUS=1
+expect_session "GPUs named by the user" /dev/dri/card0 '' '' '' '' WLR_DRM_DEVICES=/dev/dri/card0
 # The NVIDIA GPU has the panel (a desktop): nothing of NVIDIA's is kept out.
 echo 0 >"$intel/boot_vga"
 echo 1 >"$nvidia/boot_vga"
 echo disconnected >"$sys/class/drm/card1-eDP-1/status"
-expect_session "the NVIDIA GPU as the first one" /dev/dri/card0 '' '' ''
+expect_session "the NVIDIA GPU as the first one" /dev/dri/card0 "card0, the boot VGA device" '' '' ''
 # One GPU: nothing to decide.
 machine
 "$bin/driver" unload
 rm -rf "$nvidia" "$bus/0000:01:00.0"
-expect_session "a single GPU" '' '' '' ''
+expect_session "a single GPU" '' "$boot_vga" '' '' ''
 a11y='NO_AT_BRIDGE= GTK_A11Y='
 told_none='told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP;taken back= NO_AT_BRIDGE GTK_A11Y __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE'
-expect_session "the accessibility bus asked for" '' '' '' '' TW_A11Y=1
+expect_session "the accessibility bus asked for" '' "$boot_vga" '' '' '' TW_A11Y=1
 
 # --- tw-session: what the services are told once tw is up ---------------------------
 # A stand-in tw runs the startup command it is handed, the way tw does, with
@@ -779,4 +907,4 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 		fail "the accessibility bus would not start in a session that asked for it"
 fi
 
-echo "ok: tw-gpu run, launch, on, off, login and status; the root helper; the GPU choice, the accessibility bus and a tw that cannot start in tw-session"
+echo "ok: tw-gpu run, launch, on, off, login and status, giving up on a GPU kept open, failures told apart; the root helper, one at a time; the GPU choice with and without boot_vga, the accessibility bus and a tw that cannot start in tw-session"

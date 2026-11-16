@@ -1,9 +1,12 @@
 # Built into tw; see meson.build. The patch leaves out its command-line tool
 # and its tests, which nobody runs from here and which would fetch and build
 # a second project (v4l-utils) to compare against.
+#
+# Pinned by commit, not by tag: a tag can be moved, a commit cannot. This is
+# the commit tagged 0.3.0. To move the pin, see docs/setup.md.
 [wrap-git]
 url = https://gitlab.freedesktop.org/emersion/libdisplay-info.git
-revision = 0.3.0
+revision = 47a5590e9c4eb35d67651b8c05a55f1a48259329
 depth = 1
 diff_files = libdisplay-info/library-only.patch
 

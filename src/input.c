@@ -65,7 +65,7 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 	struct wlr_keyboard *wlr_keyboard = keyboard->wlr_keyboard;
 	const xkb_keysym_t *syms;
 
-	/* A virtual keyboard has no keymap until its client uploads one. */
+	/* No keymap: it could not be compiled (new_keyboard() said so). */
 	if (wlr_keyboard->xkb_state == NULL) {
 		return false;
 	}
@@ -203,7 +203,8 @@ static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyb
 				xkb_context_unref(context);
 			}
 			if (server->keymap == NULL) {
-				wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*");
+				wlr_log(WLR_ERROR, "failed to compile a keymap, check XKB_DEFAULT_*: "
+					"no key bindings, and no Ctrl+Alt+F<n> to another console");
 			}
 		}
 		if (server->keymap != NULL) {
@@ -348,9 +349,11 @@ static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 void pointer_refocus(struct tw_server *server) {
 	/* Not in the middle of a click: the button's release goes to where its
 	 * press went. A drag and drop is the other way round: what it is over
-	 * is where it lands. */
-	if (server->cursor == NULL ||
-			(server->seat->pointer_state.button_count > 0 && server->seat->drag == NULL)) {
+	 * is where it lands. So is a lock: a window behind the curtain gets
+	 * nothing more, not even the release. */
+	struct wlr_seat *seat = server->seat;
+	if (server->cursor == NULL || (seat->pointer_state.button_count > 0 &&
+			seat->drag == NULL && !server->locked)) {
 		return;
 	}
 	double sx, sy;
@@ -505,8 +508,9 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 			window_focus(server, window);
 			strip_arrange(server);
 		} else if (!server->locked) {
-			/* A click on an empty part of another screen moves the focus
-			 * there, so that the next window opens on it. */
+			/* A click on another screen outside any window (on its empty
+			 * part, its wallpaper, a notification) moves the focus there,
+			 * so that the next window opens on it. */
 			struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
 			if (output != NULL) {
 				strip_focus_output(server, output);
@@ -536,15 +540,13 @@ static void handle_cursor_frame(struct wl_listener *listener, void *data) {
  * few pixels of movement. Every other gesture is passed to the application
  * under the pointer (pinch to zoom, swipe back in a browser).
  */
-enum { SWIPE_UNDECIDED, SWIPE_SIDEWAYS, SWIPE_VERTICAL };
-
 static void handle_swipe_begin(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, swipe_begin);
 	struct wlr_pointer_swipe_begin_event *event = data;
 	idle_activity(server);
 	if (event->fingers == swipe_fingers && !server->locked) {
 		server->swipe_ours = true;
-		server->swipe_axis = SWIPE_UNDECIDED;
+		server->swipe_axis = TW_SWIPE_UNDECIDED;
 		server->swipe_dx = server->swipe_dy = 0;
 		return;
 	}
@@ -566,18 +568,18 @@ static void handle_swipe_update(struct wl_listener *listener, void *data) {
 	}
 	server->swipe_dx += event->dx;
 	server->swipe_dy += event->dy;
-	if (server->swipe_axis == SWIPE_UNDECIDED &&
+	if (server->swipe_axis == TW_SWIPE_UNDECIDED &&
 			fabs(server->swipe_dx) + fabs(server->swipe_dy) > 8) {
 		if (fabs(server->swipe_dx) > fabs(server->swipe_dy)) {
-			server->swipe_axis = SWIPE_SIDEWAYS;
+			server->swipe_axis = TW_SWIPE_SIDEWAYS;
 			strip_swipe_begin(server);
 			/* Do not lose the movement that made up our mind. */
 			strip_swipe_update(server, server->swipe_dx - event->dx, event->time_msec);
 		} else {
-			server->swipe_axis = SWIPE_VERTICAL;
+			server->swipe_axis = TW_SWIPE_VERTICAL;
 		}
 	}
-	if (server->swipe_axis == SWIPE_SIDEWAYS) {
+	if (server->swipe_axis == TW_SWIPE_SIDEWAYS) {
 		strip_swipe_update(server, event->dx, event->time_msec);
 	}
 }
@@ -593,9 +595,9 @@ static void handle_swipe_end(struct wl_listener *listener, void *data) {
 	server->swipe_ours = false;
 	/* A swipe the session was locked during does nothing. */
 	bool cancelled = event->cancelled || server->locked;
-	if (server->swipe_axis == SWIPE_SIDEWAYS) {
+	if (server->swipe_axis == TW_SWIPE_SIDEWAYS) {
 		strip_swipe_end(server, cancelled);
-	} else if (server->swipe_axis == SWIPE_VERTICAL && !cancelled &&
+	} else if (server->swipe_axis == TW_SWIPE_VERTICAL && !cancelled &&
 			fabs(server->swipe_dy) >= swipe_workspace_distance) {
 		/* Workspaces are stacked: pushing the screen up shows the next one. */
 		union tw_arg arg = {.i = server->swipe_dy < 0 ? +1 : -1};
@@ -688,6 +690,20 @@ static void handle_request_start_drag(struct wl_listener *listener, void *data) 
 	wlr_data_source_destroy(event->drag->source);
 }
 
+/*
+ * The drag is over. While it lasted no surface had the keyboard, and the
+ * keyboard stayed where it was even if the focus moved (Mod+2 to drop on
+ * another workspace): it goes to the focused window now. The pointer goes
+ * to what is under it, which the drag kept to itself.
+ */
+static void handle_drag_destroy(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, drag_destroy);
+	wl_list_remove(&server->drag_destroy.link);
+	wl_list_init(&server->drag_destroy.link);
+	focus_update(server);
+	pointer_refocus(server);
+}
+
 static void handle_start_drag(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, start_drag);
 	struct wlr_drag *drag = data;
@@ -697,6 +713,9 @@ static void handle_start_drag(struct wl_listener *listener, void *data) {
 	}
 	wlr_scene_node_set_position(&server->drag_icon_tree->node,
 		(int)server->cursor->x, (int)server->cursor->y);
+	/* One drag at a time: the seat refuses a second while this one runs. */
+	wl_list_remove(&server->drag_destroy.link);
+	wl_signal_add(&drag->events.destroy, &server->drag_destroy);
 }
 
 static void handle_request_set_primary_selection(struct wl_listener *listener, void *data) {
@@ -774,6 +793,8 @@ void input_init(struct tw_server *server) {
 	wl_signal_add(&server->seat->events.request_start_drag, &server->request_start_drag);
 	server->start_drag.notify = handle_start_drag;
 	wl_signal_add(&server->seat->events.start_drag, &server->start_drag);
+	server->drag_destroy.notify = handle_drag_destroy;
+	wl_list_init(&server->drag_destroy.link);
 
 	wlr_primary_selection_v1_device_manager_create(server->display);
 	server->request_set_primary_selection.notify = handle_request_set_primary_selection;
@@ -828,6 +849,7 @@ void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->request_set_selection.link);
 	wl_list_remove(&server->request_start_drag.link);
 	wl_list_remove(&server->start_drag.link);
+	wl_list_remove(&server->drag_destroy.link);
 	wl_list_remove(&server->request_set_primary_selection.link);
 	wl_list_remove(&server->request_set_shape.link);
 	wlr_xcursor_manager_destroy(server->cursor_manager);

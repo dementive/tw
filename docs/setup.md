@@ -68,9 +68,18 @@ cp src/machines/default.h src/machines/<name>.h                      # then edit
 ```
 
 `tw -d` logs each screen's connector name (`output eDP-1`) for the output
-rules. The build says which file it took ("machine: src/machines/...").
-`-Dmachine=<name>` names one outright. Commit the file: the next machine
-then builds from the same tree.
+rules. The build says which file it took ("machine: src/machines/..."), and
+when it took `default.h` for want of the board's own, the name that file
+would need. `-Dmachine=<name>` names one outright. Commit the file: the next
+machine then builds from the same tree.
+
+The file is chosen when the build directory is set up, not at each build.
+After adding or renaming one, set the build up again before building, or
+the build goes on with the file it chose before:
+
+```sh
+meson setup --reconfigure build-release
+```
 
 Three build options decide what else is installed. The defaults suit a
 laptop; look at Bluetooth before installing on a desktop.
@@ -98,9 +107,10 @@ sudo meson install -C build-release --no-rebuild --skip-subprojects
 Options go on the first line (`-Dbluetooth=false`), or later with
 `meson configure build-release -Dbluetooth=false`.
 
-After a change, `meson compile -C build-release` and the last line again.
-The install has systemd, udev and polkit read what it brought, so nothing
-needs reloading by hand. A running session keeps the old `tw` until you log
+After a change, `meson compile -C build-release` and the last line again
+(after a new or renamed file in `src/machines`, `meson setup --reconfigure
+build-release` first). The install has systemd, udev and polkit read what
+it brought, so nothing needs reloading by hand. A running session keeps the old `tw` until you log
 out and in again.
 
 Everything goes under `/usr/local`: `tw`, `tw-session`, `tw-notify`,
@@ -160,14 +170,18 @@ The GPU is switched on before the program starts, which takes about two
 seconds, and off when the program and everything it started have exited,
 also if you close its terminal or press Ctrl-C. If something else still
 has the GPU open at that point (`btop` watching it, for example), it goes
-off as soon as that program has closed.
+off as soon as that program has closed, if that is within ten minutes;
+after that `tw-gpu` stops looking, and the next `tw-gpu off` or program
+run with it switches the GPU off. NVIDIA's two daemons, `nvidia-powerd`
+and `nvidia-persistenced`, do not count: they are stopped with the GPU,
+and started again with it if they are enabled.
 
 | Command | What it does |
 | --- | --- |
 | `tw-gpu run <program>` | runs a program on the NVIDIA GPU |
 | `tw-gpu on` | switches it on and leaves it on until `tw-gpu off` |
 | `tw-gpu off` | switches it off, or as soon as nothing uses it any more |
-| `tw-gpu status` | says whether it is on, and whether it is powered |
+| `tw-gpu` | says whether it is on, and whether it is powered |
 
 Check it on the machine, because no test can (`vkcube` is in
 `vulkan-tools`):
@@ -180,7 +194,9 @@ tw-gpu status         # a few seconds later: "off, powered down"
 If the status says "off, but its slot is still powered", the GPU did not
 power down once it was off the bus, and it uses more battery that way than
 before. Run `tw-gpu on` to go back to how it was, and look into it. If
-`tw-gpu on` ever fails to bring the GPU back, a reboot does.
+`tw-gpu on` ever fails, it says why or where to look
+(`journalctl -b -u tw-gpu@on`); if it cannot bring the GPU back, a
+reboot does.
 
 Monitor ports wired to the first GPU work whenever you plug in. Ports wired
 to the NVIDIA GPU (on many laptops, HDMI) only work if the monitor is
@@ -349,6 +365,24 @@ sudo meson install -C build-release --no-rebuild --skip-subprojects
 `--wipe` keeps the build's options and needs no network: the two sources
 are already in `subprojects/`.
 
+**Moving wlroots or libdisplay-info to a new version.** Each is pinned to
+one commit in its `subprojects/*.wrap`, with the release's tag in the
+comment above. A new wlroots release changes its API, so moving that pin
+is a change of its own, with tw's code changed to match. To move one, find
+the commit the release's tag names, put it in the wrap file as `revision`
+along with the tag in the comment, and fetch it:
+
+```sh
+git ls-remote https://gitlab.freedesktop.org/wlroots/wlroots.git 'refs/tags/<tag>^{}'
+meson subprojects update --reset wlroots        # or delete subprojects/wlroots
+meson setup --wipe build-release
+```
+
+`--reset` throws away anything changed by hand in that checkout and puts
+back the wrap's patch, if it has one. Until a checkout matches its wrap
+file, `meson setup` warns that the subproject "may be out of date"; the
+same command silences it.
+
 **Something else is wrong.**
 
 | Symptom | Look at |
@@ -357,7 +391,8 @@ are already in `subprojects/`.
 | a key does nothing | its program is not installed (the table in part 1); `tw -d` logs "not installed" |
 | the session is locked and no lock screen comes | any key starts the locker again. If none comes, swaylock is failing: what it says is on the console tw was started from |
 | Xwayland keeps running | [Keep the shell from starting Xwayland](system.md#keep-the-shell-from-starting-xwayland) |
-| the NVIDIA GPU will not go off | `tw-gpu status`, then `journalctl -b -u tw-gpu@off` names who has it open |
-| `tw-gpu` or `tw-bluetooth` says its driver "is not on the disk" | a kernel update removed the running kernel's modules; reboot. Until then the GPU or Bluetooth is left as it is rather than switched off for good |
+| the NVIDIA GPU will not go off | `tw-gpu`, then `journalctl -b -u tw-gpu@off` names who has it open |
+| `tw-gpu` says the running kernel's modules are gone, or `tw-bluetooth` that its driver "is not on the disk" | a kernel update removed the running kernel's modules; reboot. Until then the GPU or Bluetooth is left as it is rather than switched off for good |
+| `tw-gpu` says no NVIDIA driver is installed | the machine has an NVIDIA GPU but no NVIDIA driver for the running kernel. Install one, or leave it: `tw-gpu off` still takes the GPU off the bus, and `tw-gpu run` runs programs on the first GPU |
 | a program does not stay signed in | `secret-tool lookup` as in [the keyring step](system.md#the-keyring-oo7); `journalctl --user -u oo7-daemon` |
 | where the memory goes | [g533zw.md](g533zw.md#memory) on how to read `/proc/meminfo` and `btop` |

@@ -30,7 +30,15 @@ its height. It is never empty and is freed when its last window leaves
 (`column_take()`). A fullscreen window is always alone in its column.
 Dialogs (windows with a parent or a fixed size) are not in the strip: they
 sit in the workspace's `floating` list, centred, at the size their client
-chose.
+chose. A window of a fixed size without a parent is often a game rather than
+a dialog, and a game goes fullscreen: it then gets a column of its own like
+any fullscreen window, and floats again when it leaves fullscreen
+(`float_after_fullscreen`). A real dialog asking for fullscreen stays put.
+
+tw has no maximized or minimized state and no window menu, and tells each
+window so as it appears (`wm_capabilities`: fullscreen only). Left to
+wlroots' default, a program that draws its own title bar (GTK 4) shows
+buttons for them that do nothing.
 
 **Outputs.** Each output shows one workspace (`output->workspace`), and no
 two outputs show the same one; the rest are hidden. `server->active` is the
@@ -39,15 +47,18 @@ new windows open there. Going to a workspace that another output shows moves
 the focus to that output; the workspace stays where it is. Unplugging an
 output hides its workspace, unless it was the one in use: the oldest
 remaining output then shows it instead (`handle_destroy()` in `output.c`).
-No window is ever moved because a monitor went away. With more than one output, a window sticking out of its
-output is trimmed at the edge (`window_trim()`), or it would show up on the
-neighbour. A monitor plugged in while the screens are off stays off with
-them.
+No window is ever moved because a monitor went away. With more than one
+output, a window sticking out of its output is trimmed at the edge
+(`window_trim()`), or it would show up on the neighbour. A monitor plugged
+in while the screens are off stays off with them. An output that is not for
+a desktop (a VR headset, `non_desktop`) is left alone.
 
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
 it made with it. `handle_renderer_lost()` in `output.c` makes a new
 renderer and allocator and hands them to the compositor and every output;
-without that the screens would stay black until tw was started again.
+without that the screens would stay black until tw was started again. If
+an output cannot take the new ones, the old ones are not freed: drawing
+with them fails, but freed they would crash tw.
 
 **Arranging.** `strip_arrange()` decides where the view of each workspace on
 screen should be (`view_x`) and places everything. Call it after anything
@@ -90,20 +101,26 @@ When the keyboard moves it ends any grab first: an open menu holds the
 keyboard and the pointer, and wlroots would otherwise keep them on the menu
 through the change, a lock included. A drag is the exception: it is ended
 only by a lock, so that a window opening during one does not make the user
-drop what they carry. The surface that gets the keyboard is
-told no key is held, since the key that changed the focus belonged to a
-binding and its release goes to nobody.
+drop what they carry. While a drag lasts no surface has the keyboard and
+wlroots ignores a change, so when it ends (`handle_drag_destroy()`) the
+keyboard goes to whatever has the focus by then, and the pointer to what is
+under it. The surface that gets the keyboard is told no key is held, since
+the key that changed the focus belonged to a binding and its release goes
+to nobody.
 
 The pointer's focus follows the windows, not only the mouse:
 `strip_arrange()` ends with `pointer_refocus()`, which gives the pointer to
-whatever is under it now (unless a button is held), and so does each step
-of a glide or a swipe. Without that, a click or a scroll after a lock, a
+whatever is under it now (unless a button is held, but even then when the
+session locks), and so does each step of a glide or a swipe. Without that, a click or a scroll after a lock, a
 workspace change, a window closing or the strip gliding went to the window
 that had been under the pointer before.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
-workspace is shown, only if its token was made from an input event: a token
-without one can be made by any client at any time.
+workspace is shown, only if its token was made from an input event and
+names the surface that event went to; wlroots checks that the surface had
+the keyboard or the pointer. A token without an event can be made by any
+client at any time, and one without a surface takes any serial the client
+was ever sent, the pointer merely passing over it.
 
 **The pointer.** A client may lock the pointer in place and read raw mouse
 movement instead (games, 3D editors, and X11 programs through Xwayland), or
@@ -125,7 +142,11 @@ and let go over nothing it lands nowhere.
 output's box when a menu first appears and again whenever its client moves
 it (`reposition`, which GTK 4 and Firefox use for menus that follow what
 they belong to). A layer surface's menu is kept on its layer surface's
-output.
+output. A window's menus are drawn in `popup_tree`, above every window,
+dialog and top-layer surface: under its window's own tree, the menu of a
+tiled window would open behind an open dialog, unseen but holding the
+keyboard and the pointer. Each window's `popup_tree` follows its window's
+position and visibility (`window_move()`, `window_draw()`).
 
 **Keys.** Direction keys follow one scheme: I, J, K, L are up, left, down,
 right, and the arrow keys do the same. Alone they move the focus; with Shift
@@ -163,13 +184,16 @@ wallpaper or a bar.
 **Idle** (`idle.c`). One timer, not re-armed per input event: input records
 a timestamp, and when the timer fires it does what is due (blank the
 outputs, suspend the machine) and sleeps until the next thing is. A visible
-surface with an idle inhibitor holds both off; one on a hidden workspace
-does not. While the outputs are off every window is suspended.
+surface with an idle inhibitor holds both off; one on a hidden workspace,
+or a layer surface behind the lock curtain or on a screen that is off, does
+not. While the outputs are off every window is suspended.
 
 Nothing tells a compositor that the machine was suspended and has woken, so
 `idle.c` keeps a timer that never expires and that the kernel cancels when
 the wall clock jumps: free until it happens, and it is what turns the screen
-back on after a wake-up.
+back on after a wake-up. The clock also jumps when the time service sets
+it, so a jump counts as a wake-up only if the time spent asleep
+(`asleep_ms()`, the difference of CLOCK_BOOTTIME and CLOCK_MONOTONIC) grew.
 
 **Lock** (`lock.c`). tw draws no lock screen. A lock client (swaylock) asks
 for the lock through ext-session-lock, or tw takes it by itself with
@@ -179,6 +203,14 @@ which hides every window behind an opaque curtain, and then starts the
 locker, which takes the lock over. So `locked` with `server->lock == NULL`
 is a normal state: the locker has not arrived yet, or it died. A key press
 in that state starts the locker again, at most once a second.
+
+The lock client is told `locked` only once the curtain is on every screen,
+as ext-session-lock requires: each output remembers its `commit_seq` as the
+curtain comes down, and its `present` event for a later frame marks it shown
+(`lock_confirm()`). An output that is off counts as shown. `swaylock -f` in
+a sleep hook waits for `locked`, so the machine never wakes to the last
+unlocked picture. Locking on lid close does not wait for that: logind
+suspends when it suspends, and tw holds no sleep delay of its own.
 
 What a lock guarantees (no bindings but VT switching, input only to lock
 surfaces, locked until a new client unlocks) is a rule in
@@ -217,6 +249,10 @@ that leaves with no window closing is noticed at the next window that does.
 A client queued behind a helper tw stopped is served by the next one, not
 turned away like one queued behind a helper that died.
 
+The helper is looked up on `PATH` before each start, not once: an update
+may have moved it. It must be installed when tw starts, though, or tw opens
+no X11 sockets at all.
+
 The helper has no chance to tidy up when stopped and leaves its own socket
 and lock file (`xwls-1`) in the runtime directory; the next helper takes the
 same name, so they do not pile up.
@@ -240,6 +276,11 @@ empty), until the next copy replaces it. tw knows its own source by its
 clipboard is obeyed: `handle_request_set_selection()` calls
 `clipboard_cleared()` first, which is how a copy taken back on purpose is
 told from one whose program exited.
+
+A copy offering `x-kde-passwordManagerHint` (KeePassXC and other password
+managers mark secrets with it) is not read at all: its program empties the
+clipboard after a while, and a copy kept by tw would outlive that if the
+program exited first.
 
 **What keeps it small.**
 
@@ -265,10 +306,12 @@ starts.
 
 **A program that dies while being read.** A pipe ends the same way when its
 program has written everything and when the program died over it. The
-kernel closes a dying program's files from the highest number down, which
-puts the pipe before the connection to tw, so tw can have taken a format
-that was cut short as read, and asked for the next one, before it learns
-that the program is gone. What tells the two apart is that a dead program
+kernel closes a dying program's files in the order of their numbers, and in
+which order tw then hears of the pipe and of the connection is not certain.
+When the pipe comes first, tw can have taken a format that was cut short as
+read, and asked for the next one, before it learns that the program is
+gone. When the connection comes first, the format on its way is dropped,
+whole or not. What tells the two apart is that a dead program
 never reacts to that next request. So when a source goes away while it is
 being read, the newest format read counts only if something came of the one
 after it (`answered`), the format on its way is dropped, and a format that
@@ -292,8 +335,10 @@ tw. On a machine without a battery, nothing.
 supply that is not a battery is online. Supplies of scope `Device` belong to
 a mouse or a phone and are skipped. Changes arrive through a libudev monitor
 on the `power_supply` subsystem (wlroots links libudev anyway). tw does not
-read what an announcement says; it reads `/sys/class/power_supply` again and
-acts only if the answer changed, since most announcements change nothing.
+read what an announcement says, beyond its scope: one from a `Device` (a
+wireless mouse reporting its own battery) is dropped unread. For any other
+it reads `/sys/class/power_supply` again and acts only if the answer
+changed, since most announcements change nothing.
 
 A machine without a battery opens no monitor and runs no command. Neither
 does a tw that is not what runs the machine, one inside another session or
@@ -351,17 +396,33 @@ lose a notification that is on its way, so it first gives up its name on
 the bus (`ReleaseName`) and exits when the answer to that arrives: whatever
 was sent before the bus took the name away has been delivered by then, and
 whatever is sent after starts a new `tw-notify`. One that arrived in
-between is shown, and the name asked for again. Ids start from the clock,
-so a program still holding the id of a notification from an earlier
-`tw-notify` cannot close somebody else's.
+between is shown, and the name asked for again; if a new `tw-notify` has
+taken the name by then, both show a list until the old one's notifications
+have closed. That is left as it is: it needs a notification to arrive in
+the few milliseconds of the hand-over.
+
+**Any program may replace or close a notification by its id**, as the
+specification allows: `notify-send -r <id>` and scripts that close one with
+`gdbus` are new programs each time. The program that last sent or replaced
+a notification is the one told of its click and its closing. Ids go on from
+the time of day in milliseconds, so a new `tw-notify` does not hand out an
+id an earlier one gave, and a program holding an old id does not reach
+somebody else's notification by accident.
 
 **It speaks D-Bus by itself.** The messages are read and written by
 `bus.c`, with no D-Bus library: the login line, `Hello`,
-`RequestName`, the four methods of `org.freedesktop.Notifications`, `Ping`,
-an empty `GetAll`, `Introspect`, and the signals. Everything read off the
-socket is checked against the bytes that are there; `tests/bus_test.c` is
-mostly about messages that are cut short or damaged. Signals go to the
-program that sent the notification and to nobody else.
+`RequestName`, the four methods of `org.freedesktop.Notifications`, `Ping`
+(with or without its interface named), an empty `GetAll`, `Introspect`, and
+the signals. Everything read off the socket is checked against the bytes
+that are there, and a `Notify` body must be exactly what its signature
+says, to the byte; `bus.c` reads it (`bus_notify_read()`), so the unit test
+reads it with the code that runs. `tests/bus_test.c` is mostly about
+messages that are cut short or damaged. A message that cannot be read is
+passed over: a call among them gets `InvalidArgs` back if its header got as
+far as its sender, and a big-endian one, which is not read, is passed over
+by its length. Only a message whose length cannot be told (another version
+of the protocol) ends `tw-notify`, which closes its notifications first.
+Signals go to the program that sent the notification and to nobody else.
 
 **Text.** The font is `font` in `notify/config.h`, found through
 fontconfig and drawn with FreeType, so any character some installed font
@@ -379,11 +440,22 @@ the compositor has it. On a screen with a fractional scale the picture is in
 the screen's own pixels (fractional-scale and viewporter), its size rounded
 up so that it is a whole number of logical pixels. The overlay layer is
 above fullscreen windows, so a game does not hide the battery warning, and
-below the lock screen, so a locked session shows none. When its monitor is unplugged the compositor closes the surface; the list
-comes back with the next notification, or as soon as a monitor is plugged
-in, so a warning that does not expire is not left out of sight.
+below the lock screen, so a locked session shows none. When its monitor is
+unplugged the compositor closes the surface, and the list opens again at
+once on a monitor that is left; with none left the compositor closes it
+before its first configure, and it comes back as soon as a monitor is
+plugged in. So a warning that does not expire is not left out of sight.
+When the compositor itself goes, `tw-notify` tells the programs their
+notifications are gone (reason 1, expired) and exits.
 
-A click closes the notification under it. A left click on one whose program
+At most `max_shown` notifications are listed. The oldest goes to make room
+for a new one, but not a critical one while another could go: the battery
+warning is sent once and does not expire.
+
+A click closes the notification under it. A click while the list is
+changing (a new picture not yet on screen) is let go, since it would be
+matched against the new layout while the old one is shown. A left click on
+one whose program
 listed the action `default` first gets an activation token from the
 compositor for that click and sends it on (`ActivationToken`, then
 `ActionInvoked`), which is what lets the program bring its window forward
@@ -458,7 +530,10 @@ has). With no NVIDIA GPU on the bus the driver itself refuses to load.
 **`tw-session`** does three things for this. A GPU, for it, is any display
 controller on the PCI bus (class `0x03`): VGA, but also 3D (`0x0302`),
 which is what the NVIDIA GPU of many laptops calls itself and which has no
-`boot_vga` file. It names the GPUs tw may use in
+`boot_vga` file. The first GPU is the one the firmware showed the boot
+screen on (`boot_vga`); a machine whose integrated GPU is not VGA-class has
+none, and then it is the one with the built-in panel connected (eDP, LVDS,
+DSI), or else the first that is not NVIDIA's. It names the GPUs tw may use in
 `WLR_DRM_DEVICES` whenever the machine has a second GPU, be it loaded,
 without its driver, or switched off, because wlroots opens a GPU that
 appears later only when that variable is unset; so the GPU can come and go
@@ -475,7 +550,11 @@ login that does not set them. And once tw is up it runs
 NVIDIA's offload variables, and switches it off afterwards. The launcher
 starts everything through `tw-gpu launch`, which does the same for desktop
 entries with `PrefersNonDefaultGPU=true` or KDE's
-`X-KDE-RunOnDiscreteGpu=true`, and otherwise just runs the program.
+`X-KDE-RunOnDiscreteGpu=true`, and otherwise just runs the program. It
+reads the entry the launcher names in `DESKTOP_ENTRY_PATH` (fuzzel sets
+it), and without that looks the desktop ID up as the specification says,
+each dash standing for a dash or a directory (`kde-foo.desktop` may be
+`kde/foo.desktop`).
 
 Who still needs the GPU is tracked with one lock file: every program
 started by `run` inherits a shared lock on it, and the switch-off, arranged
@@ -486,15 +565,26 @@ The root helper leaves a GPU alone that any program has open (it reads
 `/proc/*/fd`), and then one `tw-gpu retry` waits for that to end: it looks
 at the driver's use counts every five seconds and tries again when they
 have changed. That is the only polling in all of this. It runs only while
-the GPU is on although nothing asked for it, and it is also what waits for
-a login screen, which keeps the GPU open for some seconds after tw has the
-screen.
+the GPU is on although nothing asked for it, and gives up after ten minutes
+in which nothing changed: something that keeps the GPU open all session (a
+monitoring program) would otherwise keep it waking every five seconds. The
+next `run` or `off` tries again. It is also what waits for a login screen,
+which keeps the GPU open for some seconds after tw has the screen.
+
+NVIDIA's own daemons keep the driver open too, and are not counted as
+users: `nvidia-powerd` and `nvidia-persistenced` are stopped before the
+driver is unloaded and started again with the GPU, each if it is enabled.
+Before the GPU leaves the bus, its other NVIDIA functions (its sound, on
+some a USB-C controller) are allowed to sleep: the slot loses power only
+when every function on it is asleep.
 
 The helper leaves alone a GPU that another driver than NVIDIA's has
 (nouveau), and one whose driver is no longer on the disk: after a kernel
 update the running kernel's modules are gone until the next boot, and a
 driver unloaded then could not be loaded again. `tw-gpu` then keeps it on
-and says to reboot. `tw-gpu` also keeps the GPU on whenever tw has it open:
+and says to reboot. A machine with no NVIDIA driver installed at all is
+told apart by the running kernel's own modules still being there, and is
+told so instead. `tw-gpu` also keeps the GPU on whenever tw has it open:
 with no GPUs named in `WLR_DRM_DEVICES` (one GPU, or `TW_ALL_GPUS=1`)
 wlroots opened them all.
 
@@ -505,7 +595,10 @@ helper runs `udevadm settle` first and tries the load up to five times.
 
 Switching needs root: `tw-gpu` starts `tw-gpu@on.service` or
 `tw-gpu@off.service`, which a polkit rule allows, and those run
-`tw-gpu-root`. `tw-power` and `tw-bluetooth` are built the same way.
+`tw-gpu-root`. The two units could run side by side, so the helper takes
+a lock (`/run/tw-gpu.lock`) and does one thing at a time. When a unit
+fails, `tw-gpu` says which journal to read. `tw-power` and `tw-bluetooth`
+are built the same way.
 
 A udev rule (`72-tw-gpu.rules`) lets an NVIDIA GPU whose driver is
 unloaded power down. CachyOS's `71-nvidia.rules` forbids that; tw's sorts
@@ -575,7 +668,9 @@ until the next boot). Both only while
 (built with `-Dbluetooth=false`, or before its first reboot) is left alone.
 A second udev rule lets a USB adapter sleep (`power/control` to `auto`),
 which its driver would do as it loads and nobody does with the driver kept
-away.
+away. It finds the adapter by its Bluetooth interface, which every adapter
+has, and sets the whole device: a chip that is Wi-Fi and Bluetooth in one
+often does not call itself a Bluetooth device as a whole.
 
 Two other designs were weighed and dropped. Following the radio's block
 (`rfkill unblock` starts the daemon, `block` stops it) needs no root

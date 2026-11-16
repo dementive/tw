@@ -65,7 +65,12 @@ struct tw_output {
 	 * of this output, which is also what stops it: no frame, no work. */
 	bool animating;
 	int64_t animation_last_ms;
+	/* The lock curtain has been on this output's screen since the session
+	 * was locked: a frame committed after lock_seq has been presented. */
+	bool curtain_shown;
+	uint32_t lock_seq;
 	struct wl_listener frame;
+	struct wl_listener present;
 	struct wl_listener request_state;
 	struct wl_listener destroy;
 };
@@ -93,11 +98,12 @@ struct tw_server {
 	struct wlr_scene_output_layout *scene_layout;
 	/* Stacking order, bottom to top: layer_trees[background], [bottom],
 	 * window_tree, layer_trees[top], fullscreen_tree, float_tree,
-	 * layer_trees[overlay], lock_tree, drag_icon_tree. */
+	 * popup_tree, layer_trees[overlay], lock_tree, drag_icon_tree. */
 	struct wlr_scene_tree *layer_trees[4]; /* by zwlr_layer_shell_v1_layer */
 	struct wlr_scene_tree *window_tree;
 	struct wlr_scene_tree *fullscreen_tree;
 	struct wlr_scene_tree *float_tree;
+	struct wlr_scene_tree *popup_tree; /* windows' menus, above every window */
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
 	struct wlr_scene_tree *drag_icon_tree; /* at the cursor; what a drag shows */
 	struct wl_list outputs; /* tw_output.link, in the order they appeared */
@@ -140,7 +146,11 @@ struct tw_server {
 	struct wlr_pointer_constraint_v1 *active_constraint;
 	/* A touchpad swipe tw is handling itself rather than passing on. */
 	bool swipe_ours;
-	int swipe_axis; /* 0 undecided, 1 sideways (scroll), 2 vertical (workspace) */
+	enum tw_swipe_axis {
+		TW_SWIPE_UNDECIDED,
+		TW_SWIPE_SIDEWAYS, /* drags the strip */
+		TW_SWIPE_VERTICAL, /* switches workspace */
+	} swipe_axis;
 	double swipe_dx, swipe_dy;
 	uint32_t mod; /* what TW_MOD resolves to */
 	struct wl_listener new_input;
@@ -167,6 +177,7 @@ struct tw_server {
 	struct wl_listener request_set_selection;
 	struct wl_listener request_start_drag;
 	struct wl_listener start_drag;
+	struct wl_listener drag_destroy; /* of the drag under way; linked only then */
 
 	/* clipboard.c */
 	struct tw_clipboard *clipboard; /* NULL when copies are not kept */
@@ -178,6 +189,7 @@ struct tw_server {
 	struct wl_event_source *idle_timer;
 	struct wl_event_source *resume_watch; /* fires when the machine wakes up */
 	int resume_fd;
+	int64_t asleep_ms; /* asleep_ms() when the clock last jumped */
 	int blank_after_ms;   /* 0 never blanks */
 	int suspend_after_ms; /* 0 never suspends */
 	int suspend_tries;    /* suspend attempts since the last input */
@@ -227,6 +239,9 @@ struct tw_output_rule {
 /* main.c */
 /* Monotonic clock in milliseconds. */
 int64_t now_ms(void);
+/* How long the machine has slept since it booted, in milliseconds. If that
+ * grew between two looks, it has just woken up. */
+int64_t asleep_ms(void);
 /* Runs a shell command, detached from tw. */
 void spawn(const char *cmd);
 /* In a child of tw, before exec: the signals as a new program expects them. */
@@ -307,7 +322,7 @@ void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec)
 /* Lets go: the strip glides to the nearest column edge. */
 void strip_swipe_end(struct tw_server *server, bool cancelled);
 /* Whether the window or layer surface this surface belongs to is on screen. */
-bool surface_visible(struct wlr_surface *surface);
+bool surface_visible(struct tw_server *server, struct wlr_surface *surface);
 
 /* Actions on the focused column. arg.i is a direction (-1 left, +1 right). */
 void action_close(struct tw_server *server, const union tw_arg *arg);
@@ -381,6 +396,9 @@ void lock_finish(struct tw_server *server);
 void lock_arrange(struct tw_server *server);
 /* Surface that gets the keyboard while locked, or NULL. */
 struct wlr_surface *lock_keyboard_surface(struct tw_server *server);
+/* An output presented a frame, went off or went away: the lock client is
+ * told the session is locked once the curtain is on every screen. */
+void lock_confirm(struct tw_server *server);
 /*
  * Locks the session right now and starts the locker (config.h) to draw the
  * lock screen and take the password. Does nothing if the locker is not

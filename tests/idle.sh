@@ -142,5 +142,17 @@ suspends 2 || fail "the machine was suspended under a visible idle inhibitor"
 kill "$film_pid"
 wait_until "the machine to be suspended once the inhibitor is gone" suspends 3
 
+# A layer surface's inhibitor (a video on the overlay layer) counts while it
+# is on screen, but not behind the lock curtain: a locked machine suspends.
+press Return
+expect_state e "$on" "the locker to unlock"
+start_client overlay --layer-inhibit
+sleep 3.5
+suspends 3 || fail "the machine was suspended under a visible layer surface's inhibitor"
+locked_now=$(grep -c '^locked' "$run_dir/locker.log")
+press super+alt+l
+wait_until "Mod+Alt+L to lock" locks $((locked_now + 1))
+wait_until "the machine to be suspended with the inhibitor behind the lock" suspends 4
+
 stop_tw
 echo "ok: blanking, inhibitors, manual power-off, lock on idle, locker restart, suspend"

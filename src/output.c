@@ -145,6 +145,10 @@ static bool output_commit(struct tw_output *output, bool on, float scale) {
 		}
 		bool done = wlr_output_commit_state(output->wlr_output, &state);
 		wlr_output_state_finish(&state);
+		if (done && !on) {
+			/* A screen that is off needs no curtain drawn on it. */
+			lock_confirm(output->server);
+		}
 		if (done || mode == NULL) {
 			return done;
 		}
@@ -185,6 +189,19 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 	wlr_scene_output_send_frame_done(scene_output, &now);
 }
 
+/* The lock client may only hear that the session is locked once the curtain
+ * is on screen (lock.c): it is when its first frame has been presented. */
+static void handle_present(struct wl_listener *listener, void *data) {
+	struct tw_output *output = wl_container_of(listener, output, present);
+	const struct wlr_output_event_present *event = data;
+	if (!output->server->locked || output->curtain_shown || !event->presented ||
+			event->commit_seq <= output->lock_seq) {
+		return;
+	}
+	output->curtain_shown = true;
+	lock_confirm(output->server);
+}
+
 static void handle_request_state(struct wl_listener *listener, void *data) {
 	/* The backend wants a new mode, e.g. the nested window was resized. The
 	 * output layout notices the change and everything is re-arranged. */
@@ -198,6 +215,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_server *server = output->server;
 	layers_output_destroyed(server, output->wlr_output);
 	wl_list_remove(&output->frame.link);
+	wl_list_remove(&output->present.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
@@ -212,12 +230,19 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	}
 	output->wlr_output->data = NULL;
 	free(output);
+	/* The lock may have been waiting for this one. */
+	lock_confirm(server);
 }
 
 static void handle_new_output(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, new_output);
 	struct wlr_output *wlr_output = data;
 
+	/* A VR headset: not a screen to put a desktop on. */
+	if (wlr_output->non_desktop) {
+		wlr_log(WLR_INFO, "output %s is not for a desktop, ignoring it", wlr_output->name);
+		return;
+	}
 	struct tw_output *output = calloc(1, sizeof(*output));
 	if (output == NULL) {
 		wlr_log(WLR_ERROR, "out of memory, ignoring output %s", wlr_output->name);
@@ -252,9 +277,13 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	if (!output_commit(output, !server->blanked, rule->scale)) {
 		wlr_log(WLR_ERROR, "output %s: could not be set up", wlr_output->name);
 	}
+	/* Plugged in while locked: its first frame has the curtain on it. */
+	output->lock_seq = wlr_output->commit_seq;
 
 	output->frame.notify = handle_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
+	output->present.notify = handle_present;
+	wl_signal_add(&wlr_output->events.present, &output->present);
 	output->request_state.notify = handle_request_state;
 	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
 	output->destroy.notify = handle_destroy;
@@ -301,14 +330,20 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data) {
 	wl_list_remove(&server->renderer_lost.link);
 	wl_signal_add(&renderer->events.lost, &server->renderer_lost);
 	wlr_compositor_set_renderer(server->compositor, renderer);
+	bool all = true;
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		if (!wlr_output_init_render(output->wlr_output, allocator, renderer)) {
 			wlr_log(WLR_ERROR, "output %s: cannot draw on it again", output->wlr_output->name);
+			all = false;
 		}
 	}
-	wlr_allocator_destroy(old_allocator);
-	wlr_renderer_destroy(old_renderer);
+	/* An output that could not switch still draws with the old ones: they
+	 * fail on a GPU that was reset, but freed they would crash tw. */
+	if (all) {
+		wlr_allocator_destroy(old_allocator);
+		wlr_renderer_destroy(old_renderer);
+	}
 }
 
 static void handle_layout_change(struct wl_listener *listener, void *data) {
@@ -339,6 +374,7 @@ void output_init(struct tw_server *server) {
 	server->layer_trees[2] = wlr_scene_tree_create(root);
 	server->fullscreen_tree = wlr_scene_tree_create(root);
 	server->float_tree = wlr_scene_tree_create(root);
+	server->popup_tree = wlr_scene_tree_create(root);
 	server->layer_trees[3] = wlr_scene_tree_create(root);
 	server->lock_tree = wlr_scene_tree_create(root);
 	server->drag_icon_tree = wlr_scene_tree_create(root);

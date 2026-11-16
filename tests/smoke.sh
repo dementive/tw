@@ -71,6 +71,10 @@ wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
 start_client a
 expect_state a "configure [1-9][0-9]*x[1-9][0-9]* $on" "the first window to be sized and focused"
 expect_keyboard a enter "the first window to get the keyboard"
+# tw offers fullscreen and nothing else: told of maximize, minimize or a
+# window menu, a program that draws its own title bar shows buttons for them
+# that do nothing.
+expect_line a "capabilities fullscreen" "windows to be offered fullscreen alone"
 
 # Each new window opens to the right and takes focus. Five columns never fit
 # on one output with the stock column widths, so the first one scrolls off.
@@ -108,7 +112,8 @@ expect_state a "$on" "Mod+Ctrl+Home to move the column to the front"
 # strip is d [a] b c e
 
 press super+r
-wait_until "Mod+R to change the column width" test "$(current_size a)" != "$size"
+resized() { [ "$(current_size a)" != "$size" ]; }
+wait_until "Mod+R to change the column width" resized
 press super+f
 maximized=$(current_size a)
 [ "${maximized%x*}" -gt "${size%x*}" ] || fail "Mod+F did not widen the column: $maximized"
@@ -188,6 +193,18 @@ press super+6
 expect_line thief "activate forged" "the window to ask with a made-up token"
 sleep 0.3
 last_line_matches thief configure "$off_screen" || fail "a made-up token stole the focus"
+
+# Nor does a token from a real input event that does not say which surface
+# it came to: any event the client was ever sent would do, such as the
+# pointer merely passing over it.
+start_client sly --token-no-surface "$run_dir/token2"
+expect_line sly token "a token without a surface to be issued"
+start_client asker2 --activate "$run_dir/token2"
+expect_state asker2 "$on" "the window with that token to start focused"
+press super+7
+expect_line asker2 activate "the window to ask for the focus with it"
+sleep 0.3
+last_line_matches asker2 configure "$off_screen" || fail "a token naming no surface stole the focus"
 press super+2
 expect_state d "$on" "Mod+2 to return to workspace 2"
 

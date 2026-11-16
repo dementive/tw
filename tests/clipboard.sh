@@ -118,6 +118,15 @@ wait_until "the program to hear that its copy is off the clipboard" said c cance
 quit "$copier"
 still_nothing || fail "tw kept a copy that was taken off the clipboard"
 
+# A password manager marks what it copies as secret. tw does not read it at
+# all, so it is gone with its program, whether or not that program got to
+# empty the clipboard first.
+copy pw 'x-kde-passwordManagerHint=secret' 'text/plain=hunter2'
+wait_until "tw to leave the secret alone" tw_said 'clipboard: a secret, left with its program'
+pasted text/plain 'paste text/plain: hunter2' || fail "the secret could not be pasted from its program"
+quit "$copier"
+still_nothing || fail "tw kept a copy marked secret after its program was gone"
+
 # --- A long copy --------------------------------------------------------------
 # More than a pipe holds, so tw reads it in pieces and, once its program is
 # gone, writes it in pieces as the reader takes them.

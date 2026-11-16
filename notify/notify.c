@@ -201,6 +201,14 @@ static void note_close(struct note *note, uint32_t reason) {
 	idle_at = now_ms() + linger_ms;
 }
 
+/* Before leaving with notifications still showing: their programs are
+ * told they are gone, rather than wait for a signal that never comes. */
+static void notes_close_all(void) {
+	while (note_count > 0) {
+		note_close(&notes[0], CLOSED_EXPIRED);
+	}
+}
+
 /* The program is told of the click, with a token that lets it bring its
  * window forward if the compositor gave one, and the notification goes. */
 static void note_invoke(struct note *note, const char *token) {
@@ -231,45 +239,28 @@ static void copy(char *to, size_t size, const char *from) {
 }
 
 static void method_notify(const struct bus_message *call) {
-	struct bus_reader reader = call->body;
-	bus_read_string(&reader); /* the program's name */
-	uint32_t replaces = bus_read_u32(&reader);
-	bus_read_string(&reader); /* its icon */
-	const char *summary = bus_read_string(&reader);
-	const char *body = bus_read_string(&reader);
-
-	/* Actions come as pairs: a key, then the text for its button. Only the
-	 * one a click stands for is of use here. */
-	bool has_default = false;
-	size_t end = bus_read_array(&reader, 4);
-	for (int i = 0; reader.pos < end && !reader.failed; i++) {
-		const char *action = bus_read_string(&reader);
-		has_default = has_default || (i % 2 == 0 && strcmp(action, "default") == 0);
-	}
-
-	/* Hints: a dictionary from a name to a value of any type. */
-	uint8_t urgency = 1;
-	end = bus_read_array(&reader, 8);
-	while (reader.pos < end && !reader.failed) {
-		bus_read_align(&reader, 8);
-		const char *key = bus_read_string(&reader);
-		const char *type = bus_read_signature(&reader);
-		if (strcmp(key, "urgency") == 0 && strcmp(type, "y") == 0) {
-			urgency = bus_read_byte(&reader);
-		} else {
-			bus_skip(&reader, type);
-		}
-	}
-	int32_t expire = (int32_t)bus_read_u32(&reader);
-	if (reader.failed) {
+	struct bus_notify read;
+	if (!bus_notify_read(call, &read)) {
 		reply_error(call, "org.freedesktop.DBus.Error.InvalidArgs", "cannot read this notification");
 		return;
 	}
 
-	struct note *note = replaces != 0 ? note_find(replaces) : NULL;
+	/* Any program may replace a notification by its id, as the
+	 * specification has it (`notify-send -r` is a new program each time),
+	 * and the one that replaced it hears of it from then on. */
+	struct note *note = read.replaces != 0 ? note_find(read.replaces) : NULL;
 	if (note == NULL) {
 		if (note_count == max_shown) {
-			note_close(&notes[0], CLOSED_EXPIRED);
+			/* The oldest goes to make room, but not a critical one while
+			 * there is another: the battery warning is sent once and does
+			 * not expire, and must not be pushed out by chatter. */
+			struct note *oldest = &notes[0];
+			for (int i = note_count - 1; i >= 0; i--) {
+				if (!notes[i].critical) {
+					oldest = &notes[i];
+				}
+			}
+			note_close(oldest, CLOSED_EXPIRED);
 		}
 		note = &notes[note_count++];
 		/* An id nobody holds: 0 means none, and a program may still hold
@@ -280,12 +271,13 @@ static void method_notify(const struct bus_message *call) {
 		*note = (struct note){.id = last_id};
 	}
 	copy(note->sender, sizeof(note->sender), call->sender);
-	copy(note->summary, sizeof(note->summary), summary);
-	copy(note->body, sizeof(note->body), body);
-	note->critical = urgency == 2;
-	note->has_default = has_default;
+	copy(note->summary, sizeof(note->summary), read.summary);
+	copy(note->body, sizeof(note->body), read.body);
+	note->critical = read.urgency == 2;
+	note->has_default = read.has_default;
 	/* -1: the program leaves it to us. 0: it wants it to stay. */
-	int stay = expire > 0 ? expire : expire == 0 || note->critical ? 0 : timeout_ms;
+	int stay = read.expire > 0 ? read.expire :
+		read.expire == 0 || note->critical ? 0 : timeout_ms;
 	note->deadline = stay > 0 ? now_ms() + stay : 0;
 	dirty = true;
 	say("show %u '%s' for %d ms", note->id, note->summary, stay);
@@ -320,8 +312,7 @@ static void handle_call(const struct bus_message *call) {
 	bool ours = strcmp(call->interface, NAME) == 0 || call->interface[0] == '\0';
 	idle_at = now_ms() + linger_ms;
 
-	if (ours && strcmp(call->member, "Notify") == 0 &&
-			strcmp(call->signature, "susssasa{sv}i") == 0) {
+	if (ours && strcmp(call->member, "Notify") == 0) {
 		method_notify(call);
 	} else if (ours && strcmp(call->member, "CloseNotification") == 0 &&
 			strcmp(call->signature, "u") == 0) {
@@ -349,8 +340,9 @@ static void handle_call(const struct bus_message *call) {
 		bus_write_string(&writer, "1");
 		bus_write_string(&writer, "1.2"); /* of the specification */
 		reply_send(call, &writer);
-	} else if (strcmp(call->interface, "org.freedesktop.DBus.Peer") == 0 &&
-			strcmp(call->member, "Ping") == 0) {
+	} else if ((strcmp(call->interface, "org.freedesktop.DBus.Peer") == 0 ||
+			call->interface[0] == '\0') && strcmp(call->member, "Ping") == 0) {
+		/* The interface is optional in a call, and no other has a Ping. */
 		writer = reply_begin(call, NULL);
 		reply_send(call, &writer);
 	} else if (strcmp(call->interface, "org.freedesktop.DBus.Properties") == 0 &&
@@ -393,8 +385,8 @@ static void handle_message(const struct bus_message *message) {
 	} else if (message->type == BUS_CALL) {
 		handle_call(message);
 	}
-	/* The rest: signals from the bus about our name, and errors for signals
-	 * we sent to a program that has left since. */
+	/* The rest: the bus's answer to Hello and its signals about our name.
+	 * Signals we send say that they want no reply, so none comes back. */
 }
 
 static void bus_read(void) {
@@ -437,7 +429,11 @@ static void bus_read(void) {
 	for (;;) {
 		whole = bus_message_size(in + pos, in_size - pos);
 		if (whole < 0) {
+			/* Not even where this message ends can be told, so nothing
+			 * after it can be read either. The bus does not send such a
+			 * thing; if it does, the notifications go properly. */
 			fprintf(stderr, "tw-notify: cannot read what the bus sent\n");
+			notes_close_all();
 			quit(1);
 		}
 		if (whole == 0 || (size_t)whole > in_size - pos) {
@@ -447,7 +443,13 @@ static void bus_read(void) {
 		if (bus_message_parse(in + pos, (size_t)whole, &message)) {
 			handle_message(&message);
 		} else {
+			/* Passed over. A call still gets an answer if it can be
+			 * addressed, or its program waits half a minute for one. */
 			say("cannot read a message of %ld bytes", whole);
+			if (message.type == BUS_CALL && message.serial != 0 && message.sender[0] != '\0') {
+				reply_error(&message, "org.freedesktop.DBus.Error.InvalidArgs",
+					"cannot read this message");
+			}
 		}
 		pos += (size_t)whole;
 	}
@@ -650,7 +652,8 @@ static void font_size_set(int size) {
 			FT_Set_Pixel_Sizes(faces[i], 0, (FT_UInt)size);
 		}
 	}
-	/* Without a font only boxes are drawn; they still need lines. */
+	/* Without a font only the frames are drawn, and their height still
+	 * goes by lines of text. */
 	ascent = size;
 	line_height = size * 4 / 3;
 	FT_Face first = fonts != NULL ? face_get(0) : NULL;
@@ -896,7 +899,8 @@ static int asked_width, asked_height; /* the size last asked for, logical */
 static bool configured;               /* the compositor has answered once */
 static bool waiting;                  /* for its answer to a new size */
 static wl_fixed_t pointer_y;
-static uint32_t token_for;            /* the notification a token is being made for */
+static struct xdg_activation_token_v1 *token; /* being made, for a click */
+static uint32_t token_for;            /* the notification it is for */
 
 static void window_close(void) {
 	if (surface == NULL) {
@@ -932,9 +936,13 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer, uin
 }
 
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
-	/* The screen it was on is gone. The list comes back with the next
-	 * change to it, or when a screen is plugged in (registry_global). */
+	/* The screen it was on is gone. Opened again, the list goes on one
+	 * that is left. Only if it had been shown: with no screen at all the
+	 * compositor closes it before its first configure, and it waits for
+	 * one to be plugged in (registry_global) instead of trying forever. */
+	bool shown = configured;
 	window_close();
+	dirty = dirty || shown;
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_listener = {
@@ -1022,13 +1030,14 @@ static void window_draw(void) {
 	say("draw %dx%d at scale %u/120", buffer_width, buffer_height, scale);
 }
 
-static void token_done(void *data, struct xdg_activation_token_v1 *token, const char *string) {
+static void token_done(void *data, struct xdg_activation_token_v1 *made, const char *string) {
 	struct note *note = note_find(token_for);
+	xdg_activation_token_v1_destroy(made);
+	token = NULL;
 	token_for = 0;
 	if (note != NULL) {
 		note_invoke(note, string);
 	}
-	xdg_activation_token_v1_destroy(token);
 }
 
 static const struct xdg_activation_token_v1_listener token_listener = {
@@ -1051,7 +1060,10 @@ static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t t
 
 static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t press,
 		uint32_t time, uint32_t button, uint32_t state) {
-	if (state != WL_POINTER_BUTTON_STATE_PRESSED || surface == NULL) {
+	/* While the list is changing, what is on screen is not what `notes`
+	 * says, and a click would land on the wrong notification. It is let
+	 * go: the picture follows within a frame. */
+	if (state != WL_POINTER_BUTTON_STATE_PRESSED || surface == NULL || waiting || dirty) {
 		return;
 	}
 	int y = (int)(wl_fixed_to_double(pointer_y) * scale / 120);
@@ -1073,7 +1085,7 @@ static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t p
 		 * compositor allows to whoever holds a token made from a click.
 		 * So have one made from this click and pass it on. */
 		token_for = note->id;
-		struct xdg_activation_token_v1 *token = xdg_activation_v1_get_activation_token(activation);
+		token = xdg_activation_v1_get_activation_token(activation);
 		xdg_activation_token_v1_add_listener(token, &token_listener, NULL);
 		xdg_activation_token_v1_set_serial(token, press, seat);
 		xdg_activation_token_v1_set_surface(token, surface);
@@ -1141,6 +1153,39 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = registry_global_remove,
 };
 
+/* Lets go of everything on the compositor, and of the connection. */
+static void wayland_disconnect(void) {
+	window_close();
+	struct wl_proxy *proxies[] = {
+		(struct wl_proxy *)token, (struct wl_proxy *)pointer, (struct wl_proxy *)seat,
+		(struct wl_proxy *)compositor, (struct wl_proxy *)shm, (struct wl_proxy *)layer_shell,
+		(struct wl_proxy *)viewporter, (struct wl_proxy *)scale_manager,
+		(struct wl_proxy *)activation, (struct wl_proxy *)registry,
+	};
+	/* Only our side of each: the compositor drops its own with the
+	 * connection, and a request to some of these is an error at the
+	 * versions bound. */
+	for (size_t i = 0; i < LENGTH(proxies); i++) {
+		if (proxies[i] != NULL) {
+			wl_proxy_destroy(proxies[i]);
+		}
+	}
+	wl_display_flush(display);
+	wl_display_disconnect(display);
+	display = NULL;
+	registry = NULL;
+	compositor = NULL;
+	shm = NULL;
+	seat = NULL;
+	pointer = NULL;
+	layer_shell = NULL;
+	viewporter = NULL;
+	scale_manager = NULL;
+	activation = NULL;
+	token = NULL;
+	token_for = 0;
+}
+
 static bool wayland_connect(void) {
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -1152,16 +1197,7 @@ static bool wayland_connect(void) {
 	if (wl_display_roundtrip(display) < 0 || compositor == NULL || shm == NULL ||
 			layer_shell == NULL) {
 		fprintf(stderr, "tw-notify: this compositor has no layer shell\n");
-		wl_display_disconnect(display);
-		display = NULL;
-		compositor = NULL;
-		shm = NULL;
-		seat = NULL;
-		pointer = NULL;
-		layer_shell = NULL;
-		viewporter = NULL;
-		scale_manager = NULL;
-		activation = NULL;
+		wayland_disconnect();
 		return false;
 	}
 	return true;
@@ -1176,9 +1212,7 @@ static void window_update(void) {
 	}
 	if (display == NULL && !wayland_connect()) {
 		/* Nowhere to show them. Their programs are told they are gone. */
-		while (note_count > 0) {
-			note_close(&notes[0], CLOSED_EXPIRED);
-		}
+		notes_close_all();
 		return;
 	}
 	font_open(); /* once; without a font, only the frames are drawn */
@@ -1207,10 +1241,17 @@ _Noreturn static void quit(int status) {
 	in = NULL;
 	font_close();
 	if (display != NULL) {
-		wl_display_flush(display);
-		wl_display_disconnect(display);
+		wayland_disconnect();
 	}
 	exit(status);
+}
+
+/* The compositor has gone, and with it the screen: tw has stopped or
+ * crashed, and the session is ending or starting it again. */
+_Noreturn static void compositor_gone(void) {
+	say("the compositor is gone");
+	notes_close_all();
+	quit(0);
 }
 
 int main(int argc, char *argv[]) {
@@ -1236,8 +1277,14 @@ int main(int argc, char *argv[]) {
 			"  -t  how long a notification stays if its program does not say\n", argv[0]);
 		return 1;
 	}
-	/* Ids start where no earlier tw-notify of this boot left off. */
-	last_id = (uint32_t)(now_ms() / 64);
+	/* Ids go on from the time of day in milliseconds. One tw-notify lives
+	 * at least a second, so the next starts past every id the last gave
+	 * out unless it gave out more than a thousand a second: a program
+	 * holding an id from an earlier one does not reach somebody else's
+	 * notification with it. */
+	struct timespec wall;
+	clock_gettime(CLOCK_REALTIME, &wall);
+	last_id = (uint32_t)((uint64_t)wall.tv_sec * 1000 + (uint64_t)wall.tv_nsec / 1000000);
 	if (!bus_connect()) {
 		fprintf(stderr, "tw-notify: cannot reach the session's D-Bus\n");
 		return 1;
@@ -1249,7 +1296,7 @@ int main(int argc, char *argv[]) {
 			window_update();
 		}
 		if (display != NULL && wl_display_flush(display) < 0 && errno != EAGAIN) {
-			quit(0); /* the compositor is gone */
+			compositor_gone();
 		}
 
 		/* Sleep until a message, an event, or the next thing due: a
@@ -1281,7 +1328,7 @@ int main(int argc, char *argv[]) {
 			bus_read();
 		}
 		if (fds[1].revents != 0 && display != NULL && wl_display_dispatch(display) < 0) {
-			quit(0);
+			compositor_gone();
 		}
 
 		now = now_ms();

@@ -15,9 +15,27 @@ sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
 proc=${TW_PROC:-/proc}
 # Present while the GPU is off the bus; holds the port to scan to get it back.
 flag=${TW_RUN:-/run}/tw-gpu-off
-# NVIDIA's daemon that shifts power between CPU and GPU under load. It keeps
-# the driver open, so it has to stop before the driver can go.
-powerd=nvidia-powerd.service
+# Where the kernels' modules are, one directory for each kernel installed.
+modules=${TW_MODULES:-/usr/lib/modules}
+# NVIDIA's daemons, which keep the driver open and so have to stop before it
+# can go: the one that shifts power between CPU and GPU under load, and the
+# one that keeps the driver ready while no program uses it (which is what
+# switching off undoes). Each starts again with the GPU, if it is enabled.
+daemons="nvidia-powerd nvidia-persistenced"
+
+case ${1:-} in
+on | off) ;;
+*)
+	echo "usage: tw-gpu-root on|off" >&2
+	exit 2
+	;;
+esac
+
+# on and off are two units, which systemd would run side by side: an `on`
+# scanning the bus while an `off` takes the GPU from it would leave the GPU
+# off the bus with no note of the port to scan. One at a time.
+exec 9>"${TW_RUN:-/run}/tw-gpu.lock"
+flock 9
 
 # Prints the NVIDIA GPU's directory in sysfs; fails if it is not on the bus.
 gpu_device() {
@@ -34,14 +52,35 @@ gpu_device() {
 	return 1
 }
 
-powerd_start() {
-	systemctl is-enabled --quiet "$powerd" 2>/dev/null || return 0
-	# Started with no driver, it fails until its unit gives up for good.
-	systemctl reset-failed "$powerd" 2>/dev/null
-	systemctl start --no-block "$powerd"
+daemons_start() {
+	for daemon in $daemons; do
+		systemctl is-enabled --quiet "$daemon.service" 2>/dev/null || continue
+		# Started with no driver, it fails until its unit gives up for good.
+		systemctl reset-failed "$daemon.service" 2>/dev/null
+		systemctl start --no-block "$daemon.service"
+	done
 }
 
-# Prints the programs that have the GPU open, apart from NVIDIA's daemon.
+daemons_stop() {
+	for daemon in $daemons; do
+		systemctl stop "$daemon.service" 2>/dev/null
+	done
+}
+
+# Prints why the driver cannot be loaded, and fails if it can. After a
+# kernel update the running kernel's modules are gone from the disk until
+# the next boot, its own with the driver's; a driver that was never
+# installed leaves the kernel's own in place.
+no_driver() {
+	modinfo nvidia_drm >/dev/null 2>&1 && return 1
+	if [ -d "$modules/$(uname -r)/kernel" ]; then
+		echo "no NVIDIA driver is installed for the running kernel"
+	else
+		echo "the running kernel's modules are gone from the disk until a reboot"
+	fi
+}
+
+# Prints the programs that have the GPU open, apart from NVIDIA's daemons.
 users() {
 	set -- -lname '/dev/nvidia*'
 	for node in "$gpu"/drm/card[0-9]* "$gpu"/drm/renderD*; do
@@ -51,14 +90,18 @@ users() {
 		sed "s|^$proc/\([0-9]*\)/.*|\1|" | sort -u |
 		while read -r pid; do
 			name=$(cat "$proc/$pid/comm" 2>/dev/null) || continue
-			[ "$name" = nvidia-powerd ] || echo "$name"
+			# The kernel keeps 15 characters of a name: nvidia-persiste.
+			for daemon in $daemons; do
+				[ "$name" = "$(echo "$daemon" | cut -c 1-15)" ] && continue 2
+			done
+			echo "$name"
 		done | sort -u | tr '\n' ' '
 }
 
-case ${1:-} in
+case $1 in
 on)
-	if ! modinfo nvidia_drm >/dev/null 2>&1; then
-		echo "tw-gpu: the driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+	if why=$(no_driver); then
+		echo "tw-gpu: $why" >&2
 		exit 1
 	fi
 	if [ -e "$flag" ] && ! gpu_device >/dev/null; then
@@ -97,7 +140,7 @@ on)
 		fi
 		sleep 0.3
 	done
-	powerd_start
+	daemons_start
 	;;
 off)
 	gpu=$(gpu_device) || exit 0 # off the bus already, or no such GPU
@@ -118,10 +161,10 @@ off)
 		exit 0 # nothing went wrong: it just stays on
 	fi
 	if [ -d "$sys/module/nvidia" ]; then
-		# After a kernel update the running kernel's modules are gone from
-		# the disk until the next boot: what is unloaded now stays unloaded.
-		if ! modinfo nvidia_drm >/dev/null 2>&1; then
-			echo "tw-gpu: the driver is not on the disk for the running kernel; left on until a reboot" >&2
+		# A driver that cannot be loaded again is left as it is: what is
+		# unloaded now would stay unloaded.
+		if why=$(no_driver); then
+			echo "tw-gpu: $why; the GPU is left on" >&2
 			exit 0
 		fi
 		# A program that has just exited can take a moment to let go of
@@ -135,7 +178,7 @@ off)
 			fi
 			sleep 0.5
 		done
-		systemctl stop "$powerd" 2>/dev/null
+		daemons_stop
 		# The rest, each only if it is still there: removing one also
 		# removes what only it needed, and modprobe then fails on the next
 		# name. (Seen on the real driver: all of it unloaded, and an error
@@ -147,11 +190,20 @@ off)
 		if [ -d "$sys/module/nvidia" ]; then
 			# Something opened it in the meantime. Put back what was taken.
 			modprobe nvidia_drm
-			powerd_start
+			daemons_start
 			echo "tw-gpu: the NVIDIA GPU is in use" >&2
 			exit 0
 		fi
 	fi
+	# The GPU's other functions (its sound, on some a USB-C controller)
+	# stay on the bus, and the slot loses power only once each of them is
+	# asleep. Their drivers let them sleep only where that is allowed.
+	for sibling in "${gpu%.*}".*; do
+		[ "$sibling" != "$gpu" ] || continue
+		[ "$(cat "$sibling/vendor" 2>/dev/null)" = 0x10de ] || continue
+		control=$sibling/power/control
+		[ -e "$control" ] && [ "$(cat "$control")" != auto ] && echo auto >"$control"
+	done
 	# Off the bus. The port above it is what `on` scans to get it back.
 	port=$(readlink -f "$gpu")
 	port=${port%/*}
@@ -161,9 +213,5 @@ off)
 		echo "tw-gpu: could not take the NVIDIA GPU off the PCI bus" >&2
 		exit 1
 	fi
-	;;
-*)
-	echo "usage: tw-gpu-root on|off" >&2
-	exit 2
 	;;
 esac

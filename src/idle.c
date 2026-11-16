@@ -10,8 +10,9 @@
  * Cost: one timer. It is not re-armed on every input event; input only
  * records a timestamp, and when the timer fires it does what is due and
  * sleeps until the next thing is. That is at most one wakeup per timeout
- * while the machine is in use, and none while inhibited or, unless a suspend
- * is still to come, once the outputs are off.
+ * while the machine is in use, and once the outputs are off none unless a
+ * suspend is still to come. While inhibited the timer fires at most once
+ * more and is not set again until the inhibitor lets go.
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -32,7 +33,8 @@ struct tw_idle_inhibitor {
 };
 
 /* Sets the timer for whatever is due next: blanking, or a suspend attempt.
- * Call when the idle clock restarts or one of those has just happened. */
+ * Call when one of those has just happened, the screen came back on, or an
+ * inhibitor let go; never per input event (see the top of this file). */
 static void idle_timer_start(struct tw_server *server) {
 	int64_t next = 0; /* in milliseconds of idleness; 0 if nothing is due */
 	if (!server->blanked && server->blank_after_ms > 0) {
@@ -125,6 +127,10 @@ void idle_activity(struct tw_server *server) {
  * What does happen is that the wall clock jumps, and the kernel cancels any
  * timer that asked to be told about that. The timer itself never expires, so
  * this costs nothing until it happens.
+ *
+ * The wall clock also jumps when it is set, as the network time service does
+ * when the network comes back. That is told apart by the time spent asleep,
+ * which grows only when the machine has slept.
  */
 static void resume_watch_arm(int fd) {
 	struct itimerspec never = {.it_value.tv_sec = (time_t)1 << 40};
@@ -134,11 +140,17 @@ static void resume_watch_arm(int fd) {
 static int handle_clock_jump(int fd, uint32_t mask, void *data) {
 	struct tw_server *server = data;
 	uint64_t expirations;
-	if (read(fd, &expirations, sizeof(expirations)) < 0 && errno == ECANCELED) {
-		resume_watch_arm(fd);
-		/* Back from suspend (or the clock was set, which is rare and
-		 * harmless here): turn the screen on and start the idle clock over. */
-		wlr_log(WLR_DEBUG, "the clock jumped, treating it as a wake-up");
+	if (read(fd, &expirations, sizeof(expirations)) >= 0 || errno != ECANCELED) {
+		return 0;
+	}
+	resume_watch_arm(fd);
+	int64_t asleep = asleep_ms();
+	bool woke = asleep - server->asleep_ms > 500;
+	server->asleep_ms = asleep;
+	if (woke) {
+		/* Back from suspend: turn the screen on and start the idle clock
+		 * over. */
+		wlr_log(WLR_DEBUG, "woke up");
 		idle_activity(server);
 	}
 	return 0;
@@ -155,7 +167,7 @@ static void update_inhibited(struct tw_server *server, struct wlr_idle_inhibitor
 	wl_list_for_each(inhibitor, &server->idle_inhibit_manager->inhibitors, link) {
 		/* Only what is on screen counts: a paused player on another
 		 * workspace must not keep the display lit. */
-		if (inhibitor != dying && surface_visible(inhibitor->surface)) {
+		if (inhibitor != dying && surface_visible(server, inhibitor->surface)) {
 			inhibited = true;
 			break;
 		}
@@ -219,6 +231,7 @@ void idle_init(struct tw_server *server) {
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);
 	idle_timer_start(server);
 
+	server->asleep_ms = asleep_ms();
 	server->resume_fd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
 	if (server->resume_fd >= 0) {
 		resume_watch_arm(server->resume_fd);

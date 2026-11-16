@@ -43,6 +43,15 @@ int64_t now_ms(void) {
 	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
+int64_t asleep_ms(void) {
+	/* CLOCK_BOOTTIME counts the time asleep, CLOCK_MONOTONIC does not. */
+	struct timespec all, awake;
+	clock_gettime(CLOCK_BOOTTIME, &all);
+	clock_gettime(CLOCK_MONOTONIC, &awake);
+	return (int64_t)(all.tv_sec - awake.tv_sec) * 1000 +
+		(all.tv_nsec - awake.tv_nsec) / 1000000;
+}
+
 void child_reset_signals(void) {
 	/* The event loop blocks SIGINT/SIGTERM for its signalfd, and a blocked
 	 * signal mask survives exec. */
@@ -73,6 +82,12 @@ void spawn(const char *cmd) {
 	waitpid(pid, NULL, 0);
 }
 
+/* A file that can be run: a directory can be "executed" too. */
+static bool executable(const char *path) {
+	struct stat st;
+	return access(path, X_OK) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 bool program_find(const char *command, char *path, size_t size) {
 	size_t length = strcspn(command, " \t");
 	const char *dirs = getenv("PATH");
@@ -83,14 +98,13 @@ bool program_find(const char *command, char *path, size_t size) {
 		/* A path is used as it is. */
 		memcpy(path, command, length);
 		path[length] = '\0';
-		return access(path, X_OK) == 0;
+		return executable(path);
 	}
 	while (*dirs != '\0') {
 		size_t dir_length = strcspn(dirs, ":");
-		struct stat st;
 		if (dir_length > 0 && dir_length + 1 + length < size) {
 			snprintf(path, size, "%.*s/%.*s", (int)dir_length, dirs, (int)length, command);
-			if (access(path, X_OK) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+			if (executable(path)) {
 				return true;
 			}
 		}
@@ -223,6 +237,10 @@ int main(int argc, char *argv[]) {
 
 	int status = 1;
 	server.display = wl_display_create();
+	if (server.display == NULL) {
+		wlr_log(WLR_ERROR, "failed to create the Wayland display");
+		return 1;
+	}
 	server.loop = wl_display_get_event_loop(server.display);
 	server.sigint = wl_event_loop_add_signal(server.loop, SIGINT, handle_signal, &server);
 	server.sigterm = wl_event_loop_add_signal(server.loop, SIGTERM, handle_signal, &server);
