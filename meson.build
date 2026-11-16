@@ -267,35 +267,17 @@ meson.add_install_script('data/post-install.sh')
 
 # --- The notification service ------------------------------------------------
 
-# tw-notify shows notifications and is gone again when none is left. It runs
-# on libc and the Wayland client library alone: the characters it can show
-# are drawn here, at build time, by a tool that uses FreeType (notify/bake.c).
-freetype = dependency('freetype2', native: true, required: get_option('notify'))
-fc_match = find_program('fc-match', native: true, required: get_option('notify'))
+# tw-notify shows notifications and is gone again when none is left. It
+# speaks D-Bus by itself (notify/bus.c) and draws its text with fontconfig
+# and FreeType, which it loads only while a notification is on screen.
+fontconfig = dependency('fontconfig', required: get_option('notify'))
+freetype = dependency('freetype2', required: get_option('notify'))
 tw_notify = disabler()
-if freetype.found() and fc_match.found()
-	notify_font = run_command(
-		fc_match, '--format=%{file}', get_option('notify_font'),
-		check: true,
-	).stdout().strip()
-	notify_bake = executable(
-		'tw-notify-bake',
-		'notify/bake.c',
-		dependencies: freetype,
-		native: true,
-	)
-	notify_font_header = custom_target(
-		'font.h',
-		input: notify_font,
-		output: 'font.h',
-		command: [notify_bake, '@INPUT@'],
-		capture: true,
-	)
+if fontconfig.found() and freetype.found()
 	tw_notify = executable(
 		'tw-notify',
 		'notify/notify.c',
 		'notify/bus.c',
-		notify_font_header,
 		client_header['wlr-layer-shell-unstable-v1'],
 		protocol_code['wlr-layer-shell-unstable-v1'],
 		# The layer shell's code refers to xdg-shell's popups.
@@ -306,7 +288,7 @@ if freetype.found() and fc_match.found()
 		protocol_code['fractional-scale-v1'],
 		client_header['xdg-activation-v1'],
 		protocol_code['xdg-activation-v1'],
-		dependencies: wayland_client,
+		dependencies: [wayland_client, fontconfig, freetype],
 		install: true,
 	)
 	# How the session's D-Bus knows what to start for a notification. In
@@ -413,23 +395,20 @@ foreach name, args : headless_tests
 	)
 endforeach
 
-# The scripts, each against a made-up machine: no hardware, service or root
-# is involved, and nothing of the real machine is read or written. The value
-# is the directory the scripts under test are in.
+# The scripts in data/, each against a made-up machine: no hardware, service
+# or root is involved, and nothing of the real machine is read or written.
 script_tests = {
-	'gpu': 'data',         # tw-gpu, its root helper, and tw-session
-	'profile': 'data',     # tw-power and its root helper
-	'bluetooth': 'data',   # tw-bluetooth and its root helper
-	'thunderbolt': 'data', # the Thunderbolt udev rule
-	'install': 'data',     # the step that runs after `meson install`
-	'iwd': 'tools',        # tools/iwd.sh
-	'keyring': 'tools',    # tools/keyring.sh
+	'gpu': 'tw-gpu, its root helper, and tw-session',
+	'profile': 'tw-power and its root helper',
+	'bluetooth': 'tw-bluetooth and its root helper',
+	'thunderbolt': 'the Thunderbolt udev rule',
+	'install': 'the step that runs after `meson install`',
 }
-foreach name, dir : script_tests
+foreach name, what : script_tests
 	test(
 		name,
 		find_program('tests' / name + '.sh'),
-		args: [meson.current_source_dir() / dir],
+		args: [meson.current_source_dir() / 'data'],
 		timeout: 120,
 	)
 endforeach

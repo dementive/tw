@@ -57,6 +57,10 @@ users() {
 
 case ${1:-} in
 on)
+	if ! modinfo nvidia_drm >/dev/null 2>&1; then
+		echo "tw-gpu: the driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+		exit 1
+	fi
 	if [ -e "$flag" ]; then
 		port=$(cat "$flag")
 		rm -f "$flag"
@@ -97,12 +101,28 @@ on)
 	;;
 off)
 	gpu=$(gpu_device) || exit 0 # off the bus already, or no such GPU
+	# Only NVIDIA's driver is unloaded here; a GPU that another driver
+	# (nouveau) drives is left alone.
+	driver=$(readlink "$gpu/driver")
+	case ${driver##*/} in
+	'' | nvidia) ;;
+	*)
+		echo "tw-gpu: the NVIDIA GPU is driven by ${driver##*/}, not nvidia; left on" >&2
+		exit 0
+		;;
+	esac
+	# Leave a GPU in use exactly as it is.
+	in_use=$(users)
+	if [ -n "$in_use" ]; then
+		echo "tw-gpu: the NVIDIA GPU is in use by $in_use" >&2
+		exit 0 # nothing went wrong: it just stays on
+	fi
 	if [ -d "$sys/module/nvidia" ]; then
-		# Leave a GPU in use exactly as it is.
-		in_use=$(users)
-		if [ -n "$in_use" ]; then
-			echo "tw-gpu: the NVIDIA GPU is in use by $in_use" >&2
-			exit 0 # nothing went wrong: it just stays on
+		# After a kernel update the running kernel's modules are gone from
+		# the disk until the next boot: what is unloaded now stays unloaded.
+		if ! modinfo nvidia_drm >/dev/null 2>&1; then
+			echo "tw-gpu: the driver is not on the disk for the running kernel; left on until a reboot" >&2
+			exit 0
 		fi
 		# A program that has just exited can take a moment to let go of
 		# what it drew, which nvidia_drm counts as being in use.

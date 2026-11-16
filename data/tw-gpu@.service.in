@@ -1,4 +1,5 @@
-# tw-gpu@on.service loads the NVIDIA driver, tw-gpu@off.service unloads it.
+# tw-gpu@on.service puts the NVIDIA GPU back on the PCI bus and loads its
+# driver; tw-gpu@off.service unloads the driver and takes the GPU off the bus.
 # Started by tw-gpu; tw-gpu.rules lets the person at the computer do that
 # without a password.
 [Unit]

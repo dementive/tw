@@ -168,7 +168,6 @@ struct tw_server {
 	int swipe_axis; /* 0 undecided, 1 sideways (scroll), 2 vertical (workspace) */
 	double swipe_dx, swipe_dy;
 	uint32_t mod; /* what TW_MOD resolves to */
-	struct wl_list keyboards; /* tw_keyboard.link */
 	struct wl_listener new_input;
 	struct wl_listener new_virtual_keyboard;
 	struct wl_listener new_virtual_pointer;
@@ -243,12 +242,6 @@ struct tw_output *output_adjacent(struct tw_output *output, int direction);
 /* `area` is what windows may use on the output, `full` the whole of it.
  * False if the output is NULL or has no room. */
 bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full);
-/*
- * The mode an output should be in now: its preferred one, or on battery the
- * slowest of that size that config.h allows. NULL for an output without
- * modes (a nested or headless one).
- */
-struct wlr_output_mode *output_mode(struct tw_output *output);
 /* Puts every output that is on into that mode. Call when on_battery changed. */
 void outputs_update_mode(struct tw_server *server);
 /*
@@ -367,7 +360,9 @@ void power_init(struct tw_server *server);
 void power_finish(struct tw_server *server);
 
 /* x11.c */
-/* Sets DISPLAY for the programs tw starts, or removes it. Call before any. */
+/* Sets DISPLAY for the programs tw starts, or removes it. Call before the
+ * session's programs start; the power command power_init() may run before
+ * it has no use for X11. */
 void x11_init(struct tw_server *server);
 void x11_finish(struct tw_server *server);
 /* A window closed: its program may have been the last X11 application. */
@@ -390,5 +385,8 @@ void input_finish(struct tw_server *server);
  * after the keyboard or pointer focus changes.
  */
 void pointer_constraint_update(struct tw_server *server);
+/* Gives the pointer to the surface under it now, which may have changed
+ * without the pointer moving. strip_arrange() calls it. */
+void pointer_refocus(struct tw_server *server);
 
 #endif

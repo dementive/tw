@@ -171,6 +171,9 @@ esac
 PATH="$rootbin:\$PATH" TW_SYS="$sys" TW_RUN="$run" TW_BLUETOOTH_CONF="$conf" \\
 	"$data/tw-bluetooth-root" "\$word" 2>>"$journal"
 EOF
+# The drivers are on the disk for the running kernel, unless a test says a
+# kernel update has taken them away.
+printf '#!/bin/sh\n[ ! -e "%s/no-modules" ]\n' "$state" >"$rootbin/modinfo"
 chmod +x "$rootbin"/* "$bin"/*
 
 machine() { # the laptop as it boots with tw installed: no driver, no adapter
@@ -250,6 +253,9 @@ all_on || fail "on failed with a radio that was not blocked"
 bluetooth on || fail "a second on failed"
 all_on || fail "a second on did not leave Bluetooth on"
 [ "$(calls 'restart tw-bluetooth-idle.timer')" = 2 ] || fail "a second on did not start the timer over"
+# The service is started too: an adapter that was there already brings no
+# event that would start it.
+[ "$(calls 'start --no-block bluetooth.service')" = 2 ] || fail "on did not start the Bluetooth service"
 
 # --- Off by itself ------------------------------------------------------------
 # The timer ran out with something connected: nothing happens.
@@ -264,9 +270,15 @@ said '^Bluetooth: on, 2 devices connected.$' || fail "status with two devices co
 disconnect 256
 root idle
 all_on || fail "Bluetooth went off with one of two devices still connected"
+# After a kernel update the drivers are gone from the disk: unloaded now,
+# Bluetooth could not come back until a reboot, so it stays on.
+disconnect 257
+: >"$state/no-modules"
+root idle || fail "idle failed with the drivers gone from the disk"
+all_on || fail "Bluetooth went off although its drivers could not be loaded again"
+rm "$state/no-modules"
 # ... and with nothing connected: off, the service stopped before the
 # modules it has open.
-disconnect 257
 : >"$log"
 root idle || fail "idle failed with nothing connected"
 all_off || fail "Bluetooth stayed on with nothing connected"

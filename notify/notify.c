@@ -9,13 +9,15 @@
  * up its name on the bus and waits for the answer: whatever was sent before
  * that has arrived by then, and whatever is sent after starts a new one.
  *
- * It links against nothing but the Wayland client library. The D-Bus
- * messages are read and written by bus.c, and the text is drawn from
- * pictures of the characters made when tw is built (bake.c). No icons, no
- * buttons, no markup, no sound: a title, a few lines of text, a click.
+ * The D-Bus messages are read and written by bus.c, with no library; the
+ * text is drawn with fontconfig and FreeType. No icons, no buttons, no
+ * markup, no sound: a title, a few lines of text, a click.
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fontconfig/fontconfig.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <poll.h>
@@ -33,12 +35,12 @@
 
 #include "bus.h"
 #include "config.h"
-#include "font.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
 
+#define LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 #define NAME "org.freedesktop.Notifications"
 #define PATH "/org/freedesktop/Notifications"
 
@@ -536,26 +538,175 @@ static bool bus_connect(void) {
 	return true;
 }
 
+/* --- The font -------------------------------------------------------------- */
+
+/*
+ * The font comes from fontconfig, as in any other program: `font` in
+ * config.h first, then whatever fontconfig ranks next for a character it
+ * lacks. It is opened with the first picture, not at startup, so a program
+ * that only asks what tw-notify can do costs no font; it goes when tw-notify
+ * does, which is a second after the last notification.
+ */
+static FT_Library library;
+static FcFontSet *fonts;   /* the font, then those to fall back on; NULL until opened */
+static FT_Face *faces;     /* by place in `fonts`, opened as a character needs them */
+static bool *unusable;     /* fonts that would not open, or that cannot be scaled */
+static int font_px;        /* the size the faces are set to, in pixels */
+static int ascent, line_height; /* of the first font, in pixels */
+
+/* Advances already measured, by character: measuring a line loads each
+ * character once and not once per try. Emptied when the size changes. */
+static struct {
+	uint32_t code;
+	int advance;
+} advances[256];
+
+static void font_close(void) {
+	for (int i = 0; fonts != NULL && i < fonts->nfont; i++) {
+		if (faces[i] != NULL) {
+			FT_Done_Face(faces[i]);
+		}
+	}
+	free(faces);
+	free(unusable);
+	faces = NULL;
+	unusable = NULL;
+	if (fonts != NULL) {
+		FcFontSetDestroy(fonts);
+		fonts = NULL;
+		FT_Done_FreeType(library);
+		FcFini();
+	}
+}
+
+static void font_open(void) {
+	static bool tried;
+	if (tried) {
+		return;
+	}
+	tried = true;
+	FcPattern *pattern = FcNameParse((const FcChar8 *)font);
+	FcResult result;
+	if (pattern != NULL && FcConfigSubstitute(NULL, pattern, FcMatchPattern)) {
+		FcDefaultSubstitute(pattern);
+		fonts = FcFontSort(NULL, pattern, FcTrue, NULL, &result);
+	}
+	if (pattern != NULL) {
+		FcPatternDestroy(pattern);
+	}
+	if (fonts == NULL || fonts->nfont == 0 || FT_Init_FreeType(&library) != 0) {
+		fprintf(stderr, "tw-notify: no font for '%s'\n", font);
+		if (fonts != NULL) {
+			FcFontSetDestroy(fonts);
+			fonts = NULL;
+		}
+		FcFini();
+		return;
+	}
+	faces = calloc((size_t)fonts->nfont, sizeof(*faces));
+	unusable = calloc((size_t)fonts->nfont, sizeof(*unusable));
+	if (faces == NULL || unusable == NULL) {
+		quit(1);
+	}
+}
+
+/* The face of fonts->fonts[i] at the size in use, or NULL. Colour fonts
+ * (emoji) and bitmap fonts are passed over: their pictures come in sizes of
+ * their own and would need scaling. */
+static FT_Face face_get(int i) {
+	if (unusable[i]) {
+		return NULL;
+	}
+	if (faces[i] == NULL) {
+		FcPattern *pattern = fonts->fonts[i];
+		FcChar8 *file;
+		int index = 0;
+		FcBool colour = FcFalse, scalable = FcTrue;
+		FcPatternGetInteger(pattern, FC_INDEX, 0, &index);
+		FcPatternGetBool(pattern, FC_COLOR, 0, &colour);
+		FcPatternGetBool(pattern, FC_SCALABLE, 0, &scalable);
+		if (colour || !scalable ||
+				FcPatternGetString(pattern, FC_FILE, 0, &file) != FcResultMatch ||
+				FT_New_Face(library, (const char *)file, index, &faces[i]) != 0) {
+			faces[i] = NULL;
+			unusable[i] = true;
+			return NULL;
+		}
+		say("font %s", file);
+		FT_Set_Pixel_Sizes(faces[i], 0, (FT_UInt)font_px);
+	}
+	return faces[i];
+}
+
+/* Sets the size in pixels the text is drawn at. */
+static void font_size_set(int size) {
+	if (size == font_px) {
+		return;
+	}
+	font_px = size;
+	memset(advances, 0, sizeof(advances));
+	for (int i = 0; fonts != NULL && i < fonts->nfont; i++) {
+		if (faces[i] != NULL) {
+			FT_Set_Pixel_Sizes(faces[i], 0, (FT_UInt)size);
+		}
+	}
+	/* Without a font only boxes are drawn; they still need lines. */
+	ascent = size;
+	line_height = size * 4 / 3;
+	FT_Face first = fonts != NULL ? face_get(0) : NULL;
+	if (first != NULL) {
+		ascent = (int)((first->size->metrics.ascender + 63) >> 6);
+		line_height = (int)((first->size->metrics.height + 32) >> 6);
+	}
+}
+
+/*
+ * Loads the picture of a character into its face's glyph slot, rendered if
+ * `render`, and returns the slot; NULL without any font. A character no font
+ * has comes out as the first font's box for a missing one.
+ */
+static FT_GlyphSlot glyph_load(uint32_t code, bool render) {
+	if (fonts == NULL) {
+		return NULL;
+	}
+	FT_Face face = NULL;
+	FT_UInt index = 0;
+	for (int i = 0; i < fonts->nfont && index == 0; i++) {
+		FcCharSet *charset;
+		if (FcPatternGetCharSet(fonts->fonts[i], FC_CHARSET, 0, &charset) == FcResultMatch &&
+				FcCharSetHasChar(charset, code) && (face = face_get(i)) != NULL) {
+			index = FT_Get_Char_Index(face, code);
+		}
+	}
+	if (index == 0) {
+		face = face_get(0);
+	}
+	FT_Int32 flags = FT_LOAD_TARGET_LIGHT | (render ? FT_LOAD_RENDER : 0);
+	if (face == NULL || FT_Load_Glyph(face, index, flags) != 0) {
+		return NULL;
+	}
+	return face->glyph;
+}
+
+/* How far a character moves the pen, in 64ths of a pixel. */
+static int advance_of(uint32_t code) {
+	size_t slot = code % LENGTH(advances);
+	if (advances[slot].code != code || advances[slot].advance == 0) {
+		FT_GlyphSlot glyph = glyph_load(code, false);
+		advances[slot].code = code;
+		advances[slot].advance = glyph != NULL ? (int)glyph->advance.x : 0;
+	}
+	return advances[slot].advance;
+}
+
 /* --- Drawing ---------------------------------------------------------------- */
 
 static uint32_t scale = 120; /* of the screen the list is on, in 120ths */
-static const struct font *font = &fonts[0];
 static int buffer_width, buffer_height; /* of the picture, in its own pixels */
 
 /* Logical pixels to the picture's. */
 static int px(int logical) {
 	return (logical * (int)scale + 60) / 120;
-}
-
-static void scale_set(uint32_t value) {
-	scale = value;
-	int wanted = px(font_size);
-	font = &fonts[0];
-	for (size_t i = 1; i < sizeof(fonts) / sizeof(fonts[0]); i++) {
-		if (abs(fonts[i].size - wanted) < abs(font->size - wanted)) {
-			font = &fonts[i];
-		}
-	}
 }
 
 /* The character at *text, which must not be at its end, and moves past it.
@@ -576,22 +727,6 @@ static uint32_t character(const char **text) {
 	return more > 0 ? 0xfffd : code < 0x20 ? ' ' : code;
 }
 
-static const struct font_glyph *glyph_of(uint32_t code) {
-	int low = 0, high = font->count - 1;
-	while (low <= high) {
-		int middle = (low + high) / 2;
-		if (font->glyphs[middle].code == code) {
-			return &font->glyphs[middle];
-		}
-		if (font->glyphs[middle].code < code) {
-			low = middle + 1;
-		} else {
-			high = middle - 1;
-		}
-	}
-	return &font->glyphs[0]; /* the font's box for a character it lacks */
-}
-
 /*
  * How many bytes of `text` fit on one line of `width` (in 64ths of a pixel).
  * A line ends at a line break, and with `words` between two words where it
@@ -606,7 +741,7 @@ static size_t line_fit(const char *text, int width, bool words) {
 		if (code == ' ') {
 			space = start;
 		}
-		pen += glyph_of(code)->advance;
+		pen += advance_of(code);
 		if (pen > width && start > text) {
 			return (size_t)((words && space != NULL && space > text ? space : start) - text);
 		}
@@ -614,17 +749,24 @@ static size_t line_fit(const char *text, int width, bool words) {
 	return (size_t)(at - text);
 }
 
-static void glyph_draw(uint32_t *pixels, const struct font_glyph *glyph, int x, int baseline,
-		uint32_t colour) {
-	const uint8_t *alpha = font->alpha + glyph->offset;
-	for (int row = 0; row < glyph->height; row++) {
-		int at_y = baseline - glyph->top + row;
+/* Draws one character with its pen at x, and returns its advance. */
+static int glyph_draw(uint32_t *pixels, uint32_t code, int x, int baseline, uint32_t colour) {
+	FT_GlyphSlot glyph = glyph_load(code, true);
+	if (glyph == NULL) {
+		return 0;
+	}
+	const FT_Bitmap *bitmap = &glyph->bitmap;
+	if (bitmap->pixel_mode != FT_PIXEL_MODE_GRAY) {
+		return (int)glyph->advance.x;
+	}
+	for (int row = 0; row < (int)bitmap->rows; row++) {
+		int at_y = baseline - glyph->bitmap_top + row;
 		if (at_y < 0 || at_y >= buffer_height) {
 			continue;
 		}
-		for (int column = 0; column < glyph->width; column++) {
-			int at_x = x + glyph->left + column;
-			uint32_t cover = alpha[row * glyph->width + column];
+		for (int column = 0; column < (int)bitmap->width; column++) {
+			int at_x = x + glyph->bitmap_left + column;
+			uint32_t cover = bitmap->buffer[row * bitmap->pitch + column];
 			if (cover == 0 || at_x < 0 || at_x >= buffer_width) {
 				continue;
 			}
@@ -636,6 +778,7 @@ static void glyph_draw(uint32_t *pixels, const struct font_glyph *glyph, int x, 
 			*pixel = mixed;
 		}
 	}
+	return (int)glyph->advance.x;
 }
 
 /* `length` bytes of text from x on, followed by "…" if `cut`. */
@@ -643,12 +786,10 @@ static void text_draw(uint32_t *pixels, int x, int baseline, const char *text, s
 		bool cut, uint32_t colour) {
 	int pen = x * 64;
 	for (const char *at = text; at < text + length;) {
-		const struct font_glyph *glyph = glyph_of(character(&at));
-		glyph_draw(pixels, glyph, (pen + 32) >> 6, baseline, colour);
-		pen += glyph->advance;
+		pen += glyph_draw(pixels, character(&at), (pen + 32) >> 6, baseline, colour);
 	}
 	if (cut) {
-		glyph_draw(pixels, glyph_of(0x2026), (pen + 32) >> 6, baseline, colour);
+		glyph_draw(pixels, 0x2026, (pen + 32) >> 6, baseline, colour);
 	}
 }
 
@@ -674,10 +815,10 @@ static const char *line_draw(uint32_t *pixels, int top, const char *text, bool w
 	rest += strspn(rest, " \t\r\n");
 	bool cut = last && *rest != '\0';
 	if (cut) {
-		length = line_fit(text, width - glyph_of(0x2026)->advance, false);
+		length = line_fit(text, width - advance_of(0x2026), false);
 	}
 	if (pixels != NULL) {
-		text_draw(pixels, edge, top + font->ascent, text, length, cut, colour);
+		text_draw(pixels, edge, top + ascent, text, length, cut, colour);
 	}
 	return rest;
 }
@@ -695,12 +836,12 @@ static int note_draw(const struct note *note, uint32_t *pixels) {
 	}
 	if (note->summary[0] != '\0') {
 		line_draw(pixels, top, note->summary, false, true, colour_title);
-		top += font->line;
+		top += line_height;
 	}
 	const char *text = note->body + strspn(note->body, " \t\r\n");
 	for (int line = 0; line < body_lines && *text != '\0'; line++) {
 		text = line_draw(pixels, top, text, true, line == body_lines - 1, colour_text);
-		top += font->line;
+		top += line_height;
 	}
 	return top + edge - note->y;
 }
@@ -708,6 +849,7 @@ static int note_draw(const struct note *note, uint32_t *pixels) {
 /* Decides where each notification goes, and with that how large the picture
  * is. */
 static void layout(void) {
+	font_size_set(px(font_size));
 	/* The picture's size must be a whole number of logical pixels, or the
 	 * compositor would have to stretch it: at scale 1.25, a multiple of 5. */
 	int step = (int)scale, divisor = 120;
@@ -803,7 +945,7 @@ static const struct zwlr_layer_surface_v1_listener layer_listener = {
 static void scale_preferred(void *data, struct wp_fractional_scale_v1 *fractional,
 		uint32_t value) {
 	if (value != scale && value != 0) {
-		scale_set(value);
+		scale = value;
 		dirty = true;
 	}
 }
@@ -1033,6 +1175,7 @@ static void window_update(void) {
 		}
 		return;
 	}
+	font_open(); /* once; without a font, only the frames are drawn */
 	layout();
 	int width = buffer_width * 120 / (int)scale, height = buffer_height * 120 / (int)scale;
 	bool resized = width != asked_width || height != asked_height;
@@ -1056,6 +1199,7 @@ static void window_update(void) {
 _Noreturn static void quit(int status) {
 	free(in);
 	in = NULL;
+	font_close();
 	if (display != NULL) {
 		wl_display_flush(display);
 		wl_display_disconnect(display);

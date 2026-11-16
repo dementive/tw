@@ -29,29 +29,26 @@ tests run each script against a made-up machine: a directory standing in for
 | --- | --- |
 | `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery decision |
 | `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end |
-| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces, fullscreen, the lock, command-line options, a clean exit |
+| `smoke` | everything a client can observe: sizes, focus, every key binding, workspaces, layer surfaces, fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held |
 | `columns` | windows sharing a column, floating dialogs |
-| `pointer` | pointer focus, click to focus, pointer lock, confinement |
+| `pointer` | pointer focus, click to focus, pointer lock, confinement; a window opening under a resting pointer gets it; while locked, a click without moving reaches no window, and an open menu gives the keyboard up to the lock screen |
 | `outputs` | two monitors: a workspace on each, focus and columns between them |
 | `idle` | screen blanking and inhibitors with a two-second timeout; locking on idle; suspend (a stand-in command) |
 | `x11` | the X11 sockets, starting the helper on demand and stopping it when unused, with a stand-in helper |
 | `clipboard` | a copy outlives its program; an emptied clipboard stays empty; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read |
 | `power` | what tw makes of the power supplies it finds as it starts, and the command it runs |
 | `notify` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, leaving |
-| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice, what it passes on to services, a tw that cannot start |
-| `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, nothing written twice, refusals |
-| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail |
+| `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (a second GPU that is a 3D controller too), what it passes on to services, a tw that cannot start; a GPU left on when nouveau drives it, when tw has every GPU open, and after a kernel update |
+| `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, the performance governor, nothing written twice, refusals |
+| `bluetooth` | `tw-bluetooth` and its root helper: off at boot, on, off by itself and by hand, a program that still has Bluetooth open, every way switching on can fail, staying on after a kernel update |
 | `thunderbolt` | that the Thunderbolt rule is still the kernel guide's and udev accepts it |
 | `install` | `data/post-install.sh`: what it reloads after a real install, and that a staged or rootless one reloads nothing |
-| `iwd` | `tools/iwd.sh`: which networks are copied and how, and that every failed or interrupted trial ends on NetworkManager |
-| `keyring` | `tools/keyring.sh`: the login file comes out and goes back exactly; what `start` does when oo7 is open, locked or broken |
 | `budget` | release build only: idle wakeups and memory, see below |
 
 Several of these were checked by breaking the code under test one way at a
 time and seeing a test fail each time: the clipboard (27 ways), `tw-notify`
 (18), `tw-power` (21), `tw-bluetooth` (38), the accessibility condition and
-its part of `tw-session` (5), `tools/iwd.sh` (16), `tools/keyring.sh` (16),
-the Thunderbolt rule (4). When doing that again: a breakage run that is
+its part of `tw-session` (5), the Thunderbolt rule (4). When doing that again: a breakage run that is
 interrupted leaves a stale program in the scratch copy, and every test then
 fails or hangs for no reason. Rebuild it from clean.
 
@@ -118,6 +115,13 @@ The headless backend sets the limits.
   so the gesture handlers in `input.c` and the swipe functions in
   `window.c` (`strip_swipe_*`, `workspace_snap()`) are untested glue. Keep
   them thin, and put anything with logic in `layout.c`.
+- **Windows that unmap and map again, and popups of windows with a
+  client-drawn shadow.** The test client does neither, so that a remapped
+  window is not left `suspended` or fullscreen, and where a menu is kept
+  on screen for a GTK window with a shadow, are only reasoned from
+  wlroots' source.
+- **A workspace changing during a swipe**, and the cursor theme taken from
+  `XCURSOR_THEME` and `XCURSOR_SIZE`: untested.
 - **The lid switch.** The handler in `input.c` is untested; what it calls
   (`lock_now()`) is tested through locking on idle.
 - **Unplugging an output.** Its outputs cannot be unplugged, so
@@ -242,11 +246,16 @@ the clocks.
 ### Notifications
 
 Notifications from `notify-send` (GLib), `busctl` (systemd) and `dbus-send`
-(libdbus), so three other implementations agree with `bus.c`. Sharp text at
-scale 1 and 1.25, wrapping, the urgent border; one picture drawn per change
-at 1.25. With two notifications showing: 168 kB of its own, 2.6 MB
-resident. From sending a notification to the answer takes 9 ms when
-`tw-notify` has to be started and 5 ms when it runs.
+(libdbus), so three other implementations agree with `bus.c`. Wrapping, the
+urgent border; one picture drawn per change at 1.25. From sending a
+notification to the answer takes 9 ms when `tw-notify` has to be started
+and 5 ms when it runs. (Measured with the font baked into the program,
+before it used fontconfig.)
+
+With fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and
+symbols drawn, each from the first font fontconfig has for it (Noto Sans,
+DejaVu Sans, Noto Sans CJK). About 2.9 MB of its own and 6.2 MB PSS with
+those three fonts open.
 
 Installed, under dbus-broker: the broker logged the other service's entry
 as the duplicate, so tw's entry in `/usr/local` won, and systemd started
@@ -254,8 +263,9 @@ as the duplicate, so tw's entry in `/usr/local` won, and systemd started
 unit with a name of its own, so leaving and being started again a moment
 later do not collide.
 
-Not seen yet: a notification from the Claude app, its window coming forward
-after a click, and a monitor going away while the list is on it.
+Not seen yet: the fontconfig build on a real screen, at scale 1.25; a
+notification from the Claude app, its window coming forward after a click,
+and a monitor going away while the list is on it.
 
 ### The NVIDIA GPU
 
@@ -315,15 +325,3 @@ Nothing. The rule has never met a device: udev accepts it, and that is all.
 The kernel's guide leaves open whether a dock's USB ports and display
 outputs work before the device is approved. [setup.md](setup.md) has the
 dock tried with boltd masked before the package goes.
-
-### Wi-Fi and the keyring tools
-
-- `tools/iwd.sh try`, then `keep`: iwd connected seven seconds after it
-  started, with an address, DNS set in systemd-resolved and power save on;
-  a boot on iwd since. Not seen: the way back (`back`, and with it the
-  interface being given back to the card), and roaming between saved
-  networks.
-- `tools/keyring.sh oo7`, a login on a second console, `start`: the keyring
-  open, a secret stored and read back, the KDE wallet's entries taken over
-  by oo7 itself; a boot with oo7 since. Not seen: whether a program that
-  was signed in before the switch finds its sign-in afterwards.

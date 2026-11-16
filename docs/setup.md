@@ -29,9 +29,8 @@ sudo pacman -S meson ninja gcc git pkgconf wayland wayland-protocols libxkbcommo
     freetype2 fontconfig noto-fonts
 ```
 
-The last three are for the notifications: their text is drawn from the
-system's sans-serif font, at build time, so nothing font-related is needed
-to run. Without them tw builds and `tw-notify` is left out.
+The last three are for the notifications (`tw-notify`). Without
+`freetype2` and `fontconfig` tw builds and `tw-notify` is left out.
 
 Programs tw starts or works with. None is required to build, but each key
 or feature does nothing without its program:
@@ -85,7 +84,7 @@ laptop; look at Bluetooth before installing on a desktop.
 | --- | --- | --- |
 | `-Dbluetooth=false` | on | the machine needs Bluetooth from boot: a Bluetooth keyboard or mouse. Left on, Bluetooth is off until `tw-bluetooth on` |
 | `-Dthunderbolt=false` | on | you want to be asked before a Thunderbolt device is let in |
-| `-Dnotify=disabled` | on where FreeType is installed | you use another notification service |
+| `-Dnotify=disabled` | on where FreeType and fontconfig are installed | you use another notification service |
 
 ### Build and install
 
@@ -356,9 +355,10 @@ startup files: `grep -rn 'xprop\|xdotool\|xset\|xrdb' ~/.config/fish`.
 ### The kernel's memory reserves
 
 Of what `btop` and `free` call "used" right after login, a good part is
-free memory that the kernel holds back (`sh tools/mem.sh` shows it as
-"held back": 285 MB on a 16 GB machine with huge pages on). Two settings
-shrink that to about 140 MB and took 170 MB off the figure:
+free memory that the kernel holds back and nothing uses: 285 MB on a 16 GB
+machine with huge pages on ([g533zw.md](g533zw.md#memory) says how to read
+it off `/proc/meminfo`). Two settings shrink that to about 140 MB and took
+170 MB off the figure:
 
 ```sh
 printf 'vm.min_free_kbytes = 16384\nvm.lowmem_reserve_ratio = 1024 1024 32 0 0\n' |
@@ -452,33 +452,43 @@ password unlocks as you log in. On a machine that came with KDE it takes
 the place of the KDE wallet (`ksecretd`, 53 MB in `btop`), and takes the
 wallet's entries over by itself.
 
+The login unlocks it through `/etc/pam.d/login`, the file a console login
+reads and the lock screen checks your password with. A mistake there locks
+you out of both, so keep a copy and test before you log out:
+
 ```sh
 sudo pacman -S oo7 libsecret
-sudo sh tools/keyring.sh oo7
+sudo cp -p /etc/pam.d/login /etc/pam.d/login.before-oo7
+sudoedit /etc/pam.d/login
 ```
 
-That changes `/etc/pam.d/login`: three lines for oo7 come in, and the KDE
-wallet's go out if they are there. The old file is kept as
-`/etc/pam.d/login.before-oo7`. The lock screen checks your password
-through this same file, so test it at once, with your session still open:
+Delete any line with `pam_kwallet5.so`, and add these three at the end:
+
+```
+-auth       optional     pam_oo7.so
+-session    optional     pam_oo7.so auto_start
+-password   optional     pam_oo7.so
+```
+
+Then have every login start oo7, and test, with your session still open:
+
+```sh
+sudo systemctl --global enable oo7-daemon.service
+```
 
 1. Switch to a text console (Ctrl+Alt+F3), log in, type `exit`, and switch
-   back. If the login is refused, `sudo sh tools/keyring.sh back` puts the
-   file back. Do not log out or reboot before this login has worked.
-2. Switch the running session over, which also checks that oo7 got your
-   password from that login and can store a secret:
-
-   ```sh
-   sh tools/keyring.sh start
-   ```
-
+   back. If the login is refused, put the file back with
+   `sudo cp -p /etc/pam.d/login.before-oo7 /etc/pam.d/login`. Do not log
+   out or reboot before this login has worked.
+2. Log out and in again. Then `secret-tool store --label=test tw test`,
+   type anything, and `secret-tool lookup tw test` prints it back: oo7 is
+   open. `secret-tool clear tw test` removes it.
 3. Lock the screen (Mod+Alt+L) and unlock it.
-4. Quit a program that keeps a sign-in and open it again. If it asks you to
-   sign in, do: it then keeps that in oo7.
+4. A program that keeps a sign-in may ask for it once more; it then keeps
+   it in oo7.
 
-`sh tools/keyring.sh` says which keyring is running and whether it is
-open. To go back: `sudo sh tools/keyring.sh back`, then log out and in.
-That only helps while the keyring you had before is still installed.
+To go back: put the old file back as in step 1,
+`sudo systemctl --global disable oo7-daemon.service`, and log out and in.
 
 ### Log in on the text console instead of a login manager
 
@@ -517,31 +527,35 @@ always there.
 
 NetworkManager and the `wpa_supplicant` it starts are two programs of
 42 MB in `btop`, and NetworkManager fetches a page every five minutes to
-see whether the internet is there. iwd does Wi-Fi by itself. Try it before
-deciding:
+see whether the internet is there. iwd does Wi-Fi by itself, gets its own
+addresses, and hands DNS to systemd-resolved, which CachyOS runs already
+(`systemctl is-active systemd-resolved` says `active`).
+
+Do this from a terminal you can stay at: the network is away until iwd has
+joined. iwd does not read NetworkManager's networks, so have the Wi-Fi
+password at hand.
 
 ```sh
 sudo pacman -S iwd iw
-sudo sh tools/iwd.sh try
+printf '[General]\nEnableNetworkConfiguration=true\n' | sudo install -Dm644 /dev/stdin /etc/iwd/main.conf
+sudo systemctl disable --now NetworkManager
+sudo systemctl enable --now iwd
+iwctl station wlan0 scan
+iwctl station wlan0 connect <network>
 ```
 
-That copies the Wi-Fi networks NetworkManager knows to iwd, passwords
-included, stops NetworkManager, starts iwd, and waits up to a minute for
-the internet to be reachable. The network is away for some seconds. If it
-does not come back through iwd, or you interrupt the script, it starts
-NetworkManager again by itself. Either way nothing lasts past a reboot:
-NetworkManager is still what starts at boot.
-
-If it says the internet is reachable through iwd, use the machine for a
-while, then make it permanent, or go back:
+`iwctl station list` names the card if it is not `wlan0`. Once joined,
+iwd remembers the network and joins it by itself from then on. To go
+back:
 
 ```sh
-sudo sh tools/iwd.sh keep
-sudo sh tools/iwd.sh back
+sudo systemctl disable --now iwd
+sudo iw phy phy0 interface add wlan0 type managed
+sudo systemctl enable --now NetworkManager
 ```
 
-`sh tools/iwd.sh` says which of the two is running. With iwd, Wi-Fi is
-handled with `iwctl` where it was `nmcli`:
+The middle line is needed because iwd replaces the card's network
+interface with its own, which goes when iwd stops.
 
 | Command | What it does |
 | --- | --- |
@@ -561,8 +575,7 @@ NetworkManager or set that up first.
 With the three steps above done, nothing of KDE runs in a tw session.
 Removing it frees about 1.1 GB of disk and no memory. Reboot once first and
 see that the login, the Wi-Fi and your sign-ins are all there: with KDE and
-NetworkManager gone, `tools/iwd.sh back` and `tools/keyring.sh back` have
-nothing to go back to.
+NetworkManager gone, there is nothing to go back to.
 
 ```sh
 sudo pacman -D --asexplicit vulkan-tools mpv ttf-hack ttf-fira-sans
@@ -660,6 +673,6 @@ are already in `subprojects/`.
 | the session is locked and no lock screen comes | any key starts the locker again. If none comes, swaylock is failing: what it says is on the console tw was started from |
 | Xwayland keeps running | [Keep the shell from starting Xwayland](#keep-the-shell-from-starting-xwayland) |
 | the NVIDIA GPU will not go off | `tw-gpu status`, then `journalctl -b -u tw-gpu@off` names who has it open |
-| a program does not stay signed in | `sh tools/keyring.sh` says whether a keyring is running and open |
-| where the memory goes | `sh tools/mem.sh`, and [g533zw.md](g533zw.md#memory) on how to read it |
-| what the battery draw is made of | `sh tools/power.sh` on battery; `sudo sh tools/power-root.sh` for the idle draw |
+| `tw-gpu` or `tw-bluetooth` says its driver "is not on the disk" | a kernel update removed the running kernel's modules; reboot. Until then the GPU or Bluetooth is left as it is rather than switched off for good |
+| a program does not stay signed in | `secret-tool lookup` as in [the keyring step](#the-keyring-oo7); `journalctl --user -u oo7-daemon` |
+| where the memory goes | [g533zw.md](g533zw.md#memory) on how to read `/proc/meminfo` and `btop` |

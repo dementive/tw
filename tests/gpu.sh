@@ -25,6 +25,12 @@ bin=$tmp/bin         # stand-ins for tw-gpu: systemctl
 rootbin=$tmp/rootbin # stand-ins for tw-gpu-root: systemctl, modprobe
 log=$tmp/log
 mkdir -p "$bin" "$rootbin" "$run" "$tmp/user" "$tmp/home"
+# The driver is on the disk for the running kernel, unless a test says a
+# kernel update has taken it away.
+for dir in "$bin" "$rootbin"; do
+	printf '#!/bin/sh\n[ ! -e "%s/no-modules" ]\n' "$tmp" >"$dir/modinfo"
+	chmod +x "$dir/modinfo"
+done
 : >"$log"
 
 fail() {
@@ -169,7 +175,7 @@ cat >"$bin/report" <<EOF
 #!/bin/sh
 echo "offload=\${__NV_PRIME_RENDER_OFFLOAD-} vulkan=\${__VK_LAYER_NV_optimus-}" \\
 	"glx=\${__GLX_VENDOR_LIBRARY_NAME-} egl=\${__EGL_VENDOR_LIBRARY_FILENAMES-}" \\
-	"icd=\${VK_DRIVER_FILES-} driver=\$([ -d "$sys/module/nvidia" ] && echo loaded || echo absent)" \\
+	"icd=\${VK_LOADER_DRIVERS_DISABLE-} driver=\$([ -d "$sys/module/nvidia" ] && echo loaded || echo absent)" \\
 	"args=\$*" >>"$tmp/report"
 EOF
 chmod +x "$bin/driver" "$bin/pci" "$bin/systemctl" "$bin/report"
@@ -193,11 +199,11 @@ gpu() {
 		PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" TW_RUN="$run" HOME="$tmp/home" \
 		XDG_RUNTIME_DIR="$tmp/user" XDG_DATA_DIRS="$tmp/share" \
 		WLR_DRM_DEVICES=/dev/dri/card1 TW_GPU_PAUSE=0.2 \
-		__EGL_VENDOR_LIBRARY_FILENAMES=/mesa.json VK_DRIVER_FILES=/intel.json \
+		__EGL_VENDOR_LIBRARY_FILENAMES=/mesa.json VK_LOADER_DRIVERS_DISABLE='*nvidia*' \
 		"$@"
 }
 on_nvidia='offload=1 vulkan=NVIDIA_only glx=nvidia egl= icd= driver=loaded'
-on_intel='offload= vulkan= glx= egl=/mesa.json icd=/intel.json'
+on_intel='offload= vulkan= glx= egl=/mesa.json icd=[*]nvidia[*]' # a regular expression
 
 # --- tw-gpu: status and off ---------------------------------------------------
 machine
@@ -356,6 +362,13 @@ loaded || fail "login switched off a GPU it should have left alone"
 [ "$(calls 'start tw-gpu@off')" = "$before" ] || fail "login tried to switch off a GPU it should have left alone"
 gpu "$data/tw-gpu" off || fail "off failed after login"
 
+# With no GPUs named, tw opened them all (one GPU, or TW_ALL_GPUS=1): the
+# GPU stays on after the program, and nothing is left waiting for it.
+gpu env -u WLR_DRM_DEVICES "$data/tw-gpu" run report all-gpus
+wait_until "the switch-off check to finish" settled
+loaded || fail "a GPU that tw has open was switched off"
+wait_until "off after a run with every GPU open" gpu "$data/tw-gpu" off
+
 # --- The GPU cannot be switched on: the program still runs -----------------------
 : >"$tmp/on-fails"
 status=0
@@ -364,7 +377,8 @@ gpu "$data/tw-gpu" run sh -c 'report fallback; exit 3' 2>"$tmp/err" || status=$?
 expect_report "a program whose GPU could not be switched on" "^$on_intel driver=absent args=fallback\$"
 grep -q 'could not switch' "$tmp/err" || fail "run did not say the GPU could not be switched on"
 if gpu "$data/tw-gpu" on 2>/dev/null; then fail "on claimed success"; fi
-rm "$tmp/on-fails" "$tmp/user/tw-gpu.keep"
+[ ! -e "$tmp/user/tw-gpu.keep" ] || fail "a failed on left the GPU marked as kept on"
+rm "$tmp/on-fails"
 wait_until "the switch-off check to finish" settled
 
 # --- launch: only desktop entries that ask for the discrete GPU ------------------
@@ -494,6 +508,19 @@ kernel_pid=$!
 process 775 nvidia-powerd /dev/nvidiactl # NVIDIA's daemon: never counts as use
 process 900 foot /dev/pts/3
 
+# After a kernel update the driver is no longer on the disk: unloaded now,
+# it could not be loaded again until a reboot, so it stays.
+: >"$tmp/no-modules"
+root off || fail "the helper failed when the driver was not on the disk"
+[ -z "$ran" ] && loaded && on_bus || fail "the helper unloaded a driver that could not be loaded again: $ran"
+if root on; then fail "the helper switched on with no driver on the disk"; fi
+rm "$tmp/no-modules"
+# A GPU that another driver drives (nouveau) is not the helper's to take away.
+ln -sfn ../../../../bus/pci/drivers/nouveau "$nvidia/driver"
+root off || fail "the helper failed on a GPU driven by nouveau"
+[ -z "$ran" ] && on_bus || fail "the helper took a GPU driven by nouveau off the bus: $ran"
+ln -sfn ../../../../bus/pci/drivers/nvidia "$nvidia/driver"
+
 # Off: driver unloaded, GPU off the bus, and a note of the port above it.
 root off || fail "the helper failed to switch the GPU off"
 [ "$ran" = "$unload" ] || fail "helper off ran: $ran"
@@ -613,7 +640,7 @@ for file in glvnd/egl_vendor.d/10_nvidia.json glvnd/egl_vendor.d/50_mesa.json \
 	echo '{}' >"$tmp/usr/$file"
 done
 mesa_egl=$tmp/usr/glvnd/egl_vendor.d/50_mesa.json
-mesa_vulkan=$tmp/usr/vulkan/icd.d/intel_hasvk_icd.json:$tmp/usr/vulkan/icd.d/intel_icd.json
+mesa_vulkan='*nvidia*' # by the driver manifests' names
 session() { # [VAR=value...]: what tw-session decides, on one line
 	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$sys" TW_SHARE="$tmp/usr" TW_RUN="$run" \
 		TW_SESSION_PRINT=1 "$@" sh "$data/tw-session" | tr '\n' ';'
@@ -625,7 +652,7 @@ step='command -v tw-gpu >/dev/null 2>&1 && tw-gpu login >/dev/null 2>&1 &'
 a11y='NO_AT_BRIDGE=1 GTK_A11Y=none;told to services=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y'
 expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...]
 	description=$1
-	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_DRIVER_FILES=$4;once tw is up=$5;$a11y;"
+	want="WLR_DRM_DEVICES=$2;__EGL_VENDOR_LIBRARY_FILENAMES=$3;VK_LOADER_DRIVERS_DISABLE=$4;once tw is up=$5;$a11y;"
 	shift 5
 	got=$(session "$@")
 	[ "$got" = "$want" ] || fail "tw-session, $description: $got"
@@ -633,6 +660,15 @@ expect_session() { # <description> <devices> <egl> <vulkan> <step> [VAR=value...
 
 machine
 expect_session "nothing on the NVIDIA GPU" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+# Many laptops call the second GPU a 3D controller, which has no boot_vga.
+echo 0x030200 >"$nvidia/class"
+rm "$nvidia/boot_vga"
+expect_session "the NVIDIA GPU as a 3D controller" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+"$bin/driver" unload
+expect_session "a 3D controller without its driver" /dev/dri/card1 "$mesa_egl" "$mesa_vulkan" "$step"
+"$bin/driver" load
+echo 0x030000 >"$nvidia/class"
+echo 0 >"$nvidia/boot_vga"
 # Its driver unloaded: there is no second card, and tw must still be told to
 # use the first one only, or it would open the second when the driver loads.
 "$bin/driver" unload

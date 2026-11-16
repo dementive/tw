@@ -75,8 +75,9 @@ expect_line game "pointer motion 21 30" "the cursor to reappear where the game a
 press super+q
 wait_until "the game to close" grep -q '^closed' "$run_dir/game.log"
 start_client box --confine-pointer
-pointer_to 700 60
-expect_line box "pointer enter 60 60" "the pointer to enter the confining window"
+# It opens where the game was, under the pointer, which it gets at once
+# without the pointer moving.
+expect_line box "pointer enter 21 30" "a window opening under the pointer to get it"
 expect_line box "pointer confined" "the focused window under the pointer to confine it"
 pointer_by 500 0
 pointer_by 0 500
@@ -90,9 +91,18 @@ press super+j
 expect_line box "pointer unconfined" "moving the focus away to end the confinement"
 
 # --- Locked session: the pointer reaches only the lock screen -------------------
-before=$(count a '^pointer\|^button')
+# The pointer rests on a window as the session locks, as it does when the
+# session locks on idle: a click without moving it must not reach the window.
+pointer_to 100 100
+sleep 0.2
+buttons() { cat "$run_dir/a.log" "$run_dir/game.log" "$run_dir/box.log" | grep -c '^button' || true; }
+buttons_before=$(buttons)
 start_client locker --lock
 expect_line locker locked "the session to lock"
+click
+sleep 0.3
+[ "$(buttons)" = "$buttons_before" ] || fail "a click without moving the pointer reached a window behind the lock"
+before=$(count a '^pointer\|^button')
 pointer_to 100 100
 expect_line locker "pointer enter 100 100" "the pointer to go to the lock screen"
 click
@@ -101,6 +111,17 @@ sleep 0.3
 has a '^pointer\|^button' "$before" || fail "a window got pointer input while the session was locked"
 press Return
 expect_line locker unlocked "the lock client to unlock"
+
+# --- An open menu does not keep the keyboard through a lock ---------------------
+# A menu holds the keyboard and the pointer while it is open. When the session
+# locks with one open, the lock screen still gets the keys: the menu closes.
+start_client menu --menu
+expect_line menu "menu shown" "the menu to open"
+start_client locker2 --lock
+expect_line locker2 locked "the session to lock with a menu open"
+expect_line menu "menu closed" "the lock to close the menu"
+press Return
+expect_line locker2 unlocked "the lock screen to get the keyboard although a menu was open"
 
 stop_tw
 echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session"

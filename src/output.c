@@ -75,7 +75,12 @@ static const struct tw_output_rule *output_rule(const char *name) {
 	return rest;
 }
 
-struct wlr_output_mode *output_mode(struct tw_output *output) {
+/*
+ * The mode an output should be in now: its preferred one, or on battery the
+ * slowest of that size that config.h allows. NULL for an output without
+ * modes (a nested or headless one).
+ */
+static struct wlr_output_mode *output_mode(struct tw_output *output) {
 	struct wlr_output_mode *best = wlr_output_preferred_mode(output->wlr_output);
 	if (best == NULL || !output->server->on_battery || battery_refresh_hz <= 0) {
 		return best;
@@ -117,12 +122,21 @@ void outputs_update_mode(struct tw_server *server) {
 	}
 }
 
-bool output_set_power(struct tw_output *output, bool on) {
+/*
+ * Turns an output on, in the mode it should be in now, or off; a scale above
+ * 0 is set as well. A dark screen is the one failure this must not have, so
+ * a mode the output refuses gives way to its preferred one, and that to the
+ * mode it had.
+ */
+static bool output_commit(struct tw_output *output, bool on, float scale) {
 	struct wlr_output_mode *mode = on ? output_mode(output) : NULL;
 	for (;;) {
 		struct wlr_output_state state;
 		wlr_output_state_init(&state);
 		wlr_output_state_set_enabled(&state, on);
+		if (scale > 0) {
+			wlr_output_state_set_scale(&state, scale);
+		}
 		if (mode != NULL) {
 			wlr_output_state_set_mode(&state, mode);
 		}
@@ -131,9 +145,13 @@ bool output_set_power(struct tw_output *output, bool on) {
 		if (done || mode == NULL) {
 			return done;
 		}
-		/* On in the mode it had beats staying dark. */
-		mode = NULL;
+		struct wlr_output_mode *preferred = wlr_output_preferred_mode(output->wlr_output);
+		mode = mode != preferred ? preferred : NULL;
 	}
+}
+
+bool output_set_power(struct tw_output *output, bool on) {
+	return output_commit(output, on, 0);
 }
 
 static void handle_frame(struct wl_listener *listener, void *data) {
@@ -147,6 +165,9 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 	struct tw_server *server = output->server;
 	struct wlr_scene_output *scene_output =
 		wlr_scene_get_scene_output(server->scene, output->wlr_output);
+	if (scene_output == NULL) {
+		return; /* left dark; see handle_new_output() */
+	}
 
 	/* A scroll animation moves one step per frame of the output showing the
 	 * strip, and asks for the next frame only while it is still moving. */
@@ -223,21 +244,9 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		}
 	}
 
-	struct wlr_output_state state;
-	wlr_output_state_init(&state);
-	wlr_output_state_set_enabled(&state, true);
-	wlr_output_state_set_scale(&state, rule->scale);
-	struct wlr_output_mode *mode = output_mode(output);
-	if (mode != NULL) {
-		wlr_output_state_set_mode(&state, mode);
+	if (!output_commit(output, true, rule->scale)) {
+		wlr_log(WLR_ERROR, "output %s: could not be turned on", wlr_output->name);
 	}
-	if (!wlr_output_commit_state(wlr_output, &state) &&
-			mode != wlr_output_preferred_mode(wlr_output)) {
-		/* It refused the slower mode for running on battery. */
-		wlr_output_state_set_mode(&state, wlr_output_preferred_mode(wlr_output));
-		wlr_output_commit_state(wlr_output, &state);
-	}
-	wlr_output_state_finish(&state);
 
 	output->frame.notify = handle_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
@@ -255,6 +264,11 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		wlr_output_layout_add_auto(server->output_layout, wlr_output) :
 		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	if (layout_output == NULL || scene_output == NULL) {
+		/* Out of memory. The output stays dark; its frame handler copes. */
+		wlr_log(WLR_ERROR, "output %s: out of memory, left dark", wlr_output->name);
+		return;
+	}
 	wlr_scene_output_layout_add_output(server->scene_layout, layout_output, scene_output);
 }
 

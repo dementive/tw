@@ -7,7 +7,8 @@
  *   scale <n>                                           with --layer: the
  *                      screen's scale in 120ths, as soon as it is told
  *   lock configure <w>x<h>, locked, lock denied         with --lock
- *   keyboard enter | keyboard leave                     keyboard focus
+ *   keyboard enter | keyboard leave                     keyboard focus; "with
+ *                      <n> keys held" if it is told keys are down as it enters
  *   key <code> <pressed|released>                       keys it received
  *   pointer enter <x> <y> | pointer leave               pointer focus
  *   output enter <name> | output leave <name>           which monitor shows it
@@ -24,6 +25,9 @@
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
+ *   --menu        a window that opens a menu holding the keyboard and the
+ *                 pointer (a popup grab) when it first gets the keyboard:
+ *                 "menu shown", and "menu closed" when the compositor ends it
  *
  * Asking for the focus (xdg-activation):
  *   --token <file>     a window that, when it gets the keyboard, turns that
@@ -100,6 +104,10 @@ static struct zwp_locked_pointer_v1 *locked_pointer;
 static struct ext_session_lock_v1 *session_lock;
 static struct wl_surface *surface;
 static struct wl_buffer *buffer;
+static struct xdg_surface *window_xdg_surface;
+static bool open_menu, menu_opened;
+static struct wl_surface *menu_surface;
+static struct wl_buffer *menu_buffer;
 
 /* Every monitor, to report by name which ones show the surface. */
 static struct {
@@ -126,7 +134,8 @@ static void say(const char *line) {
 	fflush(stdout);
 }
 
-static void draw(int32_t width, int32_t height) {
+static void draw_on(struct wl_surface *target, struct wl_buffer **current,
+		int32_t width, int32_t height) {
 	int32_t stride = width * 4;
 	size_t size = (size_t)stride * (size_t)height;
 
@@ -146,17 +155,66 @@ static void draw(int32_t width, int32_t height) {
 	munmap(pixels, size);
 
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
-	struct wl_buffer *old = buffer;
-	buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_XRGB8888);
+	struct wl_buffer *old = *current;
+	*current = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_XRGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 
-	wl_surface_attach(surface, buffer, 0, 0);
-	wl_surface_damage_buffer(surface, 0, 0, width, height);
-	wl_surface_commit(surface);
+	wl_surface_attach(target, *current, 0, 0);
+	wl_surface_damage_buffer(target, 0, 0, width, height);
+	wl_surface_commit(target);
 	if (old != NULL) {
 		wl_buffer_destroy(old);
 	}
+}
+
+static void draw(int32_t width, int32_t height) {
+	draw_on(surface, &buffer, width, height);
+}
+
+/* --- A menu ----------------------------------------------------------------- */
+
+static void menu_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
+	xdg_surface_ack_configure(xdg_surface, serial);
+	draw_on(menu_surface, &menu_buffer, 100, 50);
+	say("menu shown");
+}
+
+static const struct xdg_surface_listener menu_surface_listener = {
+	.configure = menu_configure,
+};
+
+static void popup_configure(void *data, struct xdg_popup *popup, int32_t x, int32_t y,
+		int32_t width, int32_t height) {
+}
+
+static void popup_done(void *data, struct xdg_popup *popup) {
+	say("menu closed");
+}
+
+static void popup_repositioned(void *data, struct xdg_popup *popup, uint32_t token) {
+}
+
+static const struct xdg_popup_listener popup_listener = {
+	.configure = popup_configure,
+	.popup_done = popup_done,
+	.repositioned = popup_repositioned,
+};
+
+/* A menu as a right click opens one: it takes the keyboard and the pointer
+ * until it is closed. `serial` is that of the input event behind it. */
+static void menu_open(uint32_t serial) {
+	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(wm_base);
+	xdg_positioner_set_size(positioner, 100, 50);
+	xdg_positioner_set_anchor_rect(positioner, 10, 10, 1, 1);
+	menu_surface = wl_compositor_create_surface(compositor);
+	struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, menu_surface);
+	xdg_surface_add_listener(xdg_surface, &menu_surface_listener, NULL);
+	struct xdg_popup *popup = xdg_surface_get_popup(xdg_surface, window_xdg_surface, positioner);
+	xdg_popup_add_listener(popup, &popup_listener, NULL);
+	xdg_popup_grab(popup, seat, serial);
+	xdg_positioner_destroy(positioner);
+	wl_surface_commit(menu_surface);
 }
 
 /* --- Asking for the focus --------------------------------------------------- */
@@ -347,7 +405,16 @@ static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_
 
 static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
 		struct wl_surface *wl_surface, struct wl_array *keys) {
-	say("keyboard enter");
+	if (keys->size > 0) {
+		printf("keyboard enter with %zu keys held\n", keys->size / sizeof(uint32_t));
+		fflush(stdout);
+	} else {
+		say("keyboard enter");
+	}
+	if (open_menu && !menu_opened) {
+		menu_opened = true;
+		menu_open(serial);
+	}
 	if (issue_token && !token_requested) {
 		token_requested = true;
 		request_token(serial);
@@ -755,6 +822,7 @@ int main(int argc, char *argv[]) {
 	forge_token = strcmp(mode, "--activate-forged") == 0;
 	lock_pointer = strcmp(mode, "--lock-pointer") == 0;
 	confine_pointer = strcmp(mode, "--confine-pointer") == 0;
+	open_menu = strcmp(mode, "--menu") == 0;
 
 	display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -798,6 +866,7 @@ int main(int argc, char *argv[]) {
 		ext_session_lock_surface_v1_add_listener(lock_surface, &lock_surface_listener, NULL);
 	} else {
 		struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, surface);
+		window_xdg_surface = xdg_surface;
 		xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
 		struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg_surface);
 		xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);

@@ -271,5 +271,12 @@ expect_line locker2 unlocked "the lock client to unlock"
 expect_keyboard h enter "the keyboard to return to the focused window"
 expect_state h "$on" "windows to come back after unlocking"
 
+# Every binding above that moved the focus did so with its key still down.
+# The window that got the focus is not told that key is held: its release
+# never reaches it, and it would be stuck down.
+if grep -l 'keys held' "$run_dir"/*.log >/dev/null 2>&1; then
+	fail "a window was told a binding's key is held as it got the focus"
+fi
+
 stop_tw
 echo "ok: no autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"

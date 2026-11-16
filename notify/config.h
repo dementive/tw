@@ -16,10 +16,14 @@ enum {
 	note_margin = 12,   /* to the top and the right edge of the screen */
 	note_padding = 10,  /* around the text */
 	note_border = 1,
-	font_size = 14,     /* the height of the text */
+	font_size = 14,     /* of the text, in pixels */
 	body_lines = 4,     /* under the title; what does not fit ends in "…" */
 	max_shown = 5,      /* at once; the oldest goes to make room */
 };
+
+/* The font, as fontconfig names one ("DejaVu Sans", "monospace:bold").
+ * Characters it lacks come from whichever font fontconfig picks next. */
+static const char font[] = "sans-serif";
 
 /* Colours, as 0xRRGGBB. */
 static const uint32_t colour_background = 0x1d1f21;

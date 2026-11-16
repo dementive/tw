@@ -19,8 +19,9 @@ sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
 conf=${TW_BLUETOOTH_CONF:-/usr/local/lib/modprobe.d/tw-bluetooth.conf}
 # Present while Bluetooth is on because this helper switched it on. The
 # Bluetooth service starts only while it is there (tw-bluetooth-service.conf),
-# and only then does Bluetooth go off by itself: a machine where it is on
-# from boot is left alone.
+# and only then does Bluetooth go off by itself. An adapter whose driver is
+# not in $conf is there from boot, but its service waits for `on` all the
+# same.
 flag=${TW_RUN:-/run}/tw-bluetooth
 service=bluetooth.service
 timer=tw-bluetooth-idle.timer
@@ -49,6 +50,11 @@ unblock() {
 		[ "$(cat "$switch/type" 2>/dev/null)" = bluetooth ] || continue
 		[ "$(cat "$switch/soft" 2>/dev/null)" = 0 ] || echo 0 >"$switch/soft"
 	done
+}
+
+# The drivers to load: every "blacklist" line of $conf names one.
+drivers() {
+	sed -n 's/^[[:space:]]*blacklist[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$conf" 2>/dev/null | tr '\n' ' '
 }
 
 switch_off() {
@@ -82,7 +88,7 @@ switch_off() {
 
 case ${1:-} in
 on)
-	drivers=$(sed -n 's/^[[:space:]]*blacklist[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$conf" 2>/dev/null | tr '\n' ' ')
+	drivers=$(drivers)
 	if [ -z "$drivers" ]; then
 		echo "tw-bluetooth: $conf names no driver to load" >&2
 		exit 1
@@ -101,6 +107,10 @@ on)
 		tries=$((tries + 1))
 		if [ "$tries" -ge 25 ]; then
 			echo "tw-bluetooth: no Bluetooth adapter appeared after loading: $drivers" >&2
+		for driver in $drivers; do
+			modinfo "$driver" >/dev/null 2>&1 ||
+				echo "tw-bluetooth: $driver is not on the disk for the running kernel; reboot after a kernel update" >&2
+		done
 			switch_off
 			exit 1
 		fi
@@ -116,6 +126,10 @@ on)
 	unblock
 	# Off again once nothing has been connected for a while.
 	systemctl restart "$timer"
+	# systemd starts the service when an adapter appears. One that was there
+	# already, because an earlier off could not unload its driver, brings no
+	# such event.
+	systemctl start --no-block "$service"
 	;;
 off)
 	switch_off
@@ -123,6 +137,11 @@ off)
 idle)
 	[ -e "$flag" ] || exit 0
 	connected && exit 0
+	# After a kernel update the running kernel's modules are gone from the
+	# disk until the next boot: unloaded now, Bluetooth could not come back.
+	for driver in $(drivers); do
+		modinfo "$driver" >/dev/null 2>&1 || exit 0
+	done
 	switch_off
 	;;
 *)

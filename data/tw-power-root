@@ -4,7 +4,8 @@
 # starts; the only input is the word from the unit's name.
 #
 # A profile is three settings, the same three power-profiles-daemon writes,
-# so that no daemon has to stay around to write them:
+# so that no daemon has to stay around to write them (and the CPU governor,
+# where the performance one would refuse the second):
 #   the platform's own profile, which is fans and power limits
 #   how each CPU weighs speed against power (energy_performance_preference)
 #   the older hint to the same end (energy_perf_bias)
@@ -64,6 +65,14 @@ for name in $platform; do
 	fi
 done
 for policy in "$sys"/devices/system/cpu/cpufreq/policy*; do
+	# Under the performance governor the CPU refuses every preference but
+	# performance (intel_pstate and amd-pstate alike), so the profile takes
+	# the governor that weighs the two, as power-profiles-daemon does.
+	if [ "$preference" != performance ] &&
+		[ "$(cat "$policy/scaling_governor" 2>/dev/null)" = performance ] &&
+		offered "$policy/scaling_available_governors" powersave; then
+		put "$policy/scaling_governor" powersave
+	fi
 	offered "$policy/energy_performance_available_preferences" "$preference" &&
 		put "$policy/energy_performance_preference" "$preference"
 done

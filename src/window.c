@@ -515,6 +515,9 @@ void strip_arrange(struct tw_server *server) {
 	}
 	/* Visibility decides whether a video player may keep the screen on. */
 	idle_update_inhibited(server);
+	/* What is under the pointer may have changed with the windows, without
+	 * the pointer moving: a lock, another workspace, a window closing. */
+	pointer_refocus(server);
 }
 
 bool strip_animate(struct tw_output *output) {
@@ -548,9 +551,23 @@ bool strip_animate(struct tw_output *output) {
 
 /* --- Touchpad swipe --------------------------------------------------------- */
 
+/* The workspace a swipe began on, which may no longer be the active one. */
+static struct tw_workspace *swiping_workspace(struct tw_server *server) {
+	for (size_t i = 0; i < TW_WORKSPACES; i++) {
+		if (server->workspaces[i].swiping) {
+			return &server->workspaces[i];
+		}
+	}
+	return NULL;
+}
+
 void strip_swipe_begin(struct tw_server *server) {
 	struct tw_workspace *workspace = active_workspace(server);
 	struct tw_output *output = output_focused(server);
+	struct tw_workspace *earlier = swiping_workspace(server);
+	if (earlier != NULL) {
+		earlier->swiping = false; /* its end never came */
+	}
 	workspace->swiping = true;
 	workspace->view_velocity = 0;
 	if (output != NULL) {
@@ -559,9 +576,9 @@ void strip_swipe_begin(struct tw_server *server) {
 }
 
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec) {
-	struct tw_workspace *workspace = active_workspace(server);
+	struct tw_workspace *workspace = swiping_workspace(server);
 	struct wlr_box area, full;
-	if (!workspace->swiping || !workspace_boxes(server, workspace, &area, &full)) {
+	if (workspace == NULL || !workspace_boxes(server, workspace, &area, &full)) {
 		return;
 	}
 	/* The strip follows the fingers, so the view moves the other way. Keep a
@@ -628,9 +645,9 @@ static void workspace_snap(struct tw_workspace *workspace, const struct wlr_box 
 }
 
 void strip_swipe_end(struct tw_server *server, bool cancelled) {
-	struct tw_workspace *workspace = active_workspace(server);
+	struct tw_workspace *workspace = swiping_workspace(server);
 	struct wlr_box area, full;
-	if (!workspace->swiping) {
+	if (workspace == NULL) {
 		return;
 	}
 	workspace->swiping = false;
@@ -674,14 +691,19 @@ void focus_update(struct tw_server *server) {
 	if (surface == server->seat->keyboard_state.focused_surface) {
 		return;
 	}
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	/* An open menu holds the keyboard and the pointer (a grab), and would
+	 * keep them through the change, through a lock too. It closes. */
+	wlr_seat_keyboard_end_grab(server->seat);
+	wlr_seat_pointer_end_grab(server->seat);
 	if (surface == NULL) {
 		wlr_seat_keyboard_notify_clear_focus(server->seat);
-	} else if (keyboard != NULL) {
-		wlr_seat_keyboard_notify_enter(server->seat, surface,
-			keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
 	} else {
-		wlr_seat_keyboard_notify_enter(server->seat, surface, NULL, 0, NULL);
+		/* No keys are said to be held. The one down is most often the
+		 * binding's that moved the focus, whose release goes to nobody, and
+		 * a client told of it would take it as stuck. */
+		struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+		wlr_seat_keyboard_notify_enter(server->seat, surface, NULL, 0,
+			keyboard != NULL ? &keyboard->modifiers : NULL);
 	}
 	/* A pointer lock belongs to the window with the keyboard. */
 	pointer_constraint_update(server);
@@ -807,8 +829,9 @@ static void window_unmap(struct tw_window *window) {
 	x11_window_closed(server);
 
 	/* If the client maps again it starts from a fresh initial commit. */
+	/* `suspended` stays: wlroots keeps the state it last sent, and so the
+	 * cache has to as well. */
 	window->width = window->height = 0;
-	window->suspended = false;
 	window->fullscreen = false;
 	if (window->fullscreen_applied) {
 		window->fullscreen_applied = false;
@@ -875,6 +898,11 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	struct wlr_box area, full;
 
 	if (toplevel->base->initial_commit) {
+		/* A window that was mapped before may still be sent the fullscreen
+		 * state it had then. */
+		if (toplevel->scheduled.fullscreen && !toplevel->requested.fullscreen) {
+			wlr_xdg_toplevel_set_fullscreen(toplevel, false);
+		}
 		window->floating = wants_float(toplevel);
 		decoration_apply(window);
 		struct tw_server *server = window->server;
@@ -1060,15 +1088,17 @@ static void handle_popup_commit(struct wl_listener *listener, void *data) {
 	}
 
 	/* Keep the popup on the output: hand wlroots the output box, expressed
-	 * relative to the window the popup belongs to. */
+	 * in the coordinates of the window's surface. popup_tree is at the
+	 * window's geometry, which a client with a shadow drawn around its
+	 * window puts away from the surface's corner. */
 	struct tw_window *window = popup_window(xdg_popup);
 	struct wlr_box area, full;
 	int lx, ly;
 	if (window != NULL && window->workspace != NULL &&
 			workspace_boxes(popup->server, window->workspace, &area, &full) &&
 			wlr_scene_node_coords(&window->popup_tree->node, &lx, &ly)) {
-		area.x -= lx;
-		area.y -= ly;
+		area.x -= lx - window->xdg_toplevel->base->geometry.x;
+		area.y -= ly - window->xdg_toplevel->base->geometry.y;
 		wlr_xdg_popup_unconstrain_from_box(xdg_popup, &area);
 	}
 	wlr_xdg_surface_schedule_configure(xdg_popup->base);

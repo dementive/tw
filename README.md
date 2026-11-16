@@ -70,7 +70,7 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | --- | --- |
 | Keys, gaps, column widths, timeouts, the terminal and other programs | [src/config.h](src/config.h) |
 | Screens (scale, position) and whether the machine may sleep | [src/machines/](src/machines/), one file per machine; the build picks the one named after the machine's board |
-| Notifications: size, colours, how long they stay | [notify/config.h](notify/config.h); the font with `-Dnotify_font='DejaVu Sans'` |
+| Notifications: font, size, colours, how long they stay | [notify/config.h](notify/config.h) |
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |
 
@@ -97,8 +97,7 @@ override the screen-off, suspend and X11 timeouts.
 - **Notifications** appear top right, above fullscreen windows too: a title
   and up to four lines. A click closes one; a left click also tells its
   program, which can bring its window forward. An urgent one has a red
-  border and stays until clicked. No icons, buttons or sounds, and only
-  Latin letters and common punctuation: anything else shows as a small box.
+  border and stays until clicked. No icons, buttons, sounds or emoji.
 - **Screen readers** find no programs to talk to: the session keeps the
   accessibility bus off, which saves three background programs. Log in
   with `TW_A11Y=1` set to keep it.
@@ -115,16 +114,11 @@ Commands that come with it:
 
 ## After a system update
 
-wlroots and the one library under it whose name changes from release to
-release are built into tw, so an update should not stop it starting. The
-rest of what it links has kept its names for years. If it ever does not
-start after an update, `tw-session` says so; build it again from clean:
-
-```sh
-meson setup --wipe build-release
-meson compile -C build-release
-sudo meson install -C build-release --no-rebuild --skip-subprojects
-```
+wlroots and libdisplay-info, the two libraries under tw whose names change
+from release to release, are built into it, so an update should not stop
+it starting. If it ever does, `tw-session` says so, and
+[setup.md](docs/setup.md#6-after-a-system-update-and-when-something-is-wrong)
+has the rebuild.
 
 ## More
 

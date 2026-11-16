@@ -65,13 +65,12 @@ what it would do and starts nothing.
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
 | `src/power.c` | On battery: learns from udev when the power cable moves, slows the outputs, runs the power-profile command, warns and suspends on a low battery |
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
-| `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation), `bus.c` (D-Bus messages with no library; pure, unit tested), `bake.c` (build tool that draws the font into `font.h`), `config.h` |
+| `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation, text through fontconfig and FreeType), `bus.c` (D-Bus messages with no library; pure, unit tested), `config.h` |
 | `data/tw-session` | Session start script: picks the GPUs, points programs at the keyring, keeps the accessibility bus off, says what to do when tw cannot start |
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |
 | `data/` (rest) | udev rules, the Bluetooth blacklist, timer and service drop-in, the accessibility drop-in, the Thunderbolt rule, the login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify`, and `post-install.sh`, which `meson install` runs to have the system read all of it |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/` | `lib.sh` starts tw headless with a private runtime directory and PATH; `client.c`, `keys.c` and `clip.c` are the test programs; one `.sh` per area. [docs/testing.md](docs/testing.md) lists them |
-| `tools/` | For the owner to run: `mem.sh` (where the memory is), `power.sh` and `power-root.sh` (where the watts go), `iwd.sh` and `keyring.sh` (moving a machine off NetworkManager and the KDE wallet) |
 
 How it hangs together, in one paragraph; [docs/design.md](docs/design.md)
 has the rest. Each workspace is a strip of columns, each output shows one
@@ -187,15 +186,19 @@ machines. What they have decided, so that it is not put to them again:
   autostart of the session from the shell (they type `tw-session`).
 - Fixes at the root: a workaround that shadows or papers over the cause was
   rejected as "hacky".
+- Ordinary means over clever ones: `tw-notify` loads its font through
+  fontconfig like any program; a font drawn into the binary at build time
+  was taken out. Measuring and migration scripts are not kept in the tree
+  once their job is done.
 - On their laptop: sleep stays off, huge pages stay on, and the list of
   kernel settings they took and declined is closed. See
   [docs/g533zw.md](docs/g533zw.md#decisions).
 
 When they ask where the machine's memory goes, account for the whole
-machine before looking at tw: `sh tools/mem.sh` first, then
-[docs/g533zw.md](docs/g533zw.md#memory), which has the split, how `btop`'s
-figures mislead, and everything already tried. Most of what `btop` calls
-"used" at startup is the kernel, and no program is behind it.
+machine before looking at tw: [docs/g533zw.md](docs/g533zw.md#memory) has
+how to split `/proc/meminfo`, how `btop`'s figures mislead, and everything
+already tried. Most of what `btop` calls "used" at startup is the kernel,
+and no program is behind it.
 
 Never suspend the machine, run `sudo`, `pacman` or `meson install`, or type
 their password: those steps are theirs. Give the exact command instead, and

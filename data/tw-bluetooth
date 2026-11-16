@@ -77,7 +77,9 @@ status)
 		1) state="1 device connected" ;;
 		*) state="$count devices connected" ;;
 		esac
-		if [ ! -e "$flag" ]; then
+		if [ ! -e "$flag" ] && ! systemctl is-active --quiet bluetooth.service; then
+			echo "Bluetooth: an adapter is there, but the Bluetooth service is held off until 'tw-bluetooth on'."
+		elif [ ! -e "$flag" ]; then
 			echo "Bluetooth: on since the machine started, $state. It stays on until 'tw-bluetooth off'."
 		elif [ "$count" = 0 ]; then
 			echo "Bluetooth: on, $state. It goes off when that has lasted ten minutes."

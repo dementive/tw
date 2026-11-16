@@ -97,6 +97,18 @@ expect_settings "balanced" "balanced balance_performance, 6,"
 [ "$(grep -c 'start tw-power@' "$log")" = 3 ] || fail "each profile did not start its unit once"
 
 # --- Machines that differ -----------------------------------------------------
+# One left on the performance governor, which refuses any other preference:
+# the profile moves it to powersave first.
+machine
+for policy in "$cpus"/cpufreq/policy*; do
+	echo performance >"$policy/scaling_governor"
+	echo 'performance powersave' >"$policy/scaling_available_governors"
+done
+power saver || fail "saver failed on the performance governor"
+expect_settings "saver on the performance governor" "quiet power, 15,"
+[ "$(cat "$cpus"/cpufreq/policy*/scaling_governor | sort -u)" = powersave ] ||
+	fail "the performance governor was left in place"
+
 # One whose most frugal profile is called low-power gets that one.
 machine
 echo "low-power quiet balanced performance" >"$platform/platform_profile_choices"

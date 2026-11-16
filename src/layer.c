@@ -20,7 +20,6 @@ struct tw_layer_surface {
 	struct tw_server *server;
 	struct wlr_layer_surface_v1 *layer_surface;
 	struct wlr_scene_layer_surface_v1 *scene;
-	bool mapped;
 	/* Set from unmap until the next initial commit. A configure sent in that
 	 * window would carry a serial wlroots is about to forget, and a client
 	 * that acked it would be killed with a protocol error. */
@@ -46,7 +45,7 @@ static void layers_update_keyboard(struct tw_server *server) {
 	struct tw_layer_surface *best = NULL, *surface;
 	wl_list_for_each(surface, &server->layer_surfaces, link) {
 		const struct wlr_layer_surface_v1_state *state = &surface->layer_surface->current;
-		if (!surface->mapped ||
+		if (!surface->layer_surface->surface->mapped ||
 				state->keyboard_interactive !=
 					ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE ||
 				state->layer < ZWLR_LAYER_SHELL_V1_LAYER_TOP) {
@@ -115,14 +114,12 @@ void layers_output_destroyed(struct tw_server *server, struct wlr_output *output
 
 static void handle_map(struct wl_listener *listener, void *data) {
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, map);
-	surface->mapped = true;
 	layers_arrange(surface->server);
 	strip_arrange(surface->server);
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, unmap);
-	surface->mapped = false;
 	surface->awaiting_initial_commit = true;
 	layers_arrange(surface->server);
 	strip_arrange(surface->server);

@@ -234,7 +234,10 @@ int main(int argc, char *argv[]) {
 	/* Shared-memory buffers always; GPU buffers when the renderer has a GPU.
 	 * This is wlr_renderer_init_wl_display() spelled out, to keep the
 	 * dmabuf global for the scene (see output_init()). */
-	wlr_renderer_init_wl_shm(server.renderer, server.display);
+	if (!wlr_renderer_init_wl_shm(server.renderer, server.display)) {
+		wlr_log(WLR_ERROR, "failed to offer shared-memory buffers");
+		goto teardown_base;
+	}
 	if (wlr_renderer_get_texture_formats(server.renderer, WLR_BUFFER_CAP_DMABUF) != NULL &&
 			wlr_renderer_get_drm_fd(server.renderer) >= 0) {
 		server.linux_dmabuf =

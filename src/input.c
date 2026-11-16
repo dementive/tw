@@ -33,7 +33,6 @@
 #define BINDING_MODS (WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO)
 
 struct tw_keyboard {
-	struct wl_list link; /* tw_server.keyboards */
 	struct tw_server *server;
 	struct wlr_keyboard *wlr_keyboard;
 	/* Keycodes whose press ran a binding; their release is swallowed too,
@@ -166,7 +165,6 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&keyboard->modifiers.link);
 	wl_list_remove(&keyboard->key.link);
 	wl_list_remove(&keyboard->destroy.link);
-	wl_list_remove(&keyboard->link);
 	free(keyboard);
 }
 
@@ -206,7 +204,6 @@ static void new_keyboard(struct tw_server *server, struct wlr_keyboard *wlr_keyb
 	keyboard->destroy.notify = handle_keyboard_destroy;
 	wl_signal_add(&wlr_keyboard->base.events.destroy, &keyboard->destroy);
 
-	wl_list_insert(&server->keyboards, &keyboard->link);
 }
 
 static void handle_new_virtual_keyboard(struct wl_listener *listener, void *data) {
@@ -318,6 +315,23 @@ static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 	/* wlroots drops duplicate enter/motion events for us. */
 	wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+}
+
+void pointer_refocus(struct tw_server *server) {
+	/* Not in the middle of a click or a drag: the button's release goes to
+	 * where its press went. */
+	if (server->cursor == NULL || server->seat->pointer_state.button_count > 0) {
+		return;
+	}
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	/* Over nothing, as before: no cursor to set. That keeps the cursor
+	 * theme unloaded until the pointer first moves. */
+	if (surface == NULL && server->seat->pointer_state.focused_surface == NULL) {
+		return;
+	}
+	pointer_update(server, (uint32_t)now_ms());
 }
 
 /*
@@ -640,11 +654,15 @@ static void handle_request_set_shape(struct wl_listener *listener, void *data) {
 }
 
 void input_init(struct tw_server *server) {
-	wl_list_init(&server->keyboards);
 
 	server->cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
-	server->cursor_manager = wlr_xcursor_manager_create(NULL, 24);
+	/* The theme and size programs are told, so that the pointer looks the
+	 * same over a window as over the empty desktop. */
+	const char *size = getenv("XCURSOR_SIZE");
+	int cursor_size = size != NULL ? atoi(size) : 0;
+	server->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"),
+		cursor_size > 0 ? (uint32_t)cursor_size : 24);
 
 	server->cursor_motion.notify = handle_cursor_motion;
 	wl_signal_add(&server->cursor->events.motion, &server->cursor_motion);
@@ -742,4 +760,7 @@ void input_finish(struct tw_server *server) {
 	wl_list_remove(&server->request_set_shape.link);
 	wlr_xcursor_manager_destroy(server->cursor_manager);
 	wlr_cursor_destroy(server->cursor);
+	/* Outputs going away later in the teardown still arrange the strip. */
+	server->cursor_manager = NULL;
+	server->cursor = NULL;
 }

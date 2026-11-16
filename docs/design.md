@@ -79,6 +79,17 @@ differ only while a dialog is focused. Focus has two parts, both derived by
 
 Change `workspace->focused`, `server->active`, `server->keyboard_layer` or
 the lock state, then call `focus_update()`. Nothing else sends focus events.
+When the keyboard moves it ends any grab first: an open menu holds the
+keyboard and the pointer, and wlroots would otherwise keep them on the menu
+through the change, a lock included. The surface that gets the keyboard is
+told no key is held, since the key that changed the focus belonged to a
+binding and its release goes to nobody.
+
+The pointer's focus follows the windows, not only the mouse:
+`strip_arrange()` ends with `pointer_refocus()`, which gives the pointer to
+whatever is under it now (unless a button is held). Without that, a click
+after a lock, a workspace change or a window closing went to the window
+that had been under the pointer before.
 
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event: a token
@@ -279,8 +290,7 @@ without a display; the battery's next announcement comes soon enough.
 
 `tw-notify` shows notifications. It is a program of its own in `notify/`
 that shares no code with tw and talks to it as any layer-shell client
-would. It is built on three decisions, each of which is what makes it small
-(168 kB of its own while showing two notifications).
+would. Two decisions keep it small.
 
 **It runs only while there is something to show.** Its D-Bus service file
 makes the session bus start it when a program sends a notification or asks
@@ -294,21 +304,23 @@ between is shown, and the name asked for again. Ids start from the clock,
 so a program still holding the id of a notification from an earlier
 `tw-notify` cannot close somebody else's.
 
-**It links against libc and the Wayland client library, nothing else.** The
-D-Bus messages are read and written by `bus.c`: the login line, `Hello`,
+**It speaks D-Bus by itself.** The messages are read and written by
+`bus.c`, with no D-Bus library: the login line, `Hello`,
 `RequestName`, the four methods of `org.freedesktop.Notifications`, `Ping`,
 an empty `GetAll`, `Introspect`, and the signals. Everything read off the
 socket is checked against the bytes that are there; `tests/bus_test.c` is
 mostly about messages that are cut short or damaged. Signals go to the
 program that sent the notification and to nobody else.
 
-**It loads no font.** `bake.c` runs when tw is built and draws the
-characters of one font (`-Dnotify_font`, by default what fontconfig calls
-sans-serif) at `font_size` for five screen scales into `font.h`: Latin with
-its accented letters, and common punctuation. They end up as read-only data
-in the program (320 kB of its 390 kB), which costs no memory of its own.
-What that gives up: any other character is drawn as the font's "missing"
-box, and there is no bold, no markup and no right-to-left text.
+**Text.** The font is `font` in `notify/config.h`, found through
+fontconfig and drawn with FreeType, so any character some installed font
+has is shown: fontconfig's fallback list is walked for each character a
+font lacks. Colour (emoji) and bitmap fonts are passed over, since their
+pictures come in fixed sizes. Both libraries are opened with the first
+picture, not at startup, so a program that only asks for the capabilities
+costs no font. With fonts loaded `tw-notify` holds about 3 MB of its own,
+most of it fontconfig's list of fonts; it is gone a second after the last
+notification. There is no bold, no markup and no right-to-left text.
 
 **The window.** The list is one layer surface on the overlay layer, top
 right, drawn into a shared-memory picture that `tw-notify` unmaps as soon as
@@ -386,12 +398,17 @@ alone is not enough: NVIDIA's libraries load the driver through their setuid
 `install` commands for a module with soft dependencies, which `nvidia`
 has). With no NVIDIA GPU on the bus the driver itself refuses to load.
 
-**`tw-session`** does three things for this. It names the GPUs tw may use in
+**`tw-session`** does three things for this. A GPU, for it, is any display
+controller on the PCI bus (class `0x03`): VGA, but also 3D (`0x0302`),
+which is what the NVIDIA GPU of many laptops calls itself and which has no
+`boot_vga` file. It names the GPUs tw may use in
 `WLR_DRM_DEVICES` whenever the machine has a second GPU, be it loaded,
 without its driver, or switched off, because wlroots opens a GPU that
 appears later only when that variable is unset; so the GPU can come and go
 under a running tw. It keeps programs on the first GPU
-(`__EGL_VENDOR_LIBRARY_FILENAMES`, `VK_DRIVER_FILES`), so that none of them
+(`__EGL_VENDOR_LIBRARY_FILENAMES`, and `VK_LOADER_DRIVERS_DISABLE='*nvidia*'`,
+which goes by the driver manifest's name and so survives a Mesa update
+during the session), so that none of them
 grabs the NVIDIA GPU while it is on for another. And once tw is up it runs
 `tw-gpu login`, unless a monitor is on the NVIDIA GPU.
 
@@ -412,6 +429,14 @@ have changed. That is the only polling in all of this. It runs only while
 the GPU is on although nothing asked for it, and it is also what waits for
 a login screen, which keeps the GPU open for some seconds after tw has the
 screen.
+
+The helper leaves alone a GPU that another driver than NVIDIA's has
+(nouveau), and one whose driver is no longer on the disk: after a kernel
+update the running kernel's modules are gone until the next boot, and a
+driver unloaded then could not be loaded again. `tw-gpu` then keeps it on
+and says to reboot. `tw-gpu` also keeps the GPU on whenever tw has it open:
+with no GPUs named in `WLR_DRM_DEVICES` (one GPU, or `TW_ALL_GPUS=1`)
+wlroots opened them all.
 
 Switching on has a trap: the kernel announces the GPU before a driver can
 bind to it, udev loads the driver in answer, that load fails ("probe
@@ -445,6 +470,10 @@ the block back to what it was when the adapter was last there
 (systemd-rfkill) and would undo it; once it has seen the block lifted, "not
 blocked" is what it puts back from then on.
 
+`on` also starts the service itself at the end, since an adapter that was
+there already (an earlier `off` that could not unload its driver) brings
+no event that would start it.
+
 **Off** stops `bluetooth.service` and unloads every module that holds the
 Bluetooth core and then the core, in up to five passes half a second apart:
 the sound service keeps a Bluetooth socket open until it has seen the
@@ -467,7 +496,9 @@ service. A start that the condition refuses is one line in the journal.
 ten minutes, with no process waiting for that. The kernel keeps each
 connection as a device next to its adapter (`hci0:256`); a udev rule starts
 the timer over whenever one is removed, and when the timer runs out the
-helper (`idle`) switches off unless a connection exists. Both only while
+helper (`idle`) switches off unless a connection exists, or the drivers
+are no longer on the disk for the running kernel (after a kernel update,
+until the next boot). Both only while
 `/run/tw-bluetooth` is there, so a machine that has Bluetooth on from boot
 (built with `-Dbluetooth=false`, or before its first reboot) is left alone.
 A second udev rule lets a USB adapter sleep (`power/control` to `auto`),
@@ -494,9 +525,11 @@ three power-profiles-daemon writes before it stays for the session:
 | balanced | `balanced` | `balance_performance` | 6 |
 | performance | `performance` | `performance` | 0 |
 
-Nothing else in cpufreq or intel_pstate moves with the daemon's profiles,
-and ASUS's `throttle_thermal_policy` follows the platform's profile by
-itself. `tw-power` has them written by a root helper through a oneshot
+Under the `performance` governor intel_pstate and amd-pstate refuse every
+preference but `performance`, so `saver` and `balanced` move such a CPU to
+`powersave` first, as the daemon does. Nothing else in cpufreq or
+intel_pstate moves with the daemon's profiles, and ASUS's
+`throttle_thermal_policy` follows the platform's profile by itself. `tw-power` has them written by a root helper through a oneshot
 unit, the way `tw-gpu` does its switching, and nothing stays running. A
 machine that lacks one of the settings is not given it, and a setting that
 already reads as wanted is not written.

@@ -20,7 +20,7 @@
 # do that, so that part is done by the system unit tw-gpu@.service, which a
 # polkit rule lets you start.
 #
-# On a machine with no NVIDIA GPU every command here just runs the program.
+# On a machine with no NVIDIA GPU, run and launch just run the program.
 set -u
 
 sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
@@ -68,8 +68,11 @@ render_node_ready() {
 	done
 }
 
-# True if tw itself drives a monitor with this GPU: then it stays on.
+# True if tw itself has this GPU open: then it stays on. tw-session names
+# the GPUs tw may use whenever there is more than one; with none named,
+# wlroots opened them all (one GPU, or TW_ALL_GPUS=1).
 drives_a_monitor() {
+	[ -n "${WLR_DRM_DEVICES:-}" ] || return 0
 	for card in "$1"/drm/card[0-9]*; do
 		case ":${WLR_DRM_DEVICES:-}:" in
 		*":/dev/dri/${card##*/}:"*) return 0 ;;
@@ -99,6 +102,11 @@ gpu_off() {
 	systemctl start tw-gpu@off.service 2>/dev/null
 	! gpu_device >/dev/null
 }
+
+# False after a kernel update, until the next boot: the running kernel's
+# modules are gone from the disk, so a driver unloaded now cannot be loaded
+# again.
+driver_on_disk() { modinfo nvidia_drm >/dev/null 2>&1; }
 
 # How much uses the driver, as a string that changes when a user comes or goes.
 use_count() { cat "$sys"/module/nvidia*/refcnt 2>/dev/null | tr '\n' ' '; }
@@ -134,12 +142,13 @@ run)
 	if gpu_on; then
 		# The session keeps programs on the other GPU with the first two;
 		# the rest are NVIDIA's way of asking for theirs.
-		unset __EGL_VENDOR_LIBRARY_FILENAMES VK_DRIVER_FILES
+		unset __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE
 		export __NV_PRIME_RENDER_OFFLOAD=1
 		export __VK_LAYER_NV_optimus=NVIDIA_only
 		export __GLX_VENDOR_LIBRARY_NAME=nvidia
 	else
 		echo "tw-gpu: could not switch the NVIDIA GPU on; running without it" >&2
+		driver_on_disk || echo "tw-gpu: its driver is not on the disk for the running kernel; reboot after a kernel update" >&2
 	fi
 	exec "$@"
 	;;
@@ -165,6 +174,7 @@ retry) # internal: the GPU is still in use by something not started here
 			device=$(gpu_device) || exit 0
 			drives_a_monitor "$device" && exit 0
 			loaded || exit 1 # no driver and still not off: nothing to wait for
+			driver_on_disk || exit 1 # the root helper will not unload it
 			sleep "$pause"
 			[ "$(use_count)" = "$before" ] || break
 		done
@@ -190,7 +200,9 @@ on)
 	exec 9>"$lock"
 	flock -s 9
 	if ! gpu_on; then
+		rm -f "$keep"
 		echo "tw-gpu: could not switch the NVIDIA GPU on" >&2
+		driver_on_disk || echo "tw-gpu: its driver is not on the disk for the running kernel; reboot after a kernel update" >&2
 		exit 1
 	fi
 	;;

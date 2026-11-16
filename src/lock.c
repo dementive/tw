@@ -25,7 +25,6 @@
 
 struct tw_lock {
 	struct tw_server *server;
-	struct wlr_session_lock_v1 *session_lock;
 	/* Parent of the lock surfaces; destroying it removes them all. */
 	struct wlr_scene_tree *tree;
 	struct wl_list surfaces; /* tw_lock_surface.link */
@@ -220,7 +219,6 @@ static void handle_new_lock(struct wl_listener *listener, void *data) {
 		return;
 	}
 	lock->server = server;
-	lock->session_lock = session_lock;
 	lock->tree = tree;
 	wl_list_init(&lock->surfaces);
 
