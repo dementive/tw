@@ -10,7 +10,8 @@ This file is what a change has to know and keep. The rest is in `docs/`:
 | --- | --- |
 | [docs/design.md](docs/design.md) | changing a part: how each one works and why |
 | [docs/testing.md](docs/testing.md) | judging what a test proves: coverage, what no test reaches, what has been seen on real hardware and what has not |
-| [docs/setup.md](docs/setup.md) | a change needs a new program or a step done by hand: the owner's guide to a new machine |
+| [docs/setup.md](docs/setup.md) | a change needs a new program or a step done by hand: the owner's guide to installing tw on a machine |
+| [docs/system.md](docs/system.md) | the owner asks about slimming the system around tw: services, kernel settings, replacing KDE's parts. Not tw; optional |
 | [docs/g533zw.md](docs/g533zw.md) | the owner asks about memory, battery or sleep on their laptop: measurements, what was tried, what they decided |
 
 ## Build, test, run
@@ -169,7 +170,8 @@ drop-in leaves its old self behind on every machine that has tw. Renaming
 one is its own change, with the cleanup said in `docs/setup.md`.
 
 **The docs are part of a change.** A new program or manual step goes in
-`docs/setup.md`. How a part works goes in `docs/design.md`, not here.
+`docs/setup.md`, and one outside tw that only makes the system smaller in
+`docs/system.md`. How a part works goes in `docs/design.md`, not here.
 Something seen on a real machine for the first time, or found to be
 untestable, goes in `docs/testing.md`. A measurement or a decision about
 the owner's laptop goes in `docs/g533zw.md`. Keep this file to what every

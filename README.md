@@ -27,8 +27,9 @@ Then pick "tw" at the login screen, or log in on a text console and type
 (Mod is Alt there).
 
 [docs/setup.md](docs/setup.md) is the whole of a new machine: packages,
-the machine's own settings, what to check after installing, and the
-optional steps that make the system around tw small.
+the machine's own settings, and what to check after installing.
+[docs/system.md](docs/system.md) has the optional steps that make the
+system around tw small.
 
 ## Keys
 
@@ -83,7 +84,7 @@ override the screen-off, suspend and X11 timeouts.
   and the session locks; closing the lid locks too. A window that inhibits
   idling (a playing video) holds the screen on while it is visible.
 - **Sleep.** Off until the machine has been seen to wake from one; see
-  [setup.md](docs/setup.md#5-sleep).
+  [setup.md](docs/setup.md#3-sleep).
 - **On battery** every screen runs at 60 Hz and the machine is set to its
   power-saver profile; plugging in brings back the full rate and the
   balanced profile. The screen may blink once as it changes. There is no
@@ -117,7 +118,7 @@ Commands that come with it:
 wlroots and libdisplay-info, the two libraries under tw whose names change
 from release to release, are built into it, so an update should not stop
 it starting. If it ever does, `tw-session` says so, and
-[setup.md](docs/setup.md#6-after-a-system-update-and-when-something-is-wrong)
+[setup.md](docs/setup.md#4-after-a-system-update-and-when-something-is-wrong)
 has the rebuild.
 
 ## More
@@ -125,6 +126,7 @@ has the rebuild.
 | | |
 | --- | --- |
 | [docs/setup.md](docs/setup.md) | a new machine, start to finish, and what to do when something is wrong |
+| [docs/system.md](docs/system.md) | optional: a small CachyOS around tw, and replacing KDE's keyring, login and Wi-Fi |
 | [docs/design.md](docs/design.md) | how tw works, for changing it |
 | [docs/testing.md](docs/testing.md) | what the tests cover, what they cannot, what has been seen on real hardware |
 | [docs/g533zw.md](docs/g533zw.md) | the laptop tw was written on: memory and battery measurements, decisions |

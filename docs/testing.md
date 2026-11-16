@@ -99,7 +99,7 @@ however many processes have them open.
 - A program that only asks X11 a question starts Xwayland, which tw stops
   again half a minute later. Two are known: fish's `done` plugin, which
   runs `xprop` each time a shell starts when `DISPLAY` is set
-  ([setup.md](setup.md) says how to remove it), and the Claude desktop app,
+  ([system.md](system.md#keep-the-shell-from-starting-xwayland) says how to remove it), and the Claude desktop app,
   which connects to X11 for a moment as it starts. To find another one,
   open a terminal in a private headless tw run with `-d`, giving it the
   environment of a terminal from the real session, and look for "started
@@ -157,171 +157,26 @@ The headless backend sets the limits.
 
 ## Seen on a real machine
 
-All on the G533ZW, CachyOS, November 2026.
+What has been seen to work outside the tests, all on the G533ZW (CachyOS,
+November 2026), and what has not been seen yet. Take a line out of the
+last column once it has been seen; the figures that go with these are in
+[g533zw.md](g533zw.md).
 
-### The session
+| Area | Seen | Not seen yet |
+| --- | --- | --- |
+| Session | login from a login screen and from a text console, keyring unlocked in both; a boot with no login manager; Chromium and Electron keep their logins (`GNOME_DESKTOP_SESSION_ID`); the accessibility bus stays off (systemd logs the unmet `ConditionEnvironment=!NO_AT_BRIDGE`); lock and unlock through the edited `/etc/pam.d/login`; `meson install` reloading systemd, polkit and the user's systemd; the built-in libdisplay-info reading the panel's EDID as the system's does | `exec tw-session`; the rebuild hint in `tw-session`; a login on the build with libdisplay-info built in; the lock fixes of November 15 (clicks and open menus during a lock) |
+| X11 | with xwayland-satellite 0.8.3 and Xwayland 24.1: both stopped after `xdpyinfo` once the idle time ran out and started again on the next; kept up by `xprop -spy`, by a sandboxed client (`bwrap --unshare-net`), by an open `vkcube --wsi xcb`; in the real session, gone 43 s after the Claude app's start-up connection | |
+| Clipboard | in a headless tw with real programs: a copy from foot outliving foot and pasted into another foot; `wl-copy --foreground`; a PNG byte for byte; `wl-copy --clear`; no wakeup while holding a copy | the installed build in daily use; copies from Chromium, GTK or Qt; a copy through xwayland-satellite, and tw stopping that helper while it owns the clipboard |
+| Battery | announcements of an unchanged battery and charger every 35 to 110 s, acted on only when something changed; a made-up battery running down with real announcements: one warning, suspends at 5%, 4% and 2% and none on the charger; at a login on battery, the panel at 60 Hz from its first modeset and power-saver; at a login on mains, `tw-power balanced` without a password prompt | the panel changing mode while tw runs, and whether the screen blinks; a USB-C charger as a supply; the root helper writing the real `/sys`; a real suspend from a low battery; a wake-up told from the clocks |
+| Notifications | `notify-send`, `busctl` and `dbus-send` all agree with `bus.c`; wrapping, the urgent border, one picture per change; under dbus-broker, tw's entry in `/usr/local` winning and each start a transient unit of its own; with fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and symbols, each from the first font that has them | the fontconfig build on a real screen at 1.25; a notification from the Claude app and its window coming forward after a click; a monitor going away under the list |
+| NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go | a window on the real screen drawn by the GPU; a monitor on it; suspend while it is off; a machine whose GPU is a 3D controller; the guard after a kernel update |
+| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine) |
+| Thunderbolt | udev accepts the rule; nothing more | any device at all; whether a dock's USB ports and display outputs work before it is approved |
 
-- Login from a login screen and from a text console (`tw-session` typed
-  after logging in), keyring unlocked in both; a boot with no login manager
-  at all.
-- Chromium and Electron programs keep their login with
-  `GNOME_DESKTOP_SESSION_ID` set.
-- The accessibility bus stays off: at login the portal leaves it alone, and
-  when the Claude app asks for it systemd logs "skipped, unmet condition
-  check ConditionEnvironment=!NO_AT_BRIDGE", the app comes up as usual and
-  no launcher is running afterwards.
-- Lock and unlock with swaylock through the edited `/etc/pam.d/login`.
-
-- `sudo meson install` ending with its reloads: systemd reloaded, polkit
-  restarted and the user's systemd reloaded within a third of a second,
-  with nothing said on the terminal.
-
-- The libdisplay-info built into tw gives the same make and model for the
-  panel's EDID as the system's library does (a small program linked
-  against each, reading `/sys/class/drm/card1-eDP-1/edid`).
-
-Not seen yet: `exec tw-session`; the rebuild hint in `tw-session`; a login
-on the build that has libdisplay-info built in. wlroots calls it as the DRM
-backend starts, which no test does.
-
-### X11
-
-With xwayland-satellite 0.8.3 and Xwayland 24.1: after `xdpyinfo` both were
-gone when the idle time ran out, Xwayland along with the helper, and the
-next `xdpyinfo` started them again. `xprop -spy` kept them up, through a
-window closing too, and they went after it had left and the next window
-closed. The same from inside `bwrap --unshare-net`, whose connection is
-indeed missing from `/proc/net/unix`. `vkcube --wsi xcb` kept them up while
-its window was open. In the real session: the Claude app started, the
-helper two seconds later, and 43 seconds after that neither it nor Xwayland
-was running.
-
-### The clipboard
-
-In a headless tw, with real programs: a word selected in foot with the
-mouse and copied with Ctrl+Shift+C was read (five formats, kept once: 8
-bytes), was still there after foot was killed, and was pasted into a second
-foot, so the window side works in both directions. `wl-copy --foreground`
-kept running (under `wl-clip-persist` it lost the clipboard at once). A PNG
-came back byte for byte. `wl-copy --clear` left the clipboard empty.
-
-Measured there: tw holds 28 kB more with a line of text copied, 20.4 MB
-with a text of 20 MB that `wl-copy` offers in five formats
-(`wl-clip-persist` held 98 MB for it) and is back down after the next,
-small copy. In five seconds of offering a copy with nothing happening tw
-did not wake once.
-
-The rule for a program that dies while being read came out of running the
-test over and over. A first version believed the kernel closes a dying
-program's connection before its pipe; it is the other way round, and a
-program made to die in the second of its three formats left the cut-short
-one on offer in 11 of 300 tries. With the rule as it is now: none in 600.
-
-Not seen yet: the installed build in the daily session; a copy from a
-Chromium, GTK or Qt program, which offer more formats than foot does; a
-copy made through xwayland-satellite, and tw stopping that helper while it
-owns the clipboard.
-
-### On battery
-
-- The battery and the charger each announce a change every 35 to 110
-  seconds with nothing changed; tw noticed a made-up charger going offline
-  at the next announcement and ran each command once.
-- A made-up battery running down, with real announcements: warned once at
-  9%, suspended at 5%, did nothing more while the charge stayed at 5%,
-  suspended again at 4%, did nothing at 3% on the charger, warned again but
-  did not suspend when the charger went at 3%, and suspended at 2%.
-- At a real login on battery the panel came up at 60 Hz from its first
-  modeset and the profile was power-saver.
-- At a real login on mains tw ran `tw-power balanced`: the unit ran for
-  86 ms with nobody asked for a password, so the polkit rule works.
-
-Not seen yet: the panel changing mode while tw runs (the cable pulled or
-plugged in) and whether the screen blinks as it does; whether a USB-C
-charger shows up as a supply that is online; the root helper writing to the
-real `/sys` (at that login it most likely found all three settings as it
-wanted them); a real suspend from a low battery; a wake-up being told from
-the clocks.
-
-### Notifications
-
-Notifications from `notify-send` (GLib), `busctl` (systemd) and `dbus-send`
-(libdbus), so three other implementations agree with `bus.c`. Wrapping, the
-urgent border; one picture drawn per change at 1.25. From sending a
-notification to the answer takes 9 ms when `tw-notify` has to be started
-and 5 ms when it runs. (Measured with the font baked into the program,
-before it used fontconfig.)
-
-With fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and
-symbols drawn, each from the first font fontconfig has for it (Noto Sans,
-DejaVu Sans, Noto Sans CJK). About 2.9 MB of its own and 6.2 MB PSS with
-those three fonts open.
-
-Installed, under dbus-broker: the broker logged the other service's entry
-as the duplicate, so tw's entry in `/usr/local` won, and systemd started
-`tw-notify` as a transient unit for the first notification. Each start is a
-unit with a name of its own, so leaving and being started again a moment
-later do not collide.
-
-Not seen yet: the fontconfig build on a real screen, at scale 1.25; a
-notification from the Claude app, its window coming forward after a click,
-and a monitor going away while the list is on it.
-
-### The NVIDIA GPU
-
-RTX 3070 Ti, driver 620.70.
-
-- The polkit rule; loading the driver (2.4 s) and unloading it (0.5 s); the
-  GPU powered down afterwards (`power_state` D3cold, also for the port
-  above it).
-- Vulkan on Wayland, and OpenGL and Vulkan on X11, drawing with the NVIDIA
-  GPU into a tw that draws with the Intel one.
-- `tw-gpu launch` with a real desktop entry, from fuzzel in the real
-  session; the switch-off after the program's process group was hung up on.
-- Off the bus: `nvidia-modprobe`, `nvidia-smi`, `fastfetch` and `btop` are
-  all refused ("NVRM: No NVIDIA GPU found") and leave it off; scanning the
-  port brings it back, driver loaded, in 2.4 s; ten switch-ons in a row
-  after the slot had been cold for 2 to 60 seconds.
-- A GPU that another program has open is left alone, named in the journal
-  ("in use by ..."), and goes off within seconds of that program exiting.
-- At a real login: refused while the login screen held the GPU, off the
-  bus three seconds after the login screen stopped. A login while the GPU
-  is off: it stayed off.
-
-Real runs found four faults the made-up machine had not, all now in the
-test: among them the switch-off at the first real login, which came before
-the login screen let go of the GPU; a driver loaded again by `btop` two
-seconds after it had been unloaded (the sign: `nvidia` and `nvidia_uvm`
-loaded, `nvidia_drm` not), which is why the GPU leaves the bus; and udev's
-early load colliding with the helper's.
-
-Not seen yet: a window on the real screen drawn by the NVIDIA GPU, a
-monitor on the NVIDIA GPU, and suspend while it is off.
-
-### Bluetooth
-
-- A boot with the blacklist: no adapter, no Bluetooth module in the kernel,
-  no `bluetoothd`, and the adapter's USB device asleep with `power/control`
-  at `auto`, which only the udev rule can have set.
-- `off`: the service stopped, the bus asked for it twice within 18 ms and
-  systemd skipped both, the core out of the kernel 46 ms after the stop;
-  0.13 s in all.
-- `on`: 1.25 s. The core and `btusb` loaded, systemd started `bluetoothd`
-  for the new adapter by itself, the radio came up unblocked and powered,
-  the timer was set, and WirePlumber registered its endpoints with the new
-  daemon. A WirePlumber started while Bluetooth is off logs one warning and
-  takes the daemon up when it appears.
-- A program that calls the Bluetooth service while it is off (Chromium
-  does, as it starts) is refused by the condition.
-
-Not seen yet: Bluetooth going off by itself; a device connecting, and a
-connection ending and starting the timer over (the rule matches
-`DEVTYPE=link`, a name taken from the kernel module's strings). No device
-is paired on that machine.
-
-### Thunderbolt
-
-Nothing. The rule has never met a device: udev accepts it, and that is all.
-The kernel's guide leaves open whether a dock's USB ports and display
-outputs work before the device is approved. [setup.md](setup.md) has the
-dock tried with boltd masked before the package goes.
+The real runs found faults the made-up machines had not, and each is in a
+test now: the GPU switched off at the first login before the login screen
+had let go of it; `btop` loading the driver again two seconds after it was
+unloaded, which is why the GPU leaves the bus; udev's own driver load
+colliding with the helper's; and, in the clipboard, the kernel closing a
+dying program's pipe before its connection to tw, the other way round from
+what the first version assumed.

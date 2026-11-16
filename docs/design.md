@@ -213,6 +213,10 @@ told from one whose program exited.
 - No timer and no polling: with a copy held and nothing happening tw does
   not wake.
 
+What that comes to, measured: 28 kB for a line of text, and 20.4 MB for a
+text of 20 MB offered in five formats (`wl-clip-persist` held 98 MB for
+it), back down after the next small copy.
+
 Writing to a reader that has left would kill tw, so tw ignores SIGPIPE, and
 `spawn()` and the start of the X11 helper set it back for the programs tw
 starts.
@@ -345,11 +349,9 @@ beats another notification service's without that one being removed.
 ## The session script
 
 `data/tw-session` starts tw as a login session, from a login screen's entry
-or typed on a text console. Never run it from inside a desktop session to
-try it out: it publishes its `WAYLAND_DISPLAY` to the user's D-Bus and
-systemd environment. The one safe way is
-`TW_SESSION_PRINT=1 sh data/tw-session`, which prints what it would do and
-starts nothing.
+or typed on a text console. It publishes the session to the user's D-Bus
+and systemd, so it is never run inside another desktop to try it out;
+`TW_SESSION_PRINT=1 sh data/tw-session` prints what it would do instead.
 
 What it does besides starting tw:
 
