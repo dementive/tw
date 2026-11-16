@@ -254,7 +254,7 @@ bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *mes
 }
 
 bool bus_notify_read(const struct bus_message *message, struct bus_notify *notify) {
-	*notify = (struct bus_notify){.summary = "", .body = "", .urgency = 1, .expire = -1};
+	*notify = (struct bus_notify){.summary = "", .body = "", .tag = "", .urgency = 1, .expire = -1};
 	if (strcmp(message->signature, "susssasa{sv}i") != 0) {
 		return false;
 	}
@@ -284,6 +284,9 @@ bool bus_notify_read(const struct bus_message *message, struct bus_notify *notif
 		const char *type = bus_read_signature(&reader);
 		if (strcmp(key, "urgency") == 0 && strcmp(type, "y") == 0) {
 			notify->urgency = bus_read_byte(&reader);
+		} else if (strcmp(key, "x-canonical-private-synchronous") == 0 &&
+				strcmp(type, "s") == 0) {
+			notify->tag = bus_read_string(&reader);
 		} else {
 			bus_skip(&reader, type);
 		}

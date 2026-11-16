@@ -64,6 +64,7 @@ void bus_skip(struct bus_reader *reader, const char *signature);
  * message's bytes. */
 struct bus_notify {
 	uint32_t replaces;       /* the id of the notification it replaces; 0: none */
+	const char *tag;         /* replaces the one with this tag; "": none */
 	const char *summary, *body;
 	bool has_default;        /* among its actions, the one a click stands for */
 	uint8_t urgency;         /* 0 low, 1 normal, 2 critical */

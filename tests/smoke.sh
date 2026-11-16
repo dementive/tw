@@ -53,6 +53,14 @@ fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart
 fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
 launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log")" = "$1" ]; }
 fake_program foot "echo opened >>'$run_dir/terminal.log'"
+# And for what the laptop keys run: each changes a level and shows it. The
+# text tools they read the level with are the real ones.
+ln -s "$(command -v awk)" "$(command -v cut)" "$bin_dir/"
+fake_program wpctl "case \$1 in get-volume) echo 'Volume: 0.45 [MUTED]';; esac"
+fake_program brightnessctl "echo \"brightnessctl \$*\" >>'$run_dir/levels.log'
+case \"\$*\" in *info*) echo 'asus::kbd_backlight,leds,1,33%,3';; esac"
+fake_program notify-send "echo \"notify-send \$*\" >>'$run_dir/levels.log'"
+levels() { grep -qxF -- "$1" "$run_dir/levels.log" 2>/dev/null; }
 
 start_tw
 
@@ -62,6 +70,13 @@ press super+d
 wait_until "Mod+D to start the launcher" launched 2
 press super+t
 wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
+press XF86KbdBrightnessUp
+wait_until "the keyboard-light key to raise it" levels 'brightnessctl -q --device=*::kbd_backlight set 1+'
+wait_until "the new level to show" levels 'notify-send --app-name=tw --urgency=low --expire-time=1500 --hint=string:x-canonical-private-synchronous:keyboard-light Keyboard light 33%'
+press XF86KbdBrightnessDown
+wait_until "the keyboard-light key to lower it" levels 'brightnessctl -q --device=*::kbd_backlight set 1-'
+press XF86AudioRaiseVolume
+wait_until "the volume to show" levels 'notify-send --app-name=tw --urgency=low --expire-time=1500 --hint=string:x-canonical-private-synchronous:volume Volume 45%, muted'
 # By now tw has long been through its startup: it started what the keys
 # asked for and nothing by itself.
 [ ! -e "$run_dir/autostart.log" ] ||

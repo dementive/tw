@@ -119,12 +119,49 @@ static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";
 
-static const char volume_up[] = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
-static const char volume_down[] = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
-static const char volume_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
-static const char mic_mute[] = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
-static const char brightness_up[] = "brightnessctl --class=backlight set 5%+";
-static const char brightness_down[] = "brightnessctl --class=backlight set 5%-";
+/*
+ * The volume, brightness and keyboard-light keys show the new level in a
+ * notification, which the next press replaces rather than adds to (the hint
+ * is the tag tw-notify replaces by). That is a few programs for a moment on
+ * each press and tw-notify while it shows; nothing in between. A level
+ * changed some other way does not show: watching for that would take a
+ * program running all session.
+ */
+#define SHOW(tag, text) \
+	" && notify-send --app-name=tw --urgency=low --expire-time=1500" \
+	" --hint=string:x-canonical-private-synchronous:" tag " \"" text "\""
+#define VOLUME(device) "$(wpctl get-volume " device \
+	" | awk '{printf \"%d%%%s\", $2 * 100 + 0.5, $3 ? \", muted\" : \"\"}')"
+#define LEVEL(device) "$(brightnessctl -m " device " info | cut -d, -f4)"
+#define SPEAKERS "@DEFAULT_AUDIO_SINK@"
+#define MICROPHONE "@DEFAULT_AUDIO_SOURCE@"
+#define SCREEN "--class=backlight"
+#define KEYBOARD "--device='*::kbd_backlight'" /* the usual name of its light */
+
+static const char volume_up[] = "wpctl set-volume -l 1.0 " SPEAKERS " 5%+"
+	SHOW("volume", "Volume " VOLUME(SPEAKERS));
+static const char volume_down[] = "wpctl set-volume " SPEAKERS " 5%-"
+	SHOW("volume", "Volume " VOLUME(SPEAKERS));
+static const char volume_mute[] = "wpctl set-mute " SPEAKERS " toggle"
+	SHOW("volume", "Volume " VOLUME(SPEAKERS));
+static const char mic_mute[] = "wpctl set-mute " MICROPHONE " toggle"
+	SHOW("microphone", "Microphone " VOLUME(MICROPHONE));
+static const char brightness_up[] = "brightnessctl -q " SCREEN " set 5%+"
+	SHOW("brightness", "Brightness " LEVEL(SCREEN));
+static const char brightness_down[] = "brightnessctl -q " SCREEN " set 5%-"
+	SHOW("brightness", "Brightness " LEVEL(SCREEN));
+/* A keyboard light has a few steps (three on the G533ZW), not a scale. */
+static const char keyboard_light_up[] = "brightnessctl -q " KEYBOARD " set 1+"
+	SHOW("keyboard-light", "Keyboard light " LEVEL(KEYBOARD));
+static const char keyboard_light_down[] = "brightnessctl -q " KEYBOARD " set 1-"
+	SHOW("keyboard-light", "Keyboard light " LEVEL(KEYBOARD));
+#undef SHOW
+#undef VOLUME
+#undef LEVEL
+#undef SPEAKERS
+#undef MICROPHONE
+#undef SCREEN
+#undef KEYBOARD
 
 /*
  * Programs started with the session, as shell commands; the list ends with
@@ -272,6 +309,8 @@ static const struct tw_binding bindings[] = {
 	{0,             XKB_KEY_XF86AudioMicMute,      action_spawn,            {.s = mic_mute}},
 	{0,             XKB_KEY_XF86MonBrightnessUp,   action_spawn,            {.s = brightness_up}},
 	{0,             XKB_KEY_XF86MonBrightnessDown, action_spawn,            {.s = brightness_down}},
+	{0,             XKB_KEY_XF86KbdBrightnessUp,   action_spawn,            {.s = keyboard_light_up}},
+	{0,             XKB_KEY_XF86KbdBrightnessDown, action_spawn,            {.s = keyboard_light_down}},
 };
 
 #endif

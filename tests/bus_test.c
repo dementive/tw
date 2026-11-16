@@ -54,6 +54,9 @@ static size_t notify_write(uint8_t *data, size_t capacity) {
 	/* A string, with an odd length to put what follows off its alignment. */
 	variant(&writer, "desktop-entry", "s");
 	bus_write_string(&writer, "claude");
+	/* The tag of a level, which replaces the last one with that tag. */
+	variant(&writer, "x-canonical-private-synchronous", "s");
+	bus_write_string(&writer, "volume");
 	/* A picture: (width, height, rowstride, alpha, bits, channels, pixels). */
 	variant(&writer, "image-data", "(iiibiiay)");
 	bus_write_align(&writer, 8);
@@ -168,6 +171,7 @@ int main(void) {
 	CHECK(strcmp(notify.body, "Plug in the charger.") == 0);
 	CHECK(notify.replaces == 41 && notify.has_default);
 	CHECK(notify.urgency == 2 && notify.expire == -1);
+	CHECK(strcmp(notify.tag, "volume") == 0);
 	/* Under another signature it is not a Notify call. */
 	struct bus_message other = message;
 	other.signature = "susssasa{sv}";
@@ -279,7 +283,7 @@ int main(void) {
 	size_t cut_size = notify_cut(cut, sizeof(cut), 0);
 	CHECK(bus_message_parse(cut, cut_size, &message) && bus_notify_read(&message, &notify));
 	CHECK(strcmp(notify.summary, "Title") == 0 && notify.has_default && notify.urgency == 2);
-	CHECK(notify.expire == 0 && notify.replaces == 0);
+	CHECK(notify.expire == 0 && notify.replaces == 0 && notify.tag[0] == '\0');
 	for (int damage = 1; damage <= 3; damage++) {
 		cut_size = notify_cut(cut, sizeof(cut), damage);
 		CHECK(bus_message_parse(cut, cut_size, &message));

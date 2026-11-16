@@ -53,6 +53,7 @@ struct note {
 	bool critical;
 	bool has_default;  /* its program wants to hear of a click */
 	char sender[64];   /* that program's name on the bus */
+	char tag[32];      /* the next one with this tag replaces it; "": none */
 	char summary[160];
 	char body[640];
 	int y, height;     /* where it is in the picture, in the picture's pixels */
@@ -190,6 +191,17 @@ static struct note *note_find(uint32_t id) {
 	return NULL;
 }
 
+/* A notification that stands for a level (the volume keys send one each
+ * press) replaces the last one with its tag, as most servers do. */
+static struct note *note_find_tag(const char *tag) {
+	for (int i = 0; i < note_count && tag[0] != '\0'; i++) {
+		if (strncmp(notes[i].tag, tag, sizeof(notes[i].tag) - 1) == 0) {
+			return &notes[i];
+		}
+	}
+	return NULL;
+}
+
 static void note_close(struct note *note, uint32_t reason) {
 	say("close %u reason %u", note->id, reason);
 	struct bus_writer writer = signal_begin(note, "NotificationClosed", "uu");
@@ -250,6 +262,9 @@ static void method_notify(const struct bus_message *call) {
 	 * and the one that replaced it hears of it from then on. */
 	struct note *note = read.replaces != 0 ? note_find(read.replaces) : NULL;
 	if (note == NULL) {
+		note = note_find_tag(read.tag);
+	}
+	if (note == NULL) {
 		if (note_count == max_shown) {
 			/* The oldest goes to make room, but not a critical one while
 			 * there is another: the battery warning is sent once and does
@@ -271,6 +286,7 @@ static void method_notify(const struct bus_message *call) {
 		*note = (struct note){.id = last_id};
 	}
 	copy(note->sender, sizeof(note->sender), call->sender);
+	copy(note->tag, sizeof(note->tag), read.tag);
 	copy(note->summary, sizeof(note->summary), read.summary);
 	copy(note->body, sizeof(note->body), read.body);
 	note->critical = read.urgency == 2;

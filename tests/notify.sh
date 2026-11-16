@@ -158,6 +158,20 @@ wait_until "the replaced text" logged "^show $urgent_id 'Urgent, changed'"
 new=$(note 7 'New' '' "$plain" 0)
 [ "$new" != 7 ] || fail "replacing a notification that does not exist reused its id"
 
+# A level, as each press of a volume key sends, replaces the last one with
+# its tag (the hint most servers take for that); one with another tag stands
+# beside it.
+tagged() { echo "0 1 x-canonical-private-synchronous s $1"; }
+level=$(note 0 'Volume 40%' '' "$(tagged volume)" 0)
+again=$(note 0 'Volume 45%' '' "$(tagged volume)" 0)
+[ "$again" = "$level" ] || fail "a level with the same tag got the id $again, not $level"
+wait_until "the level replaced" logged "^show $level 'Volume 45%'"
+other=$(note 0 'Brightness 50%' '' "$(tagged brightness)" 0)
+[ "$other" != "$level" ] || fail "a level with another tag replaced the first"
+call CloseNotification u "$level" >/dev/null
+call CloseNotification u "$other" >/dev/null
+wait_until "the two levels to close" logged "^close $other reason 3\$"
+
 # Any program may close one too, and the program that replaced it last is
 # told.
 call CloseNotification u "$urgent_id" >/dev/null
@@ -259,4 +273,4 @@ if grep -q 'Sanitizer\|runtime error' "$run_dir/bus.log"; then
 	fail "sanitizer report from tw-notify"
 fi
 
-echo "ok: on demand, expiry, leaving, capabilities, urgent, replace, close, clicks, token, overflow, single instance, long text, closed with the compositor, no compositor"
+echo "ok: on demand, expiry, leaving, capabilities, urgent, replace, tags, close, clicks, token, overflow, single instance, long text, closed with the compositor, no compositor"

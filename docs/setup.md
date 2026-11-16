@@ -46,8 +46,8 @@ sudo pacman -S foot fuzzel swaylock xwayland-satellite \
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
 | wl-clipboard | `wl-copy` and `wl-paste`, the clipboard from a terminal |
-| brightnessctl, wireplumber | brightness and volume keys |
-| libnotify | `notify-send`, for the low-battery warning. What shows it is `tw-notify`, which comes with tw |
+| brightnessctl, wireplumber | brightness, keyboard-light and volume keys |
+| libnotify | `notify-send`, for the low-battery warning and the level the volume and brightness keys set. What shows it is `tw-notify`, which comes with tw |
 | xdg-desktop-portal, -gtk, -wlr | file dialogs and screen capture (OBS, browsers) |
 
 A few more are named where a check below needs them: `bluez` and

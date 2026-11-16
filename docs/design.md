@@ -166,6 +166,15 @@ the `XKB_DEFAULT_*` variables. The seat sends the keymap to every client
 whenever the keyboard in use has a different one, and a laptop has several
 keyboards: the hotkeys and the power button are keyboards too.
 
+**Levels.** The volume, brightness and keyboard-light keys run a command
+from `config.h` that changes the level and then shows the new one with
+`notify-send`. Each sends the same tag (the `x-canonical-private-synchronous`
+hint) every time, and `tw-notify` replaces the notification with that tag
+rather than add one, so holding a key shows one line counting up. A level
+changed any other way (a mixer, the kernel's own keys) does not show:
+watching PipeWire or the backlight would take a program running all
+session.
+
 **Layer surfaces.** Launchers, bars and notifications are layer-shell
 clients (`layer.c`). A new layer surface is told its screen's scale as it is
 created: wlroots' scene tells a surface its scale only once it is on screen,
@@ -407,7 +416,10 @@ specification allows: `notify-send -r <id>` and scripts that close one with
 a notification is the one told of its click and its closing. Ids go on from
 the time of day in milliseconds, so a new `tw-notify` does not hand out an
 id an earlier one gave, and a program holding an old id does not reach
-somebody else's notification by accident.
+somebody else's notification by accident. A notification may instead
+carry a tag (the `x-canonical-private-synchronous` hint, which most
+servers take), and replaces the one with the same tag; the level keys
+use it (**Levels** under [The strip](#the-strip)).
 
 **It speaks D-Bus by itself.** The messages are read and written by
 `bus.c`, with no D-Bus library: the login line, `Hello`,
