@@ -38,7 +38,9 @@ its height. It is never empty and is freed when its last window leaves
 (`column_take()`). A fullscreen window is always alone in its column.
 Dialogs (windows with a parent or a fixed size) are not in the strip: they
 sit in the workspace's `floating` list, centred, at the size their client
-chose. A window of a fixed size without a parent is often a game rather than
+chose. A tiled window is told it is tiled and is clipped to its box; a
+dialog is told it is not, and is not clipped, so the shadow its client
+draws around it shows. A window of a fixed size without a parent is often a game rather than
 a dialog, and a game goes fullscreen: it then gets a column of its own like
 any fullscreen window, and floats again when it leaves fullscreen
 (`float_after_fullscreen`). A real dialog asking for fullscreen stays put.
@@ -84,7 +86,13 @@ workspace it showed before if no other output has it by then. A screen
 plugged in behind a closed lid takes over from the laptop's own at once.
 `outputs_lid()` runs on each move of the lid and each output that comes or
 goes, and `tw_lid_look()` in `layout.c` decides. Blanking leaves the screen
-behind the lid off, and the lock does not wait for it.
+behind the lid off, and the lock does not wait for it. A VT switch takes
+the lid away and gives it back (libinput drops all devices while the
+session is away), and libinput reports a lid it adds only if it is closed:
+so a lid tw last saw closed is taken to be open when it comes back, unless
+it says it is closed in the same dispatch (an idle callback in
+`new_switch()` waits for that). Otherwise a lid opened while away would
+leave the laptop's own screen dark until it was closed and opened again.
 
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
 it made with it. `handle_renderer_lost()` in `output.c` hears it in the
@@ -95,12 +103,21 @@ every output; without that the screens would stay black until tw was
 started again.
 Each output that took them is asked for one frame, drawn whole, since
 nothing else would repaint an idle screen (the lock screen after a bad
-wake-up). If an output cannot take the new ones, the old ones are not
-freed: drawing with them fails, but freed they would crash tw. The pointer's
-image goes with the old renderer, and wlr_cursor uploads it again only when
-it changes, so the cursor is attached to the output layout anew. A client's
-window whose buffer wlroots no longer holds (shared memory, already
-uploaded) stays blank until that client draws again.
+wake-up). If an output cannot take the new ones, the old ones are kept
+until tw exits, since that output still points at them; it cannot happen
+while the same backend gives the new pair the same buffer capabilities. The
+pointer's image goes with the old renderer, and wlr_cursor uploads it again
+only when it changes, so the cursor is attached to the output layout anew.
+Every client's picture loses its texture too, and wlroots imports a
+client's buffer only when it is committed. Worse than blank: the scene
+damages a buffer it cannot draw on again every frame, so a screen showing
+one would repaint at full rate until that client drew again, which a
+wallpaper never does. So `surfaces_redraw()` walks the whole scene, hidden
+windows and the lock screen included, and tells every mapped window, layer
+surface and lock surface again what it was last told (the last size sent,
+acked or not, so as not to undo a newer one). Clients draw on a configure;
+one that answers it without a new picture stays blank, and its screen
+busy, until it draws.
 
 **Arranging.** `strip_arrange()` decides where the view of each workspace on
 screen should be (`view_x`) and places everything. Call it after anything
@@ -114,7 +131,11 @@ output. The maths (column widths, stacking, how far to scroll) is in
 `view_pos` is where it is drawn now; `strip_animate()` advances it once per
 frame of the output showing it and stops asking for frames when it arrives.
 A three-finger swipe moves `view_pos` directly and `strip_swipe_end()` picks
-the column edge to settle on. A window is drawn where `view_pos` puts it,
+the column edge to settle on, nearest to where the release speed would
+carry it. That speed (`tw_swipe_speed()`) is measured from the events'
+timestamps; libinput sends none while the fingers rest, so fingers that
+held still for 0.1 s before lifting, or between two movements, count as
+stopped rather than keeping the speed they last had. A window is drawn where `view_pos` puts it,
 but told to draw (not `suspended`) as soon as it is visible at either
 `view_pos` or `view_x`, so the windows the view is heading for are awake
 when it gets there.
@@ -174,8 +195,13 @@ was ever sent, the pointer merely passing over it.
 **The pointer.** A client may lock the pointer in place and read raw mouse
 movement instead (games, 3D editors, and X11 programs through Xwayland), or
 confine it. A constraint is in force only while its window has both the
-keyboard and the pointer; `pointer_constraint_update()` re-derives that
-after either focus changes, so every focus binding releases a lock.
+keyboard and the pointer, and the pointer is inside the constraint's
+region; `pointer_constraint_update()` re-derives that after either focus
+changes, after each pointer movement and when the client sets the region
+(which it first knows at the commit after the request), so every focus
+binding releases a lock. Taking hold only inside the region is what the
+protocol asks, and wlroots cannot confine a pointer that starts outside
+it: the pointer would roam free while the client thinks it confined.
 
 **Drag and drop.** A client starts a drag from a button press; tw lets it
 if the press was real (its serial) and the session is not locked, and
@@ -199,7 +225,12 @@ output. A window's menus are drawn in `popup_tree`, above every window,
 dialog and top-layer surface: under its window's own tree, the menu of a
 tiled window would open behind an open dialog, unseen but holding the
 keyboard and the pointer. Each window's `popup_tree` follows its window's
-position and visibility. A menu's own tree goes with the menu, or with what
+position and visibility. A layer surface has a `popup_tree` of its own for
+the same reason: in `server->popup_tree`, where a bar on the bottom layer
+(waybar's default) opens its menus over the windows rather than under them,
+and on the overlay layer just above its surface, since `server->popup_tree`
+is below that layer. It follows the surface's position each time the
+surface is configured, and its layer when that changes. A menu's own tree goes with the menu, or with what
 it hangs from if that goes first (`popup_attach()`), so a menu's surface
 outliving either never points at a freed or stale tree.
 
@@ -350,7 +381,10 @@ be polling. So tw looks at two moments only, `x11_idle_seconds` after each:
 the helper's start, and any window closing (`x11_window_closed()`). A client
 that leaves with no window closing is noticed at the next window that does.
 A client queued behind a helper tw stopped is served by the next one, not
-turned away like one queued behind a helper that died.
+turned away like one queued behind a helper that died. The sockets are
+non-blocking: the dead helper's Xwayland may still be accepting on them for
+a moment, and turning the queue away must not leave tw waiting in
+`accept()` for a connection Xwayland took first.
 
 The helper is looked up on `PATH` before each start, not once: an update
 may have moved it. It must be installed when tw starts, though, or tw opens
@@ -400,6 +434,12 @@ program exited first.
 - Nothing blocks: tw's end of every pipe is non-blocking, when it reads and
   when it serves a paste from a copy it keeps, and a paste larger than the
   reader's pipe goes on as the reader takes it (`tw_paste`).
+- A paste under way holds its format until the reader has it all or closes
+  the pipe, even if the copy is replaced meanwhile: cutting it would give the
+  reader part of the data as if it were whole, which no program does to a
+  paste it has begun. So a reader that stops reading and keeps its pipe open
+  keeps that format in memory beyond `clipboard_keep_bytes` until it closes
+  the pipe or tw exits. It costs no wakeup: the pipe never becomes writable.
 - No timer and no polling: with a copy held and nothing happening tw does
   not wake.
 
@@ -442,7 +482,8 @@ tw. On a machine without a battery, nothing.
 
 **Knowing.** `server->on_battery` follows the kernel's own rule
 (`power_supply_is_system_supplied()`): the machine has a battery, and no
-supply that is not a battery is online. Supplies of scope `Device` belong to
+supply that is not a battery is online (any `online` value but 0: a USB-C
+port reads 2 while it charges at a programmable voltage). Supplies of scope `Device` belong to
 a mouse or a phone and are skipped. Changes arrive through a libudev monitor
 on the `power_supply` subsystem (wlroots links libudev anyway). tw does not
 read what an announcement says, beyond its scope: one from a `Device` (a
@@ -643,6 +684,17 @@ What it does besides starting tw:
   taken back: `dbus-update-activation-environment` cannot unset a variable
   and is handed `DISPLAY=` (an empty one, which Xlib reads as none), then
   systemd unsets it.
+- **Takes it all back when tw exits.** systemd keeps what it was handed
+  for as long as the user is logged in anywhere (the user manager outlives
+  a logout by `UserStopDelaySec`, or for good while anything of the session
+  is left), and Plasma imports systemd's environment as it starts: it
+  would run with the accessibility bus off and its programs kept off the
+  NVIDIA GPU. So the script does not `exec` tw but waits for it (one idle
+  shell, about 300 KB, no wakeups), and then has systemd unset every name
+  in `service_env` and `DISPLAY`. A `trap` on `HUP` and `TERM` keeps the
+  shell until tw is gone when the session is ended from outside. D-Bus's
+  own copy cannot be unset and stays; it reaches only the services D-Bus
+  starts without systemd.
 - **Says what to do when tw cannot start** because a library it was built
   against is gone after a system update (the loader's exit status, 127).
 - **Runs `~/.config/tw/autostart`**, if there is one, once tw is up.
@@ -746,8 +798,10 @@ driver unloaded then could not be loaded again. `tw-gpu` then keeps it on
 and says to reboot. A machine with no NVIDIA driver installed at all is
 told apart by the running kernel's own modules still being there, and is
 told so instead. `tw-gpu` also keeps the GPU on whenever tw has it open,
-and `off` says so: when `WLR_DRM_DEVICES` names it, or names no GPUs (one
-GPU, or `TW_ALL_GPUS=1`), so that wlroots opened them all.
+and `off` says so: when `WLR_DRM_DEVICES` names it, or names no GPUs in a
+tw session (`XDG_CURRENT_DESKTOP=tw`; one GPU, or `TW_ALL_GPUS=1`), so that
+wlroots opened them all. Outside a tw session (Plasma, a text console) it
+goes ahead, and the root helper leaves the GPU on if anything has it open.
 
 Switching on has a trap: the kernel announces the GPU before a driver can
 bind to it, udev loads the driver in answer, that load fails ("probe

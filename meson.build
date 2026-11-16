@@ -31,12 +31,26 @@ add_project_arguments(
 # protocols) is dropped from the binary, and no system update can change
 # wlroots under an installed tw.
 #
-# libseat and wayland-protocols come from the system (docs/setup.md). Where
-# one is missing or too old, wlroots would fetch it from the latest commit
-# through its own wrap files, unpinned. Asking for both here first, with no
-# fallback, makes the build stop and name the missing package instead.
-dependency('libseat', version: '>=0.2.0')
-wayland_protos = dependency('wayland-protocols', version: '>=1.47')
+# The libraries below come from the system (docs/setup.md). Where one is
+# missing or older than wlroots asks for, wlroots would fetch it from the
+# latest commit through its own wrap files, unpinned, and build tw against
+# that. Asking for each here first, at wlroots' own minimum and with no
+# fallback, hands wlroots the system's copy or stops the build and names the
+# package. The versions are those in subprojects/wlroots/meson.build and move
+# with the wlroots pin. allow_fallback: false matters even without a fallback
+# named: Meson falls back on its own to any wrap file named after the
+# dependency, and it leaves redirects such as wayland-protocols.wrap in
+# subprojects/.
+dependency('libseat', version: '>=0.2.0', allow_fallback: false)
+wayland_protos = dependency('wayland-protocols', version: '>=1.47',
+	allow_fallback: false)
+wayland_server = dependency('wayland-server', version: '>=1.24.0',
+	allow_fallback: false)
+wayland_scanner_dep = dependency('wayland-scanner', version: '>=1.24.0',
+	native: true, allow_fallback: false)
+dependency('libdrm', version: '>=2.4.129', allow_fallback: false)
+xkbcommon = dependency('xkbcommon', version: '>=1.8.0', allow_fallback: false)
+dependency('pixman-1', version: '>=0.43.0', allow_fallback: false)
 
 # libdisplay-info, with which wlroots reads what a monitor says about itself,
 # is the one library under tw whose file name changes with its releases
@@ -66,9 +80,7 @@ wlroots = subproject(
 	],
 ).get_variable('wlroots')
 
-wayland_server = dependency('wayland-server')
 wayland_client = dependency('wayland-client')
-xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput') # touchpad settings
 libudev = dependency('libudev')   # the power cable; wlroots uses it already
 libm = cc.find_library('m')
@@ -112,7 +124,7 @@ summary('machine', 'src/machines/@0@.h@1@'.format(machine, machine_note), sectio
 # --- Protocols ---------------------------------------------------------------
 
 wayland_scanner = find_program(
-	dependency('wayland-scanner', native: true).get_variable('wayland_scanner'),
+	wayland_scanner_dep.get_variable('wayland_scanner'),
 	native: true,
 )
 

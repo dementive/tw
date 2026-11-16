@@ -113,23 +113,35 @@ static int at_least_zero(int value) {
 	return value > 0 ? value : 0;
 }
 
-/* A client may ignore the size it was given; never let it draw outside its
- * box, or outside its output. The clip is in surface coordinates, hence the
- * geometry offset. */
+/* A client may ignore the size it was given; never let a tiled window draw
+ * outside its box, or outside its output. The clip is in surface
+ * coordinates, hence the geometry offset. A dialog is not clipped: it has no
+ * neighbours, its size is its own, and the shadow it draws outside its
+ * geometry is meant to be seen. window->clip is then the zero box, which is
+ * also what an unmapped window starts from with no clip set. */
 static void window_update_clip(struct tw_window *window) {
-	const struct wlr_box *geometry = &window->xdg_toplevel->base->geometry;
-	int left = window->cut_left, right = window->cut_right;
-	struct wlr_box clip = {
-		.x = geometry->x + left,
-		.y = geometry->y,
-		.width = at_least_zero(window->width - left - right),
-		.height = window->height,
-	};
+	struct wlr_box clip = {0};
+	if (!window->floating) {
+		const struct wlr_box *geometry = &window->xdg_toplevel->base->geometry;
+		int left = window->cut_left, right = window->cut_right;
+		clip = (struct wlr_box){
+			.x = geometry->x + left,
+			.y = geometry->y,
+			.width = at_least_zero(window->width - left - right),
+			.height = window->height,
+		};
+	}
 	if (wlr_box_equal(&clip, &window->clip)) {
 		return;
 	}
 	window->clip = clip;
-	/* An empty clip would mean "do not clip". */
+	if (window->floating) {
+		wlr_scene_node_set_enabled(&window->surface_tree->node, true);
+		wlr_scene_subsurface_tree_set_clip(&window->surface_tree->node, NULL);
+		return;
+	}
+	/* An empty clip would mean "do not clip": a window cut off entirely is
+	 * left out of the picture instead. */
 	wlr_scene_node_set_enabled(&window->surface_tree->node, clip.width > 0);
 	if (clip.width > 0) {
 		wlr_scene_subsurface_tree_set_clip(&window->surface_tree->node, &clip);
@@ -231,6 +243,7 @@ static void window_unmap(struct tw_window *window) {
 	 * shows of it goes back to how a new window starts. */
 	window->clip = (struct wlr_box){0};
 	wlr_scene_node_set_enabled(&window->surface_tree->node, true);
+	wlr_scene_subsurface_tree_set_clip(&window->surface_tree->node, NULL);
 	window->cut_left = window->cut_right = 0;
 }
 

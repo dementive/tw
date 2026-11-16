@@ -199,7 +199,9 @@ static const int x11_idle_seconds = 30;
  * the program's place once the program is gone. This is the most it holds
  * for one copy at any moment, in bytes: the formats it has read, those with
  * the same bytes held once, and the one it is reading. A larger copy is left
- * alone and goes with its program. 0 keeps nothing.
+ * alone and goes with its program. (A paste still under way when the copy is
+ * replaced keeps its format until the reader has it all or closes the pipe.)
+ * 0 keeps nothing.
  */
 static const size_t clipboard_keep_bytes = 64 << 20;
 

@@ -6,9 +6,12 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_session_lock_v1.h>
+#include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
 #include "tw.h"
@@ -455,10 +458,69 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 }
 
 /*
+ * Asks the client of every mapped surface under `node`, shown or hidden, to
+ * draw again, by telling it again what it was last told. A client's picture
+ * lost its texture with the old renderer, and the scene re-damages a buffer
+ * it cannot draw on every frame: until the client commits a new one, its
+ * output would repaint at full rate (a wallpaper never would by itself).
+ * A subsurface is reached through its parent; `last` keeps one surface's
+ * nodes, which sit together, from asking it more than once.
+ */
+static void surfaces_redraw(struct wlr_scene_node *node, struct wlr_surface **last) {
+	if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link) {
+			surfaces_redraw(child, last);
+		}
+		return;
+	}
+	if (node->type != WLR_SCENE_NODE_BUFFER) {
+		return;
+	}
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node));
+	if (scene_surface == NULL) {
+		return;
+	}
+	struct wlr_surface *surface = wlr_surface_get_root_surface(scene_surface->surface);
+	if (surface == *last || !surface->mapped) {
+		return;
+	}
+	*last = surface;
+	struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+	struct wlr_layer_surface_v1 *layer = wlr_layer_surface_v1_try_from_wlr_surface(surface);
+	struct wlr_session_lock_surface_v1 *lock =
+		wlr_session_lock_surface_v1_try_from_wlr_surface(surface);
+	if (xdg != NULL) {
+		wlr_xdg_surface_schedule_configure(xdg);
+	} else if (layer != NULL) {
+		/* The last size sent, acked or not, so as not to undo a newer one. */
+		uint32_t width = layer->current.actual_width, height = layer->current.actual_height;
+		if (!wl_list_empty(&layer->configure_list)) {
+			struct wlr_layer_surface_v1_configure *configure =
+				wl_container_of(layer->configure_list.prev, configure, link);
+			width = configure->width;
+			height = configure->height;
+		}
+		wlr_layer_surface_v1_configure(layer, width, height);
+	} else if (lock != NULL) {
+		uint32_t width = lock->current.width, height = lock->current.height;
+		if (!wl_list_empty(&lock->configure_list)) {
+			struct wlr_session_lock_surface_v1_configure *configure =
+				wl_container_of(lock->configure_list.prev, configure, link);
+			width = configure->width;
+			height = configure->height;
+		}
+		wlr_session_lock_surface_v1_configure(lock, width, height);
+	}
+}
+
+/*
  * The GPU was reset (a driver hang, a bad wake-up), and the renderer and all
  * it made are gone. A new renderer takes over, or every screen would stay
  * black until tw was started again. The scene drops the textures of the old
- * one by itself and clients' buffers are imported again as they are drawn.
+ * one by itself; clients' buffers are imported again when they are next
+ * committed, which surfaces_redraw() asks for.
  */
 static void renderer_replace(void *data) {
 	struct tw_server *server = data;
@@ -489,17 +551,21 @@ static void renderer_replace(void *data) {
 			wlr_output_schedule_frame(output->wlr_output);
 		}
 	}
-	/* An output that could not switch still draws with the old ones: they
-	 * fail on a GPU that was reset, but freed they would crash tw. */
-	if (!all) {
-		return;
+	/* An output that could not switch still points at the old ones, so
+	 * they are kept (until tw exits; freed they would crash tw) and it
+	 * draws with a context the GPU reset lost. This cannot happen while
+	 * the new pair has the old one's buffer capabilities, which the same
+	 * backend gives it. */
+	if (all) {
+		wlr_allocator_destroy(old_allocator);
+		wlr_renderer_destroy(old_renderer);
 	}
-	wlr_allocator_destroy(old_allocator);
-	wlr_renderer_destroy(old_renderer);
 	/* The pointer's image went with the old renderer, and wlr_cursor
 	 * uploads it again only when it changes or an output joins the layout:
 	 * joining them all anew puts it back. */
 	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
+	struct wlr_surface *last = NULL;
+	surfaces_redraw(&server->scene->tree.node, &last);
 }
 
 /*

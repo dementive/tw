@@ -63,6 +63,19 @@ void tw_spring_step(double *pos, double *vel, double target, double omega, doubl
 bool tw_spring_settled(double pos, double vel, double target);
 
 /*
+ * How fast a touchpad swipe moves, in pixels per second. `speed` was the
+ * estimate at the last event; the fingers have since moved `moved` pixels in
+ * `dt` seconds. Each event's own speed is averaged into the estimate to
+ * smooth out jitter. A gap of 0.1 s or more between events means the fingers
+ * rested, so the estimate starts again from 0.
+ */
+double tw_swipe_speed(double speed, double moved, double dt);
+
+/* The speed to glide on with when the fingers lift `dt` seconds after the
+ * last movement: 0 if they had come to rest before lifting. */
+double tw_swipe_release(double speed, double dt);
+
+/*
  * Whether an output on battery should use a mode that refreshes `candidate`
  * mHz in place of one that refreshes `current` mHz: only a slower one, and
  * none slower than `floor_hz`. Rates count in whole Hz, because what a

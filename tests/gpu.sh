@@ -219,7 +219,7 @@ release() {
 # variables that keep programs on the Intel GPU are set. The launcher's
 # variables are not, even if this test was started from a launched program.
 gpu() {
-	env -u DESKTOP_ENTRY_ID -u FUZZEL_DESKTOP_FILE_ID -u DESKTOP_ENTRY_PATH \
+	env -u DESKTOP_ENTRY_ID -u FUZZEL_DESKTOP_FILE_ID -u DESKTOP_ENTRY_PATH -u XDG_CURRENT_DESKTOP \
 		PATH="$bin:$PATH" TW_SYS="$sys" TW_DEV="$dev" TW_RUN="$run" TW_MODULES="$modules" HOME="$tmp/home" \
 		XDG_RUNTIME_DIR="$tmp/user" XDG_DATA_DIRS="$tmp/share" \
 		WLR_DRM_DEVICES=/dev/dri/card1 TW_GPU_PAUSE=0.2 \
@@ -437,12 +437,21 @@ loaded || fail "login switched off a GPU it should have left alone"
 [ "$(calls 'start tw-gpu@off')" = "$before" ] || fail "login tried to switch off a GPU it should have left alone"
 gpu "$data/tw-gpu" off || fail "off failed after login"
 
-# With no GPUs named, tw opened them all (one GPU, or TW_ALL_GPUS=1): the
-# GPU stays on after the program, and nothing is left waiting for it.
-gpu env -u WLR_DRM_DEVICES "$data/tw-gpu" run report all-gpus
+# With no GPUs named in a tw session, tw opened them all (one GPU, or
+# TW_ALL_GPUS=1): the GPU stays on after the program, and nothing is left
+# waiting for it.
+gpu env -u WLR_DRM_DEVICES XDG_CURRENT_DESKTOP=tw "$data/tw-gpu" run report all-gpus
 wait_until "the switch-off check to finish" settled
 loaded || fail "a GPU that tw has open was switched off"
 wait_until "off after a run with every GPU open" gpu "$data/tw-gpu" off
+# Outside a tw session (Plasma, a text console) no GPUs named says nothing
+# about tw: the program's GPU goes off after it, and so does one switched on.
+gpu env -u WLR_DRM_DEVICES "$data/tw-gpu" run report outside-tw
+wait_until "the switch-off after a run outside a tw session" eval '! on_bus'
+gpu env -u WLR_DRM_DEVICES "$data/tw-gpu" on || fail "on failed outside a tw session"
+gpu env -u WLR_DRM_DEVICES "$data/tw-gpu" off 2>"$tmp/err" ||
+	fail "off outside a tw session refused: $(cat "$tmp/err")"
+on_bus && fail "off outside a tw session left the GPU on the bus"
 
 # --- The GPU cannot be switched on: the program still runs -----------------------
 : >"$tmp/on-fails"
@@ -905,11 +914,18 @@ cat >"$tmp/session-bin/systemctl" <<EOF
 #!/bin/sh
 echo "\$*" >>'$tmp/took-back'
 EOF
+# What tw-session itself runs once tw has exited: never the real systemctl,
+# which would take the variables from the systemd of whoever runs the tests.
+mkdir -p "$tmp/exit-bin"
+cat >"$tmp/exit-bin/systemctl" <<EOF
+#!/bin/sh
+echo "\$*" >>'$tmp/took-back-at-exit'
+EOF
 chmod +x "$tmp/session/tw" "$tmp/session-bin/dbus-update-activation-environment" \
-	"$tmp/session-bin/systemctl"
+	"$tmp/session-bin/systemctl" "$tmp/exit-bin/systemctl"
 told() { # [VAR=value...]: what a session started like this passes on
-	rm -f "$tmp/told" "$tmp/took-back"
-	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" "$@" \
+	rm -f "$tmp/told" "$tmp/took-back" "$tmp/took-back-at-exit"
+	env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" "$@" \
 		sh "$tmp/session/tw-session" >/dev/null 2>&1
 	cat "$tmp/told" 2>/dev/null
 }
@@ -935,6 +951,29 @@ got=$(told TW_X11=:3)
 	fail "tw-session did not pass on the X11 display tw opened: $got"
 [ "$(cat "$tmp/took-back" 2>/dev/null)" = "--user unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_LOADER_DRIVERS_DISABLE" ] ||
 	fail "tw-session took back the X11 display tw opened: $(cat "$tmp/took-back" 2>/dev/null)"
+# Once tw has exited, everything handed on is taken back, X11 display
+# included: a desktop started next would otherwise inherit it from systemd.
+[ "$(cat "$tmp/took-back-at-exit" 2>/dev/null)" = "--user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY" ] ||
+	fail "tw-session left systemd told about the session after tw exited: $(cat "$tmp/took-back-at-exit" 2>/dev/null)"
+# ... the session's exit status is tw's, and a signal that ends the session
+# while tw runs still has it all taken back once tw is gone.
+mkdir -p "$tmp/signal"
+cp "$data/tw-session" "$tmp/signal/tw-session"
+cat >"$tmp/signal/tw" <<EOF
+#!/bin/sh
+[ "\$1" = -h ] && exit 0
+kill -TERM \$PPID
+sleep 0.2
+exit 5
+EOF
+chmod +x "$tmp/signal/tw"
+rm -f "$tmp/took-back-at-exit"
+status=0
+env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" \
+	sh "$tmp/signal/tw-session" >/dev/null 2>&1 || status=$?
+[ "$status" = 5 ] || fail "tw-session exited with $status, not with tw's status"
+[ "$(cat "$tmp/took-back-at-exit" 2>/dev/null)" = "--user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY" ] ||
+	fail "tw-session ended by a signal did not take back the session: $(cat "$tmp/took-back-at-exit" 2>/dev/null)"
 
 # The NVIDIA GPU switched off and every GPU asked for, as the session runs:
 # tw-gpu brings it back before tw starts, and leaves it on since tw opens it.
@@ -952,7 +991,7 @@ on_bus && loaded || fail "the GPU brought back for TW_ALL_GPUS=1 was switched of
 # A tw that cannot start for want of a library, as after a system update:
 # the session says how to build it again, and only then.
 session_says() { # what tw-session prints to the console
-	env -i PATH="$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" \
+	env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/nothing" \
 		sh "$tmp/session/tw-session" 2>&1 >/dev/null
 }
 [ -z "$(session_says)" ] || fail "tw-session had something to say although tw started: $(session_says)"

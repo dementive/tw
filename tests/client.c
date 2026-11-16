@@ -27,6 +27,9 @@
  *   --fullscreen  a window that asks to start fullscreen
  *   --fixed [<w>x<h>]  a window that cannot be resized, like a dialog;
  *                 300x200 unless given
+ *   --shadow      the 300x200 dialog of --fixed drawing a 20-pixel shadow
+ *                 around its window geometry while it is not told it is
+ *                 tiled, as GTK does
  *   --game        a 300x200 window that cannot be resized, like a game, and
  *                 that asks for fullscreen or to leave it when F is pressed
  *   --fickle      the same game asking to start fullscreen, and changing its
@@ -47,6 +50,9 @@
  *   --layer-inhibit  the same, asking to keep the screen on
  *   --bar         a layer surface 30 pixels high across the top of the
  *                 screen that keeps those 30 pixels to itself, like a bar
+ *   --bar-menu    the same bar on the bottom layer, as waybar's default is,
+ *                 that opens a 100x50 menu at 100,30 hanging into the room
+ *                 below it once it is configured: "menu shown"
  *   --lock        a screen locker; pressing Return unlocks ("unlocked")
  *   --drag        a window that starts dragging text each time a button is
  *                 pressed in it: "drag started", then "drag dropped" and
@@ -144,7 +150,7 @@ static struct ext_session_lock_v1 *session_lock;
 static struct wl_surface *surface;
 static struct wl_buffer *buffer;
 static struct xdg_surface *window_xdg_surface;
-static bool open_menu, menu_opened;
+static bool open_menu, menu_opened, bar_menu;
 static struct wl_surface *menu_surface;
 static struct wl_buffer *menu_buffer;
 
@@ -157,7 +163,7 @@ static size_t output_count;
 
 static int32_t pending_width, pending_height;
 static bool pending_activated, pending_suspended, pending_fullscreen, pending_tiled;
-static bool fixed_size, game, fickle, remap, remap_on_leave, game_late;
+static bool fixed_size, game, fickle, remap, remap_on_leave, game_late, shadow;
 static int32_t fixed_width = 300, fixed_height = 200;
 static struct xdg_toplevel *window_toplevel;
 static bool running = true;
@@ -240,7 +246,7 @@ static void menu_configure(void *data, struct xdg_surface *xdg_surface, uint32_t
 	xdg_surface_ack_configure(xdg_surface, serial);
 	draw_on(menu_surface, &menu_buffer, 100, 50);
 	say("menu shown");
-	if (!moved) {
+	if (open_menu && !moved) {
 		moved = true;
 		struct xdg_positioner *positioner = menu_positioner(5000);
 		xdg_popup_reposition(data, positioner, 1);
@@ -281,6 +287,23 @@ static void menu_open(uint32_t serial) {
 	xdg_surface_add_listener(xdg_surface, &menu_surface_listener, popup);
 	xdg_popup_add_listener(popup, &popup_listener, NULL);
 	xdg_popup_grab(popup, seat, serial);
+	xdg_positioner_destroy(positioner);
+	wl_surface_commit(menu_surface);
+}
+
+/* A bar's menu, without a grab, as one that opens on hovering does. */
+static void bar_menu_open(struct zwlr_layer_surface_v1 *layer_surface) {
+	struct xdg_positioner *positioner = xdg_wm_base_create_positioner(wm_base);
+	xdg_positioner_set_size(positioner, 100, 50);
+	xdg_positioner_set_anchor_rect(positioner, 100, 0, 1, 30);
+	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_BOTTOM_LEFT);
+	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+	menu_surface = wl_compositor_create_surface(compositor);
+	struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, menu_surface);
+	struct xdg_popup *popup = xdg_surface_get_popup(xdg_surface, NULL, positioner);
+	xdg_surface_add_listener(xdg_surface, &menu_surface_listener, popup);
+	xdg_popup_add_listener(popup, &popup_listener, NULL);
+	zwlr_layer_surface_v1_get_popup(layer_surface, popup);
 	xdg_positioner_destroy(positioner);
 	wl_surface_commit(menu_surface);
 }
@@ -377,8 +400,16 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
 	/* 0x0 means "pick your own size". */
 	int32_t own_width = fixed_size ? fixed_width : 640;
 	int32_t own_height = fixed_size ? fixed_height : 480;
-	draw(pending_width > 0 ? pending_width : own_width,
-		pending_height > 0 ? pending_height : own_height);
+	int32_t width = pending_width > 0 ? pending_width : own_width;
+	int32_t height = pending_height > 0 ? pending_height : own_height;
+	if (shadow) {
+		/* The window is the geometry; the shadow is drawn around it. */
+		int32_t margin = pending_tiled ? 0 : 20;
+		xdg_surface_set_window_geometry(window_xdg_surface, margin, margin, width, height);
+		width += 2 * margin;
+		height += 2 * margin;
+	}
+	draw(width, height);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -457,6 +488,10 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer_surf
 	printf("layer configure %ux%u\n", width, height);
 	fflush(stdout);
 	draw((int32_t)width, (int32_t)height);
+	if (bar_menu && !menu_opened) {
+		menu_opened = true;
+		bar_menu_open(layer_surface);
+	}
 }
 
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer_surface) {
@@ -1177,9 +1212,11 @@ int main(int argc, char *argv[]) {
 				&scale_listener, NULL);
 		}
 		wl_surface_commit(surface);
-	} else if (strcmp(mode, "--bar") == 0) {
+	} else if (strcmp(mode, "--bar") == 0 || strcmp(mode, "--bar-menu") == 0) {
+		bar_menu = strcmp(mode, "--bar-menu") == 0;
 		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP, "tw-test-bar");
+			layer_shell, surface, NULL, bar_menu ? ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM :
+				ZWLR_LAYER_SHELL_V1_LAYER_TOP, "tw-test-bar");
 		zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
 		zwlr_layer_surface_v1_set_anchor(layer_surface, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
 			ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
@@ -1206,10 +1243,11 @@ int main(int argc, char *argv[]) {
 		game = strcmp(mode, "--game") == 0 || fickle || game_late;
 		remap = strcmp(mode, "--remap") == 0;
 		remap_on_leave = strcmp(mode, "--remap-on-leave") == 0;
+		shadow = strcmp(mode, "--shadow") == 0;
 		if (fickle) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
 		}
-		if (strcmp(mode, "--fixed") == 0 || game || remap_on_leave) {
+		if (strcmp(mode, "--fixed") == 0 || game || remap_on_leave || shadow) {
 			fixed_size = true;
 			if (argc > 2 && sscanf(argv[2], "%dx%d", &fixed_width, &fixed_height) != 2) {
 				fprintf(stderr, "--fixed takes <width>x<height>\n");

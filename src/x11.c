@@ -15,19 +15,17 @@
  * tw is told of the helper's exit through a pidfd: one wakeup, no polling, no
  * SIGCHLD handler.
  */
-#define _GNU_SOURCE /* syscall(), for pidfd_open */
+#define _GNU_SOURCE /* accept4(), S_ISVTX */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -125,8 +123,11 @@ static bool lock_display(int display) {
 	return false;
 }
 
+/* Non-blocking: the helper's Xwayland accepts on the same sockets and may
+ * outlive the helper for a moment, so a connection tw saw waiting can be gone
+ * by the time tw accepts it. Xwayland makes its listeners non-blocking too. */
 static int listen_on(const struct sockaddr_un *addr, socklen_t length) {
-	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
 	if (fd < 0) {
 		return -1;
 	}
@@ -215,12 +216,9 @@ static void unwatch(struct tw_x11 *x11) {
  * that we stopped ourselves is served by the next one instead. */
 static void watch(struct tw_x11 *x11, bool turn_away) {
 	for (size_t i = 0; i < LENGTH(x11->watch); i++) {
-		struct pollfd pending = {.fd = x11->fds[i], .events = POLLIN};
-		while (turn_away && poll(&pending, 1, 0) > 0 && (pending.revents & POLLIN)) {
-			int client = accept(x11->fds[i], NULL, NULL);
-			if (client < 0) {
-				break;
-			}
+		int client;
+		/* Until the queue is empty (EAGAIN). */
+		while (turn_away && (client = accept4(x11->fds[i], NULL, NULL, SOCK_CLOEXEC)) >= 0) {
 			close(client);
 		}
 		x11->watch[i] = wl_event_loop_add_fd(x11->server->loop, x11->fds[i],
@@ -466,9 +464,9 @@ static bool helper_start(struct tw_x11 *x11) {
 		 * them. The helper is the one that must. */
 		fcntl(x11->fds[0], F_SETFD, 0);
 		fcntl(x11->fds[1], F_SETFD, 0);
-		int null = open("/dev/null", O_RDWR);
+		/* child_reset() has seen to stdin. */
+		int null = open("/dev/null", O_WRONLY);
 		if (null >= 0) {
-			dup2(null, STDIN_FILENO);
 			dup2(null, STDOUT_FILENO);
 			if (quiet) {
 				dup2(null, STDERR_FILENO);
@@ -486,19 +484,10 @@ static bool helper_start(struct tw_x11 *x11) {
 		return false;
 	}
 
-	/* The event source keeps a duplicate of the pidfd. */
-	int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
-	struct wl_event_source *source = pidfd < 0 ? NULL : wl_event_loop_add_fd(
-		x11->server->loop, pidfd, WL_EVENT_READABLE, handle_helper_exit, x11);
-	if (pidfd >= 0) {
-		close(pidfd);
-	}
+	struct wl_event_source *source = child_watch(x11->server, pid,
+		handle_helper_exit, x11);
 	if (source == NULL) {
-		/* Without this we would never learn that it exited. */
-		wlr_log(WLR_ERROR, "cannot watch %s, stopping it", x11_helper);
-		kill(pid, SIGKILL);
-		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
-		}
+		wlr_log(WLR_ERROR, "cannot watch %s, stopped it", x11_helper);
 		return false;
 	}
 	x11->pid = pid;

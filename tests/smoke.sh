@@ -15,7 +15,7 @@ off_screen='activated=0 suspended=1'
 # --- Options -------------------------------------------------------------------
 # A timeout that is not a number of seconds is refused. Read as 0 it would
 # mean "never", and a typo would switch the screen blanking off unnoticed.
-"$tw_bin" -h >/dev/null || fail "tw -h failed"
+"$tw_bin" -h | grep -q -- '-h  show this help' || fail "tw -h does not list -h"
 for bad in '-b five' '-z 1h' '-x -3' '-b 2.5' '-b'; do
 	# shellcheck disable=SC2086 # two words on purpose
 	if "$tw_bin" $bad >/dev/null 2>"$run_dir/options.log"; then

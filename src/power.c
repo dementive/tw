@@ -11,7 +11,6 @@
  * only whose supply it is, to pass over a mouse's battery: for any other it
  * looks at the supplies again and acts if the answer changed.
  */
-#define _GNU_SOURCE /* syscall(), for pidfd_open */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,7 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
@@ -70,7 +68,8 @@ static void attribute(const char *dir, const char *supply, const char *name,
  * supplies it. This is the kernel's own rule
  * (power_supply_is_system_supplied()): a supply of scope "Device" belongs to
  * a mouse or a phone and is left out; of the rest, any that is not a battery
- * and is online means mains, be it the charger or a USB-C port.
+ * and is online (any value but 0) means mains, be it the charger or a USB-C
+ * port.
  *
  * `charge` is how full the fullest battery is, in percent: with two, the
  * machine runs on until both are empty. -1 if none says.
@@ -101,7 +100,9 @@ static void supplies_read(const char *dir, bool *battery, bool *mains, int *char
 			}
 		} else if (type[0] != '\0') {
 			attribute(dir, entry->d_name, "online", value, sizeof(value));
-			*mains = *mains || strcmp(value, "1") == 0;
+			/* Any value but 0 is online: a USB-C port reads 2 while
+			 * it charges at a programmable voltage (PPS). */
+			*mains = *mains || atoi(value) != 0;
 		}
 	}
 	closedir(supplies);
@@ -160,19 +161,10 @@ static void profile_run(struct tw_server *server) {
 		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 		_exit(127);
 	}
-	/* The event source keeps a duplicate of the pidfd. */
-	int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
-	struct wl_event_source *source = pidfd < 0 ? NULL : wl_event_loop_add_fd(
-		server->loop, pidfd, WL_EVENT_READABLE, handle_profile_exit, server);
-	if (pidfd >= 0) {
-		close(pidfd);
-	}
+	struct wl_event_source *source = child_watch(server, pid,
+		handle_profile_exit, server);
 	if (source == NULL) {
-		/* It cannot be waited for without blocking tw, so it is stopped and
-		 * the command runs unordered instead. */
-		kill(pid, SIGKILL);
-		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
-		}
+		/* It was stopped: the command runs unordered instead. */
 		spawn(cmd);
 		return;
 	}

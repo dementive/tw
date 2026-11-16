@@ -11,7 +11,8 @@
  *
  * Nothing here runs until something is copied or pasted: no timer, no
  * polling, and no memory but what the last copy holds, of which
- * clipboard_keep_bytes in config.h is the most.
+ * clipboard_keep_bytes in config.h is the most, and the format of an older
+ * copy that a paste still under way is taking (see struct tw_paste).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -46,7 +47,12 @@ struct tw_copy {
 	struct tw_format formats[];
 };
 
-/* A paste that did not fit into the reader's pipe in one go. */
+/* A paste that did not fit into the reader's pipe in one go. It holds its
+ * format's bytes until the reader has them all or closes its end, even when
+ * the copy is replaced meanwhile: a program keeps writing a paste it has
+ * begun after its copy is replaced too, and cutting it would hand the reader
+ * a part for the whole. A reader that stops reading and keeps the pipe open
+ * keeps those bytes with it; it costs memory, never a wakeup. */
 struct tw_paste {
 	struct wl_list link; /* tw_clipboard.pastes */
 	struct wl_event_source *writable;

@@ -96,7 +96,11 @@ files the earlier one put there for it, and says which.
 ### Build and install
 
 Meson downloads two pinned sources on the first `setup`, wlroots and
-libdisplay-info, and builds both into tw.
+libdisplay-info, and builds both into tw. Everything else comes from the
+packages above. If one is missing or older than wlroots needs (Wayland
+1.24, wayland-protocols 1.47, libdrm 2.4.129, xkbcommon 1.8, pixman 0.43),
+`setup` stops and names it: update the system and run it again. It never
+fetches a library of its own.
 
 ```sh
 meson setup build-release --buildtype=release -Db_lto=true
@@ -372,7 +376,9 @@ one commit in its `subprojects/*.wrap`, with the release's tag in the
 comment above. A new wlroots release changes its API, so moving that pin
 is a change of its own, with tw's code changed to match. To move one, find
 the commit the release's tag names, put it in the wrap file as `revision`
-along with the tag in the comment, and fetch it:
+along with the tag in the comment, and fetch it. For wlroots, also copy the
+minimum versions its `meson.build` asks of the system libraries into the
+list at the top of tw's `meson.build`:
 
 ```sh
 git ls-remote https://gitlab.freedesktop.org/wlroots/wlroots.git 'refs/tags/<tag>^{}'

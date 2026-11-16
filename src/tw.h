@@ -93,6 +93,7 @@ struct tw_output {
  *
  *   scene_tree          positioned at the window; node.data = window
  *   └── surface_tree    the client's surfaces, clipped to the window's box
+ *                       while tiled; a dialog's are not clipped
  *
  * Its menus are drawn above every window, dialog and bar, so popup_tree
  * lives under server->popup_tree and follows scene_tree's position and
@@ -176,7 +177,9 @@ struct tw_server {
 	struct wlr_scene_tree *window_tree;
 	struct wlr_scene_tree *fullscreen_tree;
 	struct wlr_scene_tree *float_tree;
-	struct wlr_scene_tree *popup_tree; /* windows' menus, above every window */
+	/* Menus, above every window: the windows' own, and those of layer
+	 * surfaces below the overlay layer (layer.c). */
+	struct wlr_scene_tree *popup_tree;
 	struct wlr_scene_tree *lock_tree; /* enabled only while locked */
 	struct wlr_scene_tree *drag_icon_tree; /* at the cursor; what a drag shows */
 	struct wl_list outputs; /* tw_output.link, in the order they appeared */
@@ -337,6 +340,11 @@ void spawn(const char *cmd);
  * stdin from /dev/null, and no file of tw's left open across exec (a
  * caller that hands one on clears its close-on-exec flag afterwards). */
 void child_reset(void);
+/* Calls func when the forked child pid exits, through a pidfd: no polling
+ * and no SIGCHLD. The caller reaps it then. On failure the child is killed
+ * and reaped, and NULL returned. */
+struct wl_event_source *child_watch(struct tw_server *server, pid_t pid,
+	wl_event_loop_fd_func_t func, void *data);
 /*
  * Looks up the program a shell command starts (its first word) on PATH,
  * without running anything. On success `path` holds where it is.
@@ -484,10 +492,10 @@ bool strip_animate(struct tw_output *output);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
 /* A touchpad swipe drags the strip. `dx` is the finger movement in pixels. */
-void strip_swipe_begin(struct tw_server *server);
+void strip_swipe_begin(struct tw_server *server, uint32_t time_msec);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
 /* Lets go: the strip glides to the nearest column edge. */
-void strip_swipe_end(struct tw_server *server, bool cancelled);
+void strip_swipe_end(struct tw_server *server, bool cancelled, uint32_t time_msec);
 
 /* Actions on the focused column. arg.i is a direction (-1 left, +1 right). */
 void action_close(struct tw_server *server, const union tw_arg *arg);

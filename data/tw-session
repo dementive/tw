@@ -239,4 +239,18 @@ EOF
 	fi
 fi
 [ -z "$wake_step" ] || eval "$wake_step"
-exec "$tw" -s "$startup"
+
+# When tw exits, take back from systemd what the startup command handed on.
+# systemd keeps it for as long as the user is logged in anywhere, and a
+# desktop started next imports it (Plasma does): it would run with the
+# accessibility bus off and the NVIDIA GPU out of its programs' reach. So
+# tw is not exec'd; this shell waits for it, which costs about 300 KB and
+# no wakeups. A signal that ends the session reaches tw too, and the trap
+# keeps this shell until tw is gone (tw itself gets the default handling).
+trap : HUP TERM
+"$tw" -s "$startup"
+status=$?
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl --user unset-environment $service_env DISPLAY 2>/dev/null
+fi
+exit $status

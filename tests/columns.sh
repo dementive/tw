@@ -219,5 +219,16 @@ press super+q
 expect_line front closed "Mod+Q to close the dialog"
 expect_keyboard late enter "the keyboard to go to the fullscreen game"
 
+# --- A dialog keeps its shadow ----------------------------------------------
+# Told it is not tiled, a dialog draws a shadow outside its geometry, and it
+# is not cropped away: the 300x200 dialog is centred at 490,260 in the
+# 1280x720 screen, its surface starts 20 pixels further up and left, and the
+# pointer reaches it in the shadow.
+press super+9
+start_client shadow --shadow
+expect_state shadow "configure 0x0 $on fullscreen=0 tiled=0" "the dialog with a shadow to float"
+pointer_to 480 300
+expect_line shadow "pointer enter 10 60" "the pointer to reach the dialog's shadow"
+
 stop_tw
-echo "ok: stacked columns, floating dialogs, mapping again, a remapped dialog in front, a game fullscreen without the focus"
+echo "ok: stacked columns, floating dialogs, mapping again, a remapped dialog in front, a game fullscreen without the focus, a dialog's shadow"

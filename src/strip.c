@@ -424,7 +424,12 @@ static struct tw_workspace *swiping_workspace(struct tw_server *server) {
 	return NULL;
 }
 
-void strip_swipe_begin(struct tw_server *server) {
+/* Time between two swipe events, in seconds. */
+static double swipe_seconds(const struct tw_workspace *workspace, uint32_t time_msec) {
+	return (double)(time_msec - workspace->swipe_time_msec) / 1000.0;
+}
+
+void strip_swipe_begin(struct tw_server *server, uint32_t time_msec) {
 	struct tw_workspace *workspace = active_workspace(server);
 	struct tw_output *output = output_focused(server);
 	struct tw_workspace *earlier = swiping_workspace(server);
@@ -433,6 +438,7 @@ void strip_swipe_begin(struct tw_server *server) {
 	}
 	workspace->swiping = true;
 	workspace->view_velocity = 0;
+	workspace->swipe_time_msec = time_msec;
 	if (output != NULL) {
 		output->animating = false;
 	}
@@ -446,10 +452,8 @@ void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec)
 	}
 	/* The strip follows the fingers, so the view moves the other way. Keep a
 	 * smoothed speed for the glide after they lift. */
-	double dt = (double)(time_msec - workspace->swipe_time_msec) / 1000.0;
-	if (dt > 0 && dt < 0.1) {
-		workspace->view_velocity = 0.5 * workspace->view_velocity + 0.5 * (-dx / dt);
-	}
+	workspace->view_velocity = tw_swipe_speed(workspace->view_velocity, -dx,
+		swipe_seconds(workspace, time_msec));
 	workspace->swipe_time_msec = time_msec;
 	workspace->view_pos -= dx;
 
@@ -512,13 +516,17 @@ static void workspace_snap(struct tw_workspace *workspace, const struct wlr_box 
 	}
 }
 
-void strip_swipe_end(struct tw_server *server, bool cancelled) {
+void strip_swipe_end(struct tw_server *server, bool cancelled, uint32_t time_msec) {
 	struct tw_workspace *workspace = swiping_workspace(server);
 	struct wlr_box area, full;
 	if (workspace == NULL) {
 		return;
 	}
 	workspace->swiping = false;
+	/* Fingers that came to rest before lifting set the strip down there,
+	 * whatever speed they had before. */
+	workspace->view_velocity = tw_swipe_release(workspace->view_velocity,
+		swipe_seconds(workspace, time_msec));
 	/* A cancelled swipe glides back to where it started. */
 	if (!cancelled && workspace_boxes(server, workspace, &area, &full)) {
 		workspace_snap(workspace, &area);

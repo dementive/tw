@@ -1,5 +1,6 @@
 /* Unit tests for src/layout.c. Runs without a compositor. */
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "layout.h"
@@ -124,6 +125,23 @@ int main(void) {
 			CHECK(tw_spring_settled(pos, vel, target));
 		}
 	}
+	/* Swipe speed: events 10 ms apart moving 20 px each build up toward
+	 * 2000 px/s; a second half of one event (same time) changes nothing. */
+	double speed = 0;
+	for (int i = 0; i < 10; i++) {
+		speed = tw_swipe_speed(speed, 20, 0.01);
+	}
+	CHECK(fabs(speed - 2000) < 5);
+	CHECK(tw_swipe_speed(speed, 5, 0) == speed);
+	/* Fingers that rested between two events start the estimate afresh. */
+	CHECK(tw_swipe_speed(speed, 20, 0.1) == 0);
+	CHECK(tw_swipe_speed(speed, 20, 1.0) == 0);
+	/* Lifting right after moving keeps the fling; lifting after holding
+	 * still sets the strip down where it is. */
+	CHECK(tw_swipe_release(speed, 0.008) == speed);
+	CHECK(tw_swipe_release(speed, 1.0) == 0);
+	/* A timestamp that wrapped or went backwards reads as a long rest. */
+	CHECK(tw_swipe_release(speed, (double)(uint32_t)(5u - 10u) / 1000.0) == 0);
 	/* A zero-length step changes nothing. */
 	double still_pos = 123, still_vel = 45;
 	tw_spring_step(&still_pos, &still_vel, target, omega, 0);

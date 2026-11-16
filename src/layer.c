@@ -20,6 +20,9 @@ struct tw_layer_surface {
 	struct tw_server *server;
 	struct wlr_layer_surface_v1 *layer_surface;
 	struct wlr_scene_layer_surface_v1 *scene;
+	/* Its menus: above every window, as a window's are, unless it is on the
+	 * overlay layer, where they go just above it. Kept where `scene` is. */
+	struct wlr_scene_tree *popup_tree;
 	/* Set from unmap, or as its output goes, until the next initial commit.
 	 * A configure sent in that window would carry a serial wlroots is about
 	 * to forget, and a client that acked it would be killed with a protocol
@@ -93,6 +96,8 @@ static void arrange_pass(struct tw_server *server, struct wlr_output *output,
 			surface->configured_full = *full;
 			surface->configured_room = *usable;
 			wlr_scene_layer_surface_v1_configure(surface->scene, full, usable);
+			wlr_scene_node_set_position(&surface->popup_tree->node,
+				surface->scene->tree->node.x, surface->scene->tree->node.y);
 			surface->configured_left = *usable;
 			surface->configured = true;
 		}
@@ -131,6 +136,15 @@ void layers_output_destroyed(struct tw_server *server, struct wlr_output *output
 			wlr_layer_surface_v1_destroy(surface->layer_surface);
 		}
 	}
+}
+
+/* Where a layer surface's menus go. Under the windows, a bar on the bottom
+ * layer would open its menus behind them, and a bar on the top layer behind a
+ * dialog. On the overlay layer, they go right above it, which is still above
+ * the windows' own menus. */
+static struct wlr_scene_tree *layer_popup_parent(struct tw_server *server, uint32_t layer) {
+	return layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY ?
+		server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] : server->popup_tree;
 }
 
 static void handle_map(struct wl_listener *listener, void *data) {
@@ -173,6 +187,8 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	if (layer_surface->current.committed & WLR_LAYER_SURFACE_V1_STATE_LAYER) {
 		wlr_scene_node_reparent(&surface->scene->tree->node,
 			surface->server->layer_trees[layer_surface->current.layer]);
+		wlr_scene_node_reparent(&surface->popup_tree->node,
+			layer_popup_parent(surface->server, layer_surface->current.layer));
 	}
 	layers_arrange(surface->server);
 	strip_arrange(surface->server);
@@ -181,7 +197,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 static void handle_new_popup(struct wl_listener *listener, void *data) {
 	/* window.c already tracks the popup; it only lacked a place in the scene. */
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, new_popup);
-	popup_attach(data, surface->scene->tree);
+	popup_attach(data, surface->popup_tree);
 }
 
 bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, struct wlr_box *box) {
@@ -210,7 +226,8 @@ bool layer_popup_box(struct tw_server *server, struct wlr_xdg_popup *popup, stru
 /*
  * wlroots unmaps a layer surface before it destroys it, whichever way it
  * goes, and handle_unmap() gave back the keyboard and the room it kept. One
- * that never mapped had neither. The scene node goes with the layer surface.
+ * that never mapped had neither. The scene node goes with the layer surface;
+ * the menus' tree is tw's own, and their trees go with it.
  */
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_layer_surface *surface = wl_container_of(listener, surface, destroy);
@@ -220,6 +237,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&surface->destroy.link);
 	wl_list_remove(&surface->new_popup.link);
 	wl_list_remove(&surface->link);
+	wlr_scene_node_destroy(&surface->popup_tree->node);
 	free(surface);
 }
 
@@ -259,7 +277,12 @@ static void handle_new_layer_surface(struct wl_listener *listener, void *data) {
 	/* `pending.layer` is the layer named in the creation request. */
 	surface->scene = wlr_scene_layer_surface_v1_create(
 		server->layer_trees[layer_surface->pending.layer], layer_surface);
-	if (surface->scene == NULL) {
+	surface->popup_tree = surface->scene == NULL ? NULL :
+		wlr_scene_tree_create(layer_popup_parent(server, layer_surface->pending.layer));
+	if (surface->popup_tree == NULL) {
+		if (surface->scene != NULL) {
+			wlr_scene_node_destroy(&surface->scene->tree->node);
+		}
 		free(surface);
 		wl_resource_post_no_memory(layer_surface->resource);
 		return;

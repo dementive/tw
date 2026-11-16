@@ -1,4 +1,4 @@
-#define _GNU_SOURCE /* close_range() */
+#define _GNU_SOURCE /* close_range(), syscall() for pidfd_open */
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -75,6 +76,24 @@ void child_reset(void) {
 		dup2(null, STDIN_FILENO);
 		close(null);
 	}
+}
+
+struct wl_event_source *child_watch(struct tw_server *server, pid_t pid,
+		wl_event_loop_fd_func_t func, void *data) {
+	/* The event source keeps a duplicate of the pidfd. */
+	int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+	struct wl_event_source *source = pidfd < 0 ? NULL : wl_event_loop_add_fd(
+		server->loop, pidfd, WL_EVENT_READABLE, func, data);
+	if (pidfd >= 0) {
+		close(pidfd);
+	}
+	if (source == NULL) {
+		/* Its exit could not be learnt without blocking tw. */
+		kill(pid, SIGKILL);
+		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+		}
+	}
+	return source;
 }
 
 void spawn(const char *cmd) {
@@ -183,7 +202,7 @@ static void handle_session_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void usage(FILE *out, const char *name) {
-	fprintf(out, "Usage: %s [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
+	fprintf(out, "Usage: %s [-h] [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -z  suspend the machine after this long without input (0: never;\n"
@@ -191,7 +210,8 @@ static void usage(FILE *out, const char *name) {
 		"  -x  stop the X11 server when no X11 program has been connected for\n"
 		"      this long (0: never; default %d)\n"
 		"  -d  log debug output\n"
-		"  -s  run a shell command once the compositor is up\n",
+		"  -s  run a shell command once the compositor is up\n"
+		"  -h  show this help\n",
 		name, blank_after_seconds, suspend_after_seconds, x11_idle_seconds);
 }
 

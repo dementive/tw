@@ -95,6 +95,23 @@ has box '^pointer leave' 0 || fail "the pointer left the window it is confined t
 press super+j
 expect_line box "pointer unconfined" "moving the focus away to end the confinement"
 
+# Focused with the pointer outside its region, the window is not confined:
+# wlroots could not keep a pointer in a region it is not in. The confinement
+# takes hold as the pointer moves into the region.
+pointer_to 900 300
+expect_line box "pointer motion 260 300" "the pointer to move outside the region"
+click
+expect_state box "$on" "a click to focus the confining window"
+pointer_by 10 0
+expect_line box "pointer motion 270 300" "the pointer to move freely outside the region"
+has box '^pointer confined' 1 || fail "the confinement took hold with the pointer outside its region"
+pointer_to 700 50
+wait_until "the confinement to take hold inside the region" has box '^pointer confined' 2
+pointer_by 500 0
+expect_line box "pointer motion 99 50" "the pointer to stop at the edge of the region"
+press super+j
+wait_until "moving the focus away to end the confinement again" has box '^pointer unconfined' 2
+
 # --- Locked session: the pointer reaches only the lock screen -------------------
 # The pointer rests on a window as the session locks, as it does when the
 # session locks on idle. The lock screen appears under it and gets it
@@ -228,5 +245,17 @@ expect_line drag "drag cancelled" "a drag let go over an empty workspace to come
 expect_keyboard drag leave "the keyboard to follow the focus once the drag is over"
 [ "$(grep -c '^drop$' "$run_dir/drop.log")" = 1 ] || fail "a drag let go over an empty workspace landed on a hidden window"
 
+# --- A bar's menu is above the windows -------------------------------------------
+# A bar on the bottom layer, under the windows, opens a menu hanging into the
+# room below it: the menu is drawn over the window there, and gets the pointer.
+start_client cover
+pointer_to 150 60
+wait_until "the window to be under the pointer" \
+	last_line_matches cover pointer "pointer (enter|motion) 150 60"
+spawn_client barmenu --bar-menu
+expect_line barmenu "menu shown" "the bar to open its menu"
+pointer_to 150 61
+expect_line barmenu "pointer enter menu 50 31" "the bar's menu to be over the window, not under it"
+
 stop_tw
-echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off, a held button"
+echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off, a held button, a bar's menu"

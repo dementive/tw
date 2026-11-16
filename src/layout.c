@@ -53,6 +53,23 @@ bool tw_spring_settled(double pos, double vel, double target) {
 	return fabs(pos - target) < 0.5 && fabs(vel) < 10.0;
 }
 
+/* Libinput sends gesture events only while the fingers move. */
+#define SWIPE_REST_S 0.1
+
+double tw_swipe_speed(double speed, double moved, double dt) {
+	if (dt <= 0) {
+		return speed; /* the same event, split in two */
+	}
+	if (dt >= SWIPE_REST_S) {
+		return 0;
+	}
+	return 0.5 * speed + 0.5 * moved / dt;
+}
+
+double tw_swipe_release(double speed, double dt) {
+	return dt < SWIPE_REST_S ? speed : 0;
+}
+
 static int whole_hz(int mhz) {
 	return (mhz + 500) / 1000;
 }

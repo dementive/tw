@@ -23,10 +23,9 @@
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
 
-#if WLR_HAS_LIBINPUT_BACKEND
+/* Always built: meson.build asks wlroots for its libinput backend. */
 #include <libinput.h>
 #include <wlr/backend/libinput.h>
-#endif
 
 #include "tw.h"
 #include "config.h"
@@ -48,12 +47,15 @@ struct tw_keyboard {
 struct tw_constraint {
 	struct tw_server *server;
 	struct wlr_pointer_constraint_v1 *constraint;
+	struct wl_listener set_region;
 	struct wl_listener destroy;
 };
 
 /* A laptop lid. */
 struct tw_switch {
 	struct tw_server *server;
+	/* Set while a lid that came back is not known to be closed (new_switch()). */
+	struct wl_event_source *open_check;
 	struct wl_listener toggle;
 	struct wl_listener destroy;
 };
@@ -260,7 +262,6 @@ static void handle_new_virtual_pointer(struct wl_listener *listener, void *data)
 /* --- Pointer ---------------------------------------------------------------- */
 
 static void new_pointer(struct tw_server *server, struct wlr_input_device *device) {
-#if WLR_HAS_LIBINPUT_BACKEND
 	if (wlr_input_device_is_libinput(device)) {
 		struct libinput_device *libinput = wlr_libinput_get_device_handle(device);
 		/* Only touchpads can tap; mice keep libinput's defaults. */
@@ -278,11 +279,27 @@ static void new_pointer(struct tw_server *server, struct wlr_input_device *devic
 			}
 		}
 	}
-#endif
 	wlr_cursor_attach_input_device(server->cursor, device);
 }
 
 /* --- Lid switch ------------------------------------------------------------- */
+
+static void lid_moved(struct tw_server *server, bool closed) {
+	/* What happens to the laptop's own screen, and whether the session
+	 * locks, depends on what else is plugged in: output.c decides. */
+	outputs_lid(server, closed);
+	if (!closed) {
+		/* Opened: turn the screens back on if they were off. */
+		idle_activity(server);
+	}
+}
+
+static void switch_open_check_cancel(struct tw_switch *lid) {
+	if (lid->open_check != NULL) {
+		wl_event_source_remove(lid->open_check);
+		lid->open_check = NULL;
+	}
+}
 
 static void handle_switch_toggle(struct wl_listener *listener, void *data) {
 	struct tw_switch *lid = wl_container_of(listener, lid, toggle);
@@ -290,33 +307,52 @@ static void handle_switch_toggle(struct wl_listener *listener, void *data) {
 	if (event->switch_type != WLR_SWITCH_TYPE_LID) {
 		return;
 	}
-	/* What happens to the laptop's own screen, and whether the session
-	 * locks, depends on what else is plugged in: output.c decides. */
-	bool closed = event->switch_state == WLR_SWITCH_STATE_ON;
-	outputs_lid(lid->server, closed);
-	if (!closed) {
-		/* Opened: turn the screens back on if they were off. */
-		idle_activity(lid->server);
+	switch_open_check_cancel(lid);
+	lid_moved(lid->server, event->switch_state == WLR_SWITCH_STATE_ON);
+}
+
+/* The lid came back and said nothing in the same dispatch: it is open. */
+static void switch_open_check(void *data) {
+	struct tw_switch *lid = data;
+	lid->open_check = NULL;
+	if (lid->server->lid.closed) {
+		lid_moved(lid->server, false);
 	}
 }
 
 static void handle_switch_destroy(struct wl_listener *listener, void *data) {
 	struct tw_switch *lid = wl_container_of(listener, lid, destroy);
+	switch_open_check_cancel(lid);
 	wl_list_remove(&lid->toggle.link);
 	wl_list_remove(&lid->destroy.link);
 	free(lid);
 }
 
-static void new_switch(struct tw_server *server, struct wlr_switch *wlr_switch) {
+/*
+ * A lid switch is also added again after every VT switch: libinput removes
+ * all devices while the session is away and adds them back on return. On
+ * adding a lid it reports only a closed one, so a lid opened while away is
+ * never reported. If tw last saw it closed, it is taken to be open unless
+ * libinput says otherwise in the same dispatch, before the idle callback
+ * runs. A lid still closed says so then, and nothing flickers.
+ */
+static void new_switch(struct tw_server *server, struct wlr_input_device *device) {
 	struct tw_switch *lid = calloc(1, sizeof(*lid));
 	if (lid == NULL) {
 		return;
 	}
+	struct wlr_switch *wlr_switch = wlr_switch_from_input_device(device);
 	lid->server = server;
 	lid->toggle.notify = handle_switch_toggle;
 	wl_signal_add(&wlr_switch->events.toggle, &lid->toggle);
 	lid->destroy.notify = handle_switch_destroy;
 	wl_signal_add(&wlr_switch->base.events.destroy, &lid->destroy);
+	if (server->lid.closed && wlr_input_device_is_libinput(device) &&
+			libinput_device_switch_has_switch(wlr_libinput_get_device_handle(device),
+				LIBINPUT_SWITCH_LID) > 0) {
+		lid->open_check = wl_event_loop_add_idle(server->loop,
+			switch_open_check, lid);
+	}
 }
 
 static void handle_new_input(struct wl_listener *listener, void *data) {
@@ -331,7 +367,7 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 		new_pointer(server, device);
 		break;
 	case WLR_INPUT_DEVICE_SWITCH:
-		new_switch(server, wlr_switch_from_input_device(device));
+		new_switch(server, device);
 		break;
 	default:
 		break;
@@ -356,6 +392,9 @@ static void pointer_enter(struct tw_server *server, uint32_t time_msec,
 	 * these go to the drag, which tells the window under it. */
 	wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+	/* Moving within a surface can take the pointer into the region of
+	 * a constraint, or out of it once the client shrinks the region. */
+	pointer_constraint_update(server);
 }
 
 struct surface_origin {
@@ -483,8 +522,13 @@ void pointer_constraint_update(struct tw_server *server) {
 			wlr_surface_get_root_surface(pointed) == wlr_surface_get_root_surface(typed)) {
 		constraint = wlr_pointer_constraints_v1_constraint_for_surface(
 			server->pointer_constraints, pointed, seat);
-		/* One we could not attach a destroy listener to is never used. */
-		if (constraint != NULL && constraint->data == NULL) {
+		/* One we could not attach a destroy listener to is never used, nor
+		 * one whose region the pointer is outside: it takes hold as the
+		 * pointer moves in (pointer_enter()). */
+		if (constraint != NULL && (constraint->data == NULL ||
+				!pixman_region32_contains_point(&constraint->region,
+					(int)floor(seat->pointer_state.sx),
+					(int)floor(seat->pointer_state.sy), NULL))) {
 			constraint = NULL;
 		}
 	}
@@ -503,6 +547,17 @@ void pointer_constraint_update(struct tw_server *server) {
 	}
 }
 
+/* The region is first known at the commit after the request, and a client
+ * may move it under a resting pointer. Only to take hold: letting go of an
+ * active one-shot constraint destroys it, which must not happen inside its
+ * own surface's commit. The next movement lets go instead (pointer_enter()). */
+static void handle_constraint_set_region(struct wl_listener *listener, void *data) {
+	struct tw_constraint *constraint = wl_container_of(listener, constraint, set_region);
+	if (constraint->server->active_constraint == NULL) {
+		pointer_constraint_update(constraint->server);
+	}
+}
+
 static void handle_constraint_destroy(struct wl_listener *listener, void *data) {
 	struct tw_constraint *constraint = wl_container_of(listener, constraint, destroy);
 	struct tw_server *server = constraint->server;
@@ -512,6 +567,7 @@ static void handle_constraint_destroy(struct wl_listener *listener, void *data) 
 		constraint_apply_hint(server, constraint->constraint);
 	}
 	constraint->constraint->data = NULL;
+	wl_list_remove(&constraint->set_region.link);
 	wl_list_remove(&constraint->destroy.link);
 	free(constraint);
 }
@@ -525,6 +581,8 @@ static void handle_new_constraint(struct wl_listener *listener, void *data) {
 	}
 	constraint->server = server;
 	constraint->constraint = wlr_constraint;
+	constraint->set_region.notify = handle_constraint_set_region;
+	wl_signal_add(&wlr_constraint->events.set_region, &constraint->set_region);
 	constraint->destroy.notify = handle_constraint_destroy;
 	wl_signal_add(&wlr_constraint->events.destroy, &constraint->destroy);
 	wlr_constraint->data = constraint;
@@ -659,7 +717,7 @@ static void handle_swipe_update(struct wl_listener *listener, void *data) {
 			fabs(server->swipe_dx) + fabs(server->swipe_dy) > 8) {
 		if (fabs(server->swipe_dx) > fabs(server->swipe_dy)) {
 			server->swipe_axis = TW_SWIPE_SIDEWAYS;
-			strip_swipe_begin(server);
+			strip_swipe_begin(server, event->time_msec);
 			/* Do not lose the movement that made up our mind. */
 			strip_swipe_update(server, server->swipe_dx - event->dx, event->time_msec);
 		} else {
@@ -683,7 +741,7 @@ static void handle_swipe_end(struct wl_listener *listener, void *data) {
 	/* A swipe the session was locked during does nothing. */
 	bool cancelled = event->cancelled || server->locked;
 	if (server->swipe_axis == TW_SWIPE_SIDEWAYS) {
-		strip_swipe_end(server, cancelled);
+		strip_swipe_end(server, cancelled, event->time_msec);
 	} else if (server->swipe_axis == TW_SWIPE_VERTICAL && !cancelled &&
 			fabs(server->swipe_dy) >= swipe_workspace_distance) {
 		/* Workspaces are stacked: pushing the screen up shows the next one. */

@@ -72,6 +72,12 @@ supply BAT0 type=Battery status=Discharging
 supply ADP0 type=Mains online=0
 supply ucsi-source-psy-1 type=USB online=1 scope=Device
 expect "a laptop on battery charging a phone" battery "saver"
+# A USB-C port that charges at a programmable voltage (PPS) reads 2, and the
+# kernel counts any value but 0 as online.
+supply BAT0 type=Battery status=Charging
+supply ADP0 type=Mains online=0
+supply tcpm-source-psy-1 type=USB online=2
+expect "a laptop on a USB-C PPS charger" mains "balanced"
 
 # What the kernel lists varies by machine. As in the kernel's own rule, a
 # supply without a type is passed over, and so is a charger without "online".
