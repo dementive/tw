@@ -1,0 +1,15 @@
+# A laptop's built-in USB keyboard may sleep between keys.
+#
+# The kernel lets a USB device sleep only when told to, and nothing tells it
+# to for a built-in keyboard. Awake, the keyboard is polled every few
+# milliseconds, and on the G615LM that alone kept the processor out of its
+# deepest idle state: letting it sleep took the idle laptop from 7.37 to
+# 6.29 W at the battery. It sleeps two seconds after the last key, and the
+# next key wakes it without being lost.
+#
+# Built in: the firmware says the port is not one a user plugs into
+# (removable is "fixed"). A keyboard: one of its interfaces is a boot
+# keyboard (HID class 03, subclass 01, protocol 01), which udev's usb_id
+# lists in ID_USB_INTERFACES. A keyboard plugged in is left as it is.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{removable}=="fixed", \
+	ENV{ID_USB_INTERFACES}=="*:030101:*", TEST=="power/control", ATTR{power/control}="auto"

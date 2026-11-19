@@ -125,13 +125,13 @@ To see whether huge pages suffer, look at
 `grep thp_fault_fallback /proc/vmstat` after a few days of use: it counts
 the times a program wanted a huge page and got normal ones.
 
-### Two module settings in the boot image
+### Module settings in the boot image
 
-Both save memory that is set aside at boot and never used. Check that each
+Each saves memory that is set aside at boot and never used. Check that each
 applies to the machine first.
 
 ```sh
-printf 'blacklist xe\noptions nvme io_queue_depth=128\n' | sudo tee /etc/modprobe.d/memory.conf
+printf 'blacklist xe\noptions nvme io_queue_depth=128 max_host_mem_size_mb=0\n' | sudo tee /etc/modprobe.d/memory.conf
 sudo limine-mkinitcpio
 ```
 
@@ -139,12 +139,14 @@ sudo limine-mkinitcpio
 | --- | --- | --- | --- |
 | `blacklist xe` | the kernel loads two drivers for an Intel GPU, `i915` and the newer `xe`, and only one drives it; this keeps `xe` and its helper modules out | about 5 MB | the GPU is driven by `xe` (`readlink /sys/class/drm/card*/device/driver` says so), as on Intel's chips from Lunar Lake on, or the machine has no Intel GPU. Check every machine the disk boots |
 | `options nvme io_queue_depth=128` | the SSD driver makes room for 1,023 requests under way in each of its queues, one queue per CPU thread; 128 each is still far more than a desktop uses | about 9 MB | the machine has no NVMe disk |
+| `max_host_mem_size_mb=0` (on the same line) | an NVMe SSD without memory of its own borrows up to 128 MB of the computer's for its map of the flash, from boot ("allocated 64 MiB host memory buffer" in `journalctl -k`) | 64 MB on the G615LM, whose internal disk Linux does not use | Linux uses such a disk: it then reads and writes more slowly |
 
 Both modules are loaded from the boot image, so the file has to go into
 it: `limine-mkinitcpio` is CachyOS's command to rebuild it with the Limine
 boot loader; elsewhere it is `sudo mkinitcpio -P`. After a reboot,
-`lsmod | grep '^xe '` prints nothing and
-`cat /sys/module/nvme/parameters/io_queue_depth` prints 128.
+`lsmod | grep '^xe '` prints nothing,
+`cat /sys/module/nvme/parameters/io_queue_depth` prints 128, and
+`journalctl -k -b | grep 'host memory buffer'` prints nothing.
 
 ### Keep the NPU's driver out
 

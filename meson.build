@@ -232,8 +232,9 @@ foreach name : root_commands
 	)
 endforeach
 
-# Lets the NVIDIA GPU power down once its driver is gone.
-udev_rules = {'gpu': 'data/tw-gpu-udev.rules'}
+# Lets the NVIDIA GPU power down once its driver is gone, and a laptop's
+# built-in keyboard sleep between keys.
+udev_rules = {'gpu': 'data/tw-gpu-udev.rules', 'keyboard': 'data/tw-keyboard.rules'}
 if get_option('bluetooth')
 	# What keeps the adapter's driver from loading as the machine starts, the
 	# timer that switches Bluetooth off again when nothing is connected, the
@@ -431,6 +432,7 @@ script_tests = {
 	'profile': 'tw-power and its root helper',
 	'bluetooth': 'tw-bluetooth and its root helper',
 	'thunderbolt': 'the Thunderbolt udev rule',
+	'keyboard': 'the built-in keyboard udev rule',
 	'install': 'the step that runs after `meson install`',
 }
 foreach name, what : script_tests

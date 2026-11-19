@@ -1034,3 +1034,22 @@ to approve them. Where the kernel's DMA protection is on
 and the rule does the same as the device appears. Where it is off the rule
 does nothing. [setup.md](setup.md#thunderbolt-a-dock-without-a-daemon) says
 how to tell and when to keep boltd.
+
+## The built-in keyboard
+
+A laptop's own keyboard is often a USB device, and the kernel keeps a USB
+device awake unless told it may sleep. Awake, it is polled every few
+milliseconds, and on the G615LM that alone kept the processor out of its
+deepest idle state (package C10): letting it sleep took the idle laptop from
+7.37 to 6.29 W, and C10 from none to 56% of the time
+([g615lm.md](g615lm.md#battery)). `tw-keyboard.rules` tells the kernel so
+for a keyboard that is built in: one on a port the firmware calls `fixed`,
+with a boot-keyboard interface (HID class 03, subclass 01, protocol 01) in
+udev's `ID_USB_INTERFACES`. It sleeps two seconds after the last key (the
+kernel's default delay), and the next key wakes it and is not lost. A
+keyboard or mouse plugged in is left alone: such devices are not all able to
+wake by themselves.
+
+The rule applies as the keyboard appears, which is at boot; after an
+install, `echo auto | sudo tee /sys/bus/usb/devices/<keyboard>/power/control`
+does the same until then.
