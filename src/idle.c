@@ -1,7 +1,8 @@
 /*
- * Idle handling: power the outputs off after a period without input, suspend
- * the machine after a longer one, and let clients (a video player) hold both
- * off while they are on screen.
+ * Idle handling: power the outputs off after a period without input, lock the
+ * session after a longer one and suspend the machine after a longer one
+ * still, and let clients (a video player) hold all of it off while they are
+ * on screen.
  *
  * This is built in rather than left to a helper such as swayidle: no extra
  * process, and it can do what a helper cannot, which is tell every client to
@@ -40,7 +41,8 @@ static bool away(const struct tw_server *server) {
 	return server->session != NULL && !server->session->active;
 }
 
-/* Sets the timer for whatever is due next: blanking, or a suspend attempt.
+/* Sets the timer for whatever is due next: blanking, locking, or a suspend
+ * attempt.
  * Call when one of those has just happened, the screen came back on, an
  * inhibitor let go or the user came back to tw's VT; never per input event
  * (see the top of this file). */
@@ -56,6 +58,10 @@ static void idle_timer_start(struct tw_server *server) {
 	}
 	if (!server->blanked && server->blank_after_ms > 0) {
 		next = server->blank_after_ms;
+	}
+	if (!server->locked && server->lock_after_ms > 0 &&
+			(next == 0 || server->lock_after_ms < next)) {
+		next = server->lock_after_ms;
 	}
 	if (server->suspend_after_ms > 0) {
 		int64_t due = (int64_t)server->suspend_after_ms * (server->suspend_tries + 1);
@@ -118,12 +124,18 @@ static int handle_idle_timer(void *data) {
 		return 0;
 	}
 	int64_t idle_ms = now_ms() - server->last_activity_ms;
-	if (!server->blanked && server->blank_after_ms > 0 && idle_ms >= server->blank_after_ms) {
-		/* Nobody is here: lock before the screen goes dark, so that whoever
-		 * wakes it finds the lock screen. */
-		if (lock_on_idle) {
-			lock_now(server);
+	/* Nobody has been here for long: lock before the screen goes dark, if it
+	 * is not already, so that whoever wakes it finds the lock screen. */
+	if (!server->locked && server->lock_after_ms > 0 && idle_ms >= server->lock_after_ms) {
+		lock_now(server);
+		if (!server->locked) {
+			/* The locker went since tw started: a lock still due would
+			 * keep this timer firing. */
+			server->lock_after_ms = 0;
 		}
+	}
+	/* The screen goes off sooner and by itself: nobody needs to unlock it. */
+	if (!server->blanked && server->blank_after_ms > 0 && idle_ms >= server->blank_after_ms) {
 		set_blanked(server, true);
 	}
 	if (server->suspend_after_ms > 0 &&
@@ -144,7 +156,7 @@ void suspend_now(struct tw_server *server) {
 		return;
 	}
 	/* Locked first, so that whoever wakes the machine finds the lock screen. */
-	if (lock_on_idle) {
+	if (server->lock_after_ms > 0) {
 		lock_now(server);
 	}
 	spawn(suspend_command);
@@ -152,6 +164,8 @@ void suspend_now(struct tw_server *server) {
 
 void idle_activity(struct tw_server *server) {
 	idle_clock_restart(server);
+	/* What the frame cap on battery held back shows at once. */
+	outputs_release_frames(server);
 	wlr_idle_notifier_v1_notify_activity(server->idle_notifier, server->seat);
 	if (server->blanked) {
 		set_blanked(server, false);
@@ -283,6 +297,12 @@ void idle_init(struct tw_server *server) {
 	if (server->suspend_after_ms > 0 && !program_installed(suspend_command)) {
 		wlr_log(WLR_INFO, "not suspending when idle: not installed: %s", suspend_command);
 		server->suspend_after_ms = 0;
+	}
+	/* A lock nobody can open is worse than none (lock_now() refuses one), and
+	 * one that is due and refused would keep the timer firing. */
+	if (server->lock_after_ms > 0 && !program_installed(locker)) {
+		wlr_log(WLR_INFO, "not locking when idle: not installed: %s", locker);
+		server->lock_after_ms = 0;
 	}
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);
 	if (server->idle_timer == NULL) {

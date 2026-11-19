@@ -80,6 +80,17 @@ static bool column_fullscreen(const struct tw_column *column) {
 	return column_first(column)->fullscreen;
 }
 
+/* A floating window that goes fullscreen joins the strip for that time. */
+bool workspace_fullscreen(const struct tw_workspace *workspace) {
+	struct tw_column *column;
+	wl_list_for_each(column, &workspace->columns, link) {
+		if (column_fullscreen(column)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /* The column whose window gets the focus when this one leaves the strip:
  * the one on its left, else the one on its right, else NULL. */
 static struct tw_column *column_heir(struct tw_column *column) {

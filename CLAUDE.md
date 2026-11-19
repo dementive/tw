@@ -58,13 +58,13 @@ what it would do and starts nothing.
 | `src/machines.h` | What depends on the machine: its outputs, and whether tw may suspend it. An entry per machine; tw takes the one named after the board as it starts (`machine_pick()`), else the last |
 | `src/tw.h` | The server struct and every function shared between files, grouped by file in the order `main()` starts them, as below |
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
-| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler, a new renderer after a GPU reset |
+| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler and its cap on battery, a new renderer after a GPU reset |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
 | `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation) |
 | `src/strip.c` | Where windows go: workspaces, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, moving windows with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
-| `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
+| `src/idle.c` | Screen blanking, locking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
 | `src/lock.c` | Session lock for swaylock; locking by itself (`lock_now()`) and starting the locker |
 | `src/power.c` | On battery: learns from udev when the power cable moves, slows the outputs, runs the power-profile command, warns and suspends on a low battery |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
@@ -193,6 +193,10 @@ machines. What they have decided, so that it is not put to them again:
   tray, no floating-window controls. Configuration stays compile-time.
 - No notification daemon but `tw-notify`; no clipboard helper; no
   autostart of the session from the shell (they type `tw-session`).
+- The screen goes off after 30 s without input and locks nothing; the
+  session locks after 15 minutes. On battery, frames are capped at 2 a
+  second after 5 s without input, and never for videos, games or anything
+  fullscreen.
 - Fixes at the root: a workaround that shadows or papers over the cause was
   rejected as "hacky".
 - Ordinary means over clever ones: `tw-notify` loads its font through

@@ -56,22 +56,28 @@ static const int swipe_workspace_distance = 60;
 
 /*
  * Turn the screen off after this many seconds without input; 0 never does.
- * Windows are told to stop drawing while it is off. A visible window that
- * inhibits idling (a playing video) holds it off. `tw -b` overrides this.
+ * Only the screen: programs go on working, nothing is locked, and any input
+ * turns it back on. Windows are told to stop drawing while it is off. A
+ * visible window that inhibits idling (a playing video) holds it off.
+ * `tw -b` overrides this. The screen is 2.4 W of an idle laptop's 6.4
+ * (docs/g533zw.md), so it goes off soon.
  */
-static const int blank_after_seconds = 300;
+static const int blank_after_seconds = 30;
 
 /*
- * Lock the session when the laptop lid closes with no monitor plugged in
- * (docked, the laptop's own screen just goes off), and when nobody is there:
- * as the screen turns off after blank_after_seconds, and before the machine
- * is suspended. tw locks at once and by itself, so nothing is visible or
- * reachable even if the machine suspends before the locker is up; the locker
- * then draws the lock screen. Neither does anything unless the locker below
- * is installed.
+ * Lock the session after this many seconds without input, and before the
+ * machine is suspended; 0 does neither. The screen is long off by then. A
+ * visible window that inhibits idling holds it off too. tw locks at once and
+ * by itself, so nothing is visible or reachable even if the machine suspends
+ * before the locker is up; the locker then draws the lock screen. `tw -l`
+ * overrides this.
+ *
+ * Also lock when the laptop lid closes with no monitor plugged in (docked,
+ * the laptop's own screen just goes off). None of this does anything unless
+ * the locker below is installed.
  */
+static const int lock_after_seconds = 900;
 static const bool lock_on_lid_close = true;
-static const bool lock_on_idle = true;
 
 /* What suspends the machine. When that happens is the machine's business:
  * suspend_after_seconds and battery_suspend_percent in machines.h. */
@@ -91,6 +97,21 @@ static const char suspend_command[] = "systemctl suspend";
  * changes. 0 keeps the full rate on battery.
  */
 static const int battery_refresh_hz = 60;
+
+/*
+ * On battery, once nobody has touched a key, the pointer or the touchpad for
+ * battery_idle_after_seconds, each output shows at most battery_idle_fps new
+ * frames a second; the next input brings the full rate back at once. A
+ * screen's self-refresh (PSR) only starts once the picture has stood still for
+ * about 100 ms, so a program that changes it a few times a second keeps the
+ * display awake throughout: ten updates a second cost 1.7 W on the G533ZW, two
+ * cost 0.2 W (docs/g533zw.md). The cap is off while a visible window inhibits
+ * idling (a video, a game), while a window is fullscreen on that output,
+ * while a program holds the pointer (a game, a 3D view) and while the
+ * session is locked. 0 never caps.
+ */
+static const int battery_idle_fps = 2;
+static const int battery_idle_after_seconds = 5;
 
 /*
  * Run when the machine goes on battery and when it is back on mains, and

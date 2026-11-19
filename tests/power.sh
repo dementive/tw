@@ -4,6 +4,10 @@
 # machine tw takes itself for. The machine is made up: tw reads $run_dir/sys
 # in place of /sys (see lib.sh).
 #
+# On battery tw also caps the frames of an output nobody is interacting with
+# (battery_idle_fps); that is shown with an animating window.
+# $3 = tw-test-keys.
+#
 # Two things cannot be shown here. Only the kernel can announce that a supply
 # changed, so nothing that happens while tw runs is covered: a cable going in
 # or out, and the battery running low. What a falling charge calls for is
@@ -12,6 +16,7 @@
 # choice of mode is tested, in the same place.
 set -eu
 . "$(dirname "$0")/lib.sh"
+keys_bin=$3
 
 supplies=$run_dir/sys/class/power_supply
 
@@ -136,6 +141,55 @@ wait_until "tw to say the command is not installed" \
 	grep -q 'not installed: tw-power saver' "$run_dir/tw.log"
 stop_tw
 
+# --- The frame cap on battery -----------------------------------------------------
+# Once nobody has touched anything for battery_idle_after_seconds (5), an
+# animating window is shown at most battery_idle_fps (2) frames a second, and
+# input brings the full rate back at once. Not on mains, nor while a visible
+# window keeps the screen on, nor for a fullscreen window. The headless
+# output runs at 60 Hz; the software renderer under the sanitizers manages
+# fewer, so "full rate" is anything well above the cap.
+frames() { grep -c '^frame$' "$run_dir/$1.log" || true; }
+shown() { # <name>: the frames it was shown in the next two seconds
+	before=$(frames "$1")
+	sleep 2
+	echo $(($(frames "$1") - before))
+}
+uncapped() { # <name> <what it is>
+	sleep 6
+	n=$(shown "$1")
+	[ "$n" -ge 15 ] || fail "$2: an animation got only $n frames in 2 s without input"
+}
+supply BAT0 type=Battery status=Discharging
+supply ADP0 type=Mains online=0
+
+start_tw
+start_client spin --animate
+sleep 6
+n=$(shown spin)
+[ "$n" -le 6 ] || fail "on battery without input, an animation got $n frames in 2 s (cap: 2 a second)"
+[ "$n" -ge 2 ] || fail "on battery without input, an animation got $n frames in 2 s: it stopped"
+press x
+n=$(shown spin)
+[ "$n" -ge 15 ] || fail "after a key press the animation got only $n frames in 2 s"
+stop_tw
+
+start_tw
+start_client film --inhibit --animate
+uncapped film "on battery, a window keeping the screen on"
+stop_tw
+
+start_tw
+start_client game --fullscreen --animate
+expect_state game "fullscreen=1" "the window to be fullscreen"
+uncapped game "on battery, a fullscreen window"
+stop_tw
+
+supply ADP0 type=Mains online=1
+start_tw
+start_client mains --animate
+uncapped mains "on mains"
+stop_tw
+
 # --- Which machine ---------------------------------------------------------------
 # tw takes the settings (src/machines.h) of the machine whose board the
 # firmware names, and the ones for every other machine otherwise.
@@ -156,4 +210,4 @@ machine G615LM G615LM
 machine "G615LM-X" other
 machine "" other
 
-echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command, the machine by its board"
+echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command, the frame cap, the machine by its board"

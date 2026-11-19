@@ -203,6 +203,50 @@ bool output_set_power(struct tw_output *output, bool on) {
 	return done;
 }
 
+/*
+ * The frame cap on battery (battery_idle_fps): whether this output shows at
+ * most that many frames a second now. Not while anything is going on that
+ * wants every frame: input lately, an animation, a visible window keeping the
+ * screen on (a video, a game), a fullscreen window, a program holding the
+ * pointer, the lock screen.
+ */
+static bool frame_capped(const struct tw_output *output, int64_t now) {
+	const struct tw_server *server = output->server;
+	if (battery_idle_fps <= 0 || output->frame_timer == NULL || !server->on_battery ||
+			server->locked || server->idle_inhibited || server->active_constraint != NULL ||
+			output->animating ||
+			now - server->last_activity_ms < (int64_t)battery_idle_after_seconds * 1000) {
+		return false;
+	}
+	return output->workspace >= TW_WORKSPACES ||
+		!workspace_fullscreen(&server->workspaces[output->workspace]);
+}
+
+static bool frame_unhold(struct tw_output *output) {
+	if (!output->frame_held) {
+		return false;
+	}
+	output->frame_held = false;
+	wl_event_source_timer_update(output->frame_timer, 0);
+	return true;
+}
+
+void outputs_release_frames(struct tw_server *server) {
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (frame_unhold(output)) {
+			wlr_output_schedule_frame(output->wlr_output);
+		}
+	}
+}
+
+static int handle_frame_timer(void *data) {
+	struct tw_output *output = data;
+	output->frame_held = false;
+	wlr_output_schedule_frame(output->wlr_output);
+	return 0;
+}
+
 static void handle_frame(struct wl_listener *listener, void *data) {
 	/*
 	 * Fires only after something scheduled a frame (damage, or a previous
@@ -218,12 +262,31 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 		return; /* left dark; see output_enter() */
 	}
 
+	/* Too soon after the last frame while capped: held back until its turn,
+	 * and so is the frame-done event, so that a client waiting for it (most
+	 * do) draws nothing meanwhile. Input lets it through at once. */
+	int64_t now_msec = now_ms();
+	if (frame_capped(output, now_msec)) {
+		int64_t wait = 1000 / battery_idle_fps - (now_msec - output->last_frame_ms);
+		if (wait > 0) {
+			if (!output->frame_held) {
+				output->frame_held = true;
+				wl_event_source_timer_update(output->frame_timer, (int)wait);
+			}
+			return;
+		}
+	}
+	frame_unhold(output);
+
 	/* A scroll animation moves one step per frame of the output showing the
 	 * strip, and asks for the next frame only while it is still moving. */
 	if (strip_animate(output)) {
 		wlr_output_schedule_frame(output->wlr_output);
 	}
 
+	if (wlr_scene_output_needs_frame(scene_output)) {
+		output->last_frame_ms = now_msec;
+	}
 	wlr_scene_output_commit(scene_output, NULL);
 
 	struct timespec now;
@@ -272,6 +335,9 @@ static void output_hand_over(struct tw_output *output) {
 
 /* Detaches an output from its wlr_output and frees it. */
 static void output_free(struct tw_output *output) {
+	if (output->frame_timer != NULL) {
+		wl_event_source_remove(output->frame_timer);
+	}
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->present.link);
 	wl_list_remove(&output->request_state.link);
@@ -438,6 +504,8 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	output->wlr_output = wlr_output;
 	output->workspace = TW_WORKSPACES;
 	output->builtin = tw_connector_builtin(wlr_output->name);
+	/* Without it the output is simply never capped. */
+	output->frame_timer = wl_event_loop_add_timer(server->loop, handle_frame_timer, output);
 	wlr_output->data = output;
 
 	output->frame.notify = handle_frame;

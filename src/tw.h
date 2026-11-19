@@ -77,6 +77,12 @@ struct tw_output {
 	 * is closed and another output is there. */
 	bool builtin;
 	bool lid_off;
+	/* The frame cap on battery (battery_idle_fps): when the last frame was
+	 * shown, and the timer that shows a held-back one when its turn comes.
+	 * frame_held while that timer is set. */
+	int64_t last_frame_ms;
+	struct wl_event_source *frame_timer; /* NULL: never capped */
+	bool frame_held;
 	struct wl_listener frame;
 	struct wl_listener present;
 	struct wl_listener request_state;
@@ -278,6 +284,7 @@ struct tw_server {
 	int resume_fd;
 	int64_t asleep_ms; /* asleep_ms() when the clock last jumped */
 	int blank_after_ms;   /* 0 never blanks */
+	int lock_after_ms;    /* 0 never locks by itself */
 	int suspend_after_ms; /* 0 never suspends */
 	int suspend_tries;    /* suspend attempts since the last input */
 	int64_t last_activity_ms;
@@ -392,6 +399,9 @@ struct tw_output *output_adjacent(struct tw_output *output, int direction);
 bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full);
 /* Puts every output that is on into that mode. Call when on_battery changed. */
 void outputs_update_mode(struct tw_server *server);
+/* Shows at once every frame the cap on battery is holding back. Call on
+ * input. */
+void outputs_release_frames(struct tw_server *server);
 /*
  * Turns an output on or off. One that comes on takes the mode it should have
  * now, since the power cable may have gone in or out while it was off.
@@ -506,6 +516,8 @@ void strip_arrange(struct tw_server *server);
 /* Advances the scroll animation of the workspace on this output by one
  * frame; true if it needs another. */
 bool strip_animate(struct tw_output *output);
+/* True if a window of this workspace is fullscreen. */
+bool workspace_fullscreen(const struct tw_workspace *workspace);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
 /* Puts a window moved with the mouse where it was let go, at lx,ly: beside
@@ -577,7 +589,7 @@ void idle_finish(struct tw_server *server);
 void idle_activity(struct tw_server *server);
 /* Re-checks whether a visible surface is keeping the screen on. */
 void idle_update_inhibited(struct tw_server *server);
-/* Locks the session (if lock_on_idle) and runs suspend_command. */
+/* Locks the session (unless lock_after_ms is 0) and runs suspend_command. */
 void suspend_now(struct tw_server *server);
 /* Powers the outputs off until the next input. */
 void action_blank(struct tw_server *server, const union tw_arg *arg);

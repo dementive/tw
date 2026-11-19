@@ -326,10 +326,20 @@ its first frame on.
 
 ## Screen off and lock
 
-**Idle** (`idle.c`). One timer, not re-armed per input event: input records
-a timestamp, and when the timer fires it does what is due (blank the
-outputs, suspend the machine) and sleeps until the next thing is. A visible
-surface with an idle inhibitor holds both off; one on a hidden workspace,
+**Idle** (`idle.c`). Three steps, each after its own time without input:
+the outputs go off (`blank_after_seconds`, 30), the session locks
+(`lock_after_seconds`, 900) and the machine is suspended (the machine's
+`suspend_after_seconds`, 0 on both of the owner's laptops). Blanking is only
+that: nothing is locked, programs go on working, and any input brings the
+screen back. The screen is 2.4 W of an idle laptop's 6.4
+([g533zw.md](g533zw.md#the-screen-and-what-a-frame-costs)), so it goes off
+soon, and locking comes much later so that one is not forever unlocking.
+One timer serves all three, not re-armed per input event: input records a
+timestamp, and when the timer fires it does what is due and sleeps until
+the next thing is. A locker that is not installed takes the lock step out
+as tw starts, as a missing suspend command does the suspend one: a lock
+that is due and refused would keep the timer firing. A visible surface with
+an idle inhibitor holds all three off; one on a hidden workspace,
 or a layer surface behind the lock curtain or on a screen that is off, does
 not. While the outputs are off every window is suspended, and the pointer
 is over nothing (`pointer_refocus()`): a cursor a client chose, an animated
@@ -359,8 +369,8 @@ it, so a jump counts as a wake-up only if the time spent asleep
 
 **Lock** (`lock.c`). tw draws no lock screen. A lock client (swaylock) asks
 for the lock through ext-session-lock, or tw takes it by itself with
-`lock_now()`: on Mod+Alt+L, when the screen blanks from inactivity, before a
-suspend, and when the laptop's own screen is left the only one behind a
+`lock_now()`: on Mod+Alt+L, after `lock_after_seconds` without input, before
+a suspend, and when the laptop's own screen is left the only one behind a
 closed lid: the lid closes with no monitor plugged in, or the last monitor
 is unplugged while it is closed. Those are the times logind suspends the
 machine. A docked laptop whose lid closes does not lock: logind does not
@@ -557,6 +567,26 @@ then its old one, then the first of its modes it takes (`output_commit()`):
 a dock, a hub or a cable may not carry the preferred mode, and a monitor
 just plugged in has no old one. A dark screen is the one failure this must
 not have.
+
+**Fewer frames.** A screen's self-refresh (PSR) starts only once the
+picture has stood still for about 100 ms (six frames at 60 Hz). A program
+that changes it a few times a second, such as Claude Code's status line,
+keeps the display engine and its link awake throughout: on the G533ZW, ten
+updates a second cost 1.7 W and two cost 0.2 W
+([g533zw.md](g533zw.md#the-screen-and-what-a-frame-costs)). So on battery,
+once nobody has touched anything for `battery_idle_after_seconds` (5),
+`handle_frame()` shows at most `battery_idle_fps` (2) frames a second per
+output. A frame that comes too soon is held back with its frame-done
+events, so a client that waits for those (most do) simply draws less
+often, and a one-shot timer per output (`frame_timer`) shows it when its
+turn comes. Input releases held frames at once (`outputs_release_frames()`
+from `idle_activity()`), so typing and scrolling never see the cap. It is
+off while a visible window inhibits idling (players do while playing, and
+SDL and Godot games by default), while any window on the output's workspace
+is fullscreen, while a program holds the pointer (`active_constraint`), while
+the session is locked (the curtain must show at once), and during a scroll
+animation. Nothing is held when nothing changes, so an idle desktop still
+wakes no one.
 
 **The power profile.** `battery_command` runs when the cable is pulled,
 `mains_command` when it is back, and one of the two at startup. They are

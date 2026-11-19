@@ -98,8 +98,14 @@
  *                      pid and arguments, then answers on the sockets it was
  *                      handed with -listenfd
  *
- * It draws once per configure and never asks for frame callbacks, so an idle
- * compositor with these clients mapped should not wake up at all.
+ * Animating, after any window mode:
+ *   --animate     the window draws a new frame each time it is told the last
+ *                 one was shown, as a game or a spinner does: "frame" for
+ *                 each, so the frames a second can be counted
+ *
+ * Without --animate it draws once per configure and never asks for frame
+ * callbacks, so an idle compositor with these clients mapped should not wake
+ * up at all.
  */
 #define _GNU_SOURCE
 #include <poll.h>
@@ -225,7 +231,29 @@ static void draw_on(struct wl_surface *target, struct wl_buffer **current,
 	}
 }
 
+/* --animate: draws again at every frame callback, at the last size. */
+static bool animate;
+static struct wl_callback *frame_callback;
+static int32_t drawn_width, drawn_height;
+
+static void draw(int32_t width, int32_t height);
+
+static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
+	wl_callback_destroy(callback);
+	frame_callback = NULL;
+	say("frame");
+	draw(drawn_width, drawn_height);
+}
+
+static const struct wl_callback_listener frame_listener = {.done = frame_done};
+
 static void draw(int32_t width, int32_t height) {
+	drawn_width = width;
+	drawn_height = height;
+	if (animate && frame_callback == NULL) {
+		frame_callback = wl_surface_frame(surface);
+		wl_callback_add_listener(frame_callback, &frame_listener, NULL);
+	}
 	draw_on(surface, &buffer, width, height);
 }
 
@@ -1157,6 +1185,7 @@ int main(int argc, char *argv[]) {
 	if (argc > 2) {
 		token_path = argv[2];
 	}
+	animate = argc > 1 && strcmp(argv[argc - 1], "--animate") == 0;
 	token_without_surface = strcmp(mode, "--token-no-surface") == 0;
 	issue_token = strcmp(mode, "--token") == 0 || token_without_surface;
 	use_token = strcmp(mode, "--activate") == 0;

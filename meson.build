@@ -410,8 +410,9 @@ headless_tests = {
 	'x11': [tw, test_client],
 	# a copy outlives the program it was made in
 	'clipboard': [tw, test_client, test_clip],
-	# what tw does on battery and on mains, against made-up power supplies
-	'power': [tw, test_client],
+	# what tw does on battery and on mains, against made-up power supplies,
+	# and the frame cap on battery
+	'power': [tw, test_client, test_keys],
 	# tw-notify on a private session bus; skipped where it is not built
 	'notify': [tw, test_client, test_keys, tw_notify],
 }

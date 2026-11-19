@@ -202,8 +202,11 @@ static void handle_session_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void usage(FILE *out, const char *name, const struct tw_machine *machine) {
-	fprintf(out, "Usage: %s [-h] [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
+	fprintf(out, "Usage: %s [-h] [-d] [-b seconds] [-l seconds] [-z seconds] [-x seconds]\n"
+		"          [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
+		"      default %d)\n"
+		"  -l  lock the session after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -z  suspend the machine after this long without input (0: never;\n"
 		"      default %d)\n"
@@ -212,7 +215,8 @@ static void usage(FILE *out, const char *name, const struct tw_machine *machine)
 		"  -d  log debug output\n"
 		"  -s  run a shell command once the compositor is up\n"
 		"  -h  show this help\n",
-		name, blank_after_seconds, machine->suspend_after_seconds, x11_idle_seconds);
+		name, blank_after_seconds, lock_after_seconds, machine->suspend_after_seconds,
+		x11_idle_seconds);
 }
 
 /*
@@ -270,15 +274,19 @@ int main(int argc, char *argv[]) {
 	enum wlr_log_importance verbosity = WLR_ERROR;
 	const struct tw_machine *machine = machine_pick();
 	int blank_after = blank_after_seconds;
+	int lock_after = lock_after_seconds;
 	int suspend_after = machine->suspend_after_seconds;
 	int x11_idle = x11_idle_seconds;
 
 	int c;
-	while ((c = getopt(argc, argv, "b:ds:x:z:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:dl:s:x:z:h")) != -1) {
 		int *seconds = NULL;
 		switch (c) {
 		case 'b':
 			seconds = &blank_after;
+			break;
+		case 'l':
+			seconds = &lock_after;
 			break;
 		case 'x':
 			seconds = &x11_idle;
@@ -314,6 +322,7 @@ int main(int argc, char *argv[]) {
 	struct tw_server server = {0};
 	server.machine = machine;
 	server.blank_after_ms = seconds_to_ms(blank_after);
+	server.lock_after_ms = seconds_to_ms(lock_after);
 	server.suspend_after_ms = seconds_to_ms(suspend_after);
 	server.x11_idle_ms = seconds_to_ms(x11_idle);
 

@@ -15,11 +15,12 @@
  * were plugged in. An output not listed is at scale 1, at AUTO.
  *
  * suspend_after_seconds: suspend the machine after this many seconds without
- * input; 0 never does. The session is locked first (lock_on_idle). A visible
- * window that inhibits idling holds it off, and so does anything holding a
- * systemd sleep inhibitor (`systemd-inhibit --what=sleep <command>` for a
- * long build). If the machine is still awake afterwards, tw tries again
- * after the same time. `tw -z` overrides this.
+ * input; 0 never does. The session is locked first, unless
+ * lock_after_seconds is 0. A visible window that inhibits idling holds it
+ * off, and so does anything holding a systemd sleep inhibitor
+ * (`systemd-inhibit --what=sleep <command>` for a long build). If the
+ * machine is still awake afterwards, tw tries again after the same time.
+ * `tw -z` overrides this.
  *
  * battery_suspend_percent: on battery, lock and suspend when the charge is
  * down to this many percent, and again for each further percent lost if the

@@ -1,8 +1,9 @@
 #!/bin/sh
 # Screen blanking: the outputs power off after a while without input and every
 # window is told to stop drawing; a visible idle inhibitor (a video player)
-# holds that off. With a locker installed the session locks as it blanks.
-# After a longer time without input the machine is suspended.
+# holds that off. Blanking locks nothing. With a locker installed the session
+# locks after a longer time without input, and the machine is suspended after
+# a longer one still.
 # $3 = tw-test-keys.
 #
 # "Blanked" is observed through the window state: a visible window is
@@ -88,18 +89,33 @@ expect_state c "$on" "the new lock client to unlock"
 stop_tw
 
 # --- Locking -------------------------------------------------------------------
-# With a locker installed, tw locks by itself as the screen blanks and starts
-# the locker, which takes the lock over. The stand-in is the test client.
+# With a locker installed, tw locks by itself after the lock timeout, the
+# screen long off by then, and starts the locker, which takes the lock over.
+# Blanking alone locks nothing. The stand-in is the test client.
 fake_program swaylock "
 echo \$\$ >'$run_dir/locker.pid'
 exec '$client_bin' --lock >>'$run_dir/locker.log' 2>&1"
-locks() { [ "$(grep -c '^locked' "$run_dir/locker.log")" = "$1" ]; }
+locks() { [ "$(grep -c '^locked' "$run_dir/locker.log" 2>/dev/null)" = "$1" ]; }
 
-start_tw -b 2
+# Input between blanking and locking brings the screen back unlocked, and
+# starts the lock clock over.
+start_tw -b 1 -l 4
+start_client f
+expect_state f "$on" "the window to start visible"
+expect_state f "suspended=1" "the screen to turn off after a second without input"
+press x
+expect_state f "$on" "a key press to bring the screen back"
+[ ! -e "$run_dir/locker.log" ] || fail "the session locked as the screen blanked"
+sleep 3
+[ ! -e "$run_dir/locker.log" ] || fail "the lock clock did not start over at the key press"
+stop_tw
+
+start_tw -b 2 -l 4
 start_client d
 expect_state d "$on" "the window to start visible"
 expect_state d "suspended=1" "the screen to turn off after two seconds without input"
-expect_line locker locked "the locker to be started as the screen blanks"
+[ ! -e "$run_dir/locker.log" ] || fail "the session locked as the screen blanked"
+expect_line locker locked "the locker to be started after four seconds without input"
 
 # Waking the screen shows the lock screen, not the window.
 press x
@@ -194,4 +210,4 @@ sleep 2.5
 	fail "after the inhibitor went, the next attempt was not a period away"
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off, abandoned lock without a locker, lock on idle, locker restart, suspend, the clock after an inhibitor"
+echo "ok: blanking, inhibitors, manual power-off, abandoned lock without a locker, lock on idle after blanking, locker restart, suspend, the clock after an inhibitor"
