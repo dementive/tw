@@ -98,6 +98,17 @@ On a machine with a different amount of RAM, take the square root of 16
 times `MemTotal` from `/proc/meminfo` (in kB) for the first value: about
 23000 for 32 GB.
 
+CachyOS's compressed swap device (zram) is as large as the RAM, and the
+kernel keeps 16 bytes for every page of it from boot, used or not: 61 MB
+for 16 GB. At 8 GB it is half that, and compiling is no slower; only a
+build that needs more than 8 GB of swap now runs out of memory instead of
+crawling. The file in `/etc` replaces CachyOS's own; reboot after it:
+
+```sh
+printf '[zram0]\ncompression-algorithm = zstd\nzram-size = 8192\nswap-priority = 100\nfs-type = swap\n' |
+    sudo tee /etc/systemd/zram-generator.conf
+```
+
 To see whether huge pages suffer, look at
 `grep thp_fault_fallback /proc/vmstat` after a few days of use: it counts
 the times a program wanted a huge page and got normal ones.
