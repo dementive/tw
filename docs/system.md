@@ -209,6 +209,12 @@ and it is kept across logins. Scrolling in those programs may jump where it
 used to glide. To undo it:
 `gsettings reset org.gnome.desktop.interface enable-animations`.
 
+Claude Code in a terminal does not read that setting and has its own:
+"Reduce motion" in `/config`, or `"prefersReducedMotion": true` in
+`~/.claude/settings.json`. Without it, its spinner's shimmer had the screen
+redrawn 35 to 40 times a second while Claude worked; with it, about 10, and
+the G615LM drew 0.7 W less. It takes effect at once.
+
 ## 2. Replacing KDE's parts
 
 For a machine that came with KDE Plasma (or another desktop) and is to run
