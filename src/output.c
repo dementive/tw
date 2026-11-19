@@ -1,8 +1,13 @@
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/egl.h>
+#include <wlr/render/gles2.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
@@ -522,6 +527,27 @@ static void surfaces_redraw(struct wlr_scene_node *node, struct wlr_surface **la
  * one by itself; clients' buffers are imported again when they are next
  * committed, which surfaces_redraw() asks for.
  */
+/*
+ * wlroots compiles its few shaders when it creates the renderer and never
+ * again, but Mesa keeps its GLSL compiler's library of built-in functions
+ * for as long as the process lives: 5.7 MB of tw's own memory. Releasing the
+ * compiler frees it into the heap, and trimming the heap gives it back to
+ * the system (trimming alone frees nothing worth having). Were a shader
+ * compiled later, Mesa would build the library again.
+ */
+void renderer_release_compiler(struct wlr_renderer *renderer) {
+	if (!wlr_renderer_is_gles2(renderer)) {
+		return;
+	}
+	struct wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
+	EGLDisplay display = wlr_egl_get_display(egl);
+	if (eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl))) {
+		glReleaseShaderCompiler();
+		eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	}
+	malloc_trim(0);
+}
+
 static void renderer_replace(void *data) {
 	struct tw_server *server = data;
 	server->renderer_restart = NULL;
@@ -533,6 +559,7 @@ static void renderer_replace(void *data) {
 		wlr_renderer_destroy(renderer);
 		return;
 	}
+	renderer_release_compiler(renderer);
 	struct wlr_renderer *old_renderer = server->renderer;
 	struct wlr_allocator *old_allocator = server->allocator;
 	server->renderer = renderer;

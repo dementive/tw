@@ -95,6 +95,17 @@ it says it is closed in the same dispatch (an idle callback in
 `new_switch()` waits for that). Otherwise a lid opened while away would
 leave the laptop's own screen dark until it was closed and opened again.
 
+**Mesa's shader compiler** is freed once the renderer exists
+(`renderer_release_compiler()` in `output.c`, called wherever a renderer is
+made). wlroots' GLES2 renderer compiles its four shaders while it is created
+and never again, yet Mesa keeps its GLSL compiler's library of built-in
+functions for the life of the process. `glReleaseShaderCompiler()`, the
+GLES2 call made for this, drops it into the heap and `malloc_trim()` hands
+the pages back: tw's own memory went from 14.5 to 8.8 MB, headless with the
+GPU renderer. Trimming alone frees about 40 kB, and a shader compiled later
+would make Mesa build the library again, costing the memory but nothing
+else.
+
 **A GPU reset** (a driver hang, a bad wake-up) takes the renderer and all
 it made with it. `handle_renderer_lost()` in `output.c` hears it in the
 middle of drawing a frame, so it only schedules `renderer_replace()` on an

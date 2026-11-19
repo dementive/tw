@@ -83,6 +83,10 @@ wlroots = subproject(
 wayland_client = dependency('wayland-client')
 libinput = dependency('libinput') # touchpad settings
 libudev = dependency('libudev')   # the power cable; wlroots uses it already
+# To free Mesa's shader compiler once wlroots' shaders are built; wlroots
+# uses both already.
+egl = dependency('egl')
+glesv2 = dependency('glesv2')
 libm = cc.find_library('m')
 
 # --- The machine ---------------------------------------------------------------
@@ -190,7 +194,7 @@ tw = executable(
 	'src/layout.c',
 	# wlroots' layer-shell header includes this generated one.
 	server_header['wlr-layer-shell-unstable-v1'],
-	dependencies: [wlroots, wayland_server, xkbcommon, libinput, libudev, libm],
+	dependencies: [wlroots, wayland_server, xkbcommon, libinput, libudev, egl, glesv2, libm],
 	install: true,
 )
 

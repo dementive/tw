@@ -325,6 +325,7 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "failed to create the renderer");
 		goto teardown_base;
 	}
+	renderer_release_compiler(server.renderer);
 	/* Shared-memory buffers always; GPU buffers when the renderer has a GPU.
 	 * This is wlr_renderer_init_wl_display() spelled out, to keep the
 	 * dmabuf global for the scene (see output_init()). */

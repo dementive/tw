@@ -359,6 +359,9 @@ void action_quit(struct tw_server *server, const union tw_arg *arg);
 
 /* output.c */
 void output_init(struct tw_server *server);
+/* Frees what Mesa keeps of its shader compiler, once a new renderer has
+ * built its shaders. Nothing for the software renderer. */
+void renderer_release_compiler(struct wlr_renderer *renderer);
 void output_finish(struct tw_server *server);
 /* The output in use that shows this workspace, or NULL if it is hidden. It
  * may have no mode yet; output_boxes() then fails. */

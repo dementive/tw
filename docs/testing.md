@@ -64,7 +64,7 @@ client:
 | Budget | Now | Measured |
 | --- | --- | --- |
 | idle wakeups in 3 s | 0 | 0 |
-| own memory (PSS minus pixel buffers) | 2800 kB | 2445 to 2713 |
+| own memory (PSS minus pixel buffers) | 2800 kB | 2445 to 2713; 3210 to 3357 on 2026-11-19, the same with and without that day's change, so the machine's doing |
 | of which allocated by tw | 850 kB | 800 to 812 |
 
 They ratchet down; raising one needs a stated reason.
@@ -98,6 +98,11 @@ must be empty.
 
 ## What no test reaches
 
+- **Freeing Mesa's shader compiler.** The tests draw with the software
+  renderer, for which `renderer_release_compiler()` does nothing. It was
+  checked by hand: the release build headless with `WLR_RENDERER=gles2`,
+  an empty `PATH` and a private runtime directory, `RssAnon` read after 3 s,
+  three runs each: 14.5 MB before, 8.8 after, drawing unchanged.
 - **Touchpad gestures.** The headless backend has no touchpad and no way
   to inject gestures,
   so the gesture handlers in `input.c` and the swipe functions in
