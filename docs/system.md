@@ -84,7 +84,7 @@ it off `/proc/meminfo`). Two settings shrink that to about 140 MB and took
 170 MB off the figure:
 
 ```sh
-printf 'vm.min_free_kbytes = 16384\nvm.lowmem_reserve_ratio = 1024 1024 32 0 0\n' |
+printf 'vm.min_free_kbytes = 16384\nvm.lowmem_reserve_ratio = 4096 4096 32 0 0\n' |
     sudo install -Dm644 /dev/stdin /etc/sysctl.d/90-memory.conf
 sudo sysctl --system
 ```
@@ -92,7 +92,7 @@ sudo sysctl --system
 | Setting | What it is | What changing it costs |
 | --- | --- | --- |
 | `vm.min_free_kbytes` | the memory the kernel always keeps free. With huge pages on it picks 66 MB; 16 MB is what it picks without them on a 16 GB machine | huge pages stay on, but once the file cache has filled the RAM a newly started program more often gets normal pages first and huge ones a little later |
-| `vm.lowmem_reserve_ratio` | how much of the first 4 GB is kept for devices that can only use that part: 58 MB by default, 14 MB with this | nothing found |
+| `vm.lowmem_reserve_ratio` | how much of the first 4 GB is kept for devices that can only use that part: 58 MB by default, 14 MB at 1024 and about 4 at 4096, the value now set | nothing found |
 
 On a machine with a different amount of RAM, take the square root of 16
 times `MemTotal` from `/proc/meminfo` (in kB) for the first value: about
