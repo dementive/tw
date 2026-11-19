@@ -786,9 +786,20 @@ The desktop portals are not the script's: `tw-portals.conf`, installed for
 xdg-desktop-portal, has screen capture and screenshots served by the wlr
 backend and everything else (file dialogs) by the GTK one.
 
+Nor is the power key. logind powers the machine off at a short press
+unless a desktop takes the key over, as KDE does to ask first. tw asks
+nothing, and on the G615LM, whose power key sits beside the USB ports, a
+press while plugging a mouse in ended the session. `tw-logind.conf`,
+installed for logind, makes a short press do nothing and a press held for
+five seconds a clean power-off. On a laptop whose firmware cuts the power
+after four seconds, that clean power-off never comes; `systemctl poweroff`
+always works. Because it is logind's setting, it holds at the text console
+too. The key still wakes a machine from sleep, which is the firmware's
+doing.
+
 `data/post-install.sh` is what `meson install` runs last: it has systemd,
-polkit, udev and the installing user's systemd read the new files, and does
-nothing for a staged install.
+polkit, udev, logind and the installing user's systemd read the new files,
+and does nothing for a staged install.
 
 ## The NVIDIA GPU: tw-gpu
 

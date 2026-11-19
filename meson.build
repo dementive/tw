@@ -196,6 +196,13 @@ install_data(
 	rename: 'tw.conf',
 	install_dir: systemd_user_dir / 'at-spi-dbus-bus.service.d',
 )
+# What logind does with the power key: nothing at a short press, which a
+# desktop would otherwise have taken over.
+install_data(
+	'data/tw-logind.conf',
+	rename: 'tw.conf',
+	install_dir: get_option('prefix') / 'lib/systemd/logind.conf.d',
+)
 
 # Three commands that need root for what they do, each built the same way:
 # the command itself, a root helper, the system unit that runs the helper,

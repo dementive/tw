@@ -140,6 +140,7 @@ without the hardware it is about.
 | Thunderbolt rule | lets a dock in without boltd | below |
 | `tw-power` | power-saver profile on battery, balanced on mains | `tw-power` says which is set |
 | `tw-notify` | shows notifications, and runs only while one shows | `notify-send Hello there` |
+| Power key | a short press does nothing; hold it for five seconds, or type `systemctl poweroff`, to power off | a short press leaves everything running |
 
 ### The NVIDIA GPU: off until a program needs it
 

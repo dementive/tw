@@ -2,8 +2,8 @@
 # data/post-install.sh, which `meson install` runs once the files are in
 # place, against stand-ins for id, systemctl and udevadm: what it reloads
 # when the install was a real one made as root, and that it keeps its hands
-# off in every other case. What it cannot show: that the real systemd, udev
-# and polkit then go by the new files.
+# off in every other case. What it cannot show: that the real systemd,
+# logind, udev and polkit then go by the new files.
 # $1 = the data/ directory of the source tree.
 set -eu
 data=$1
@@ -60,7 +60,9 @@ ran 'systemctl try-restart polkit.service' || fail "polkit was not made to read 
 ran 'udevadm control --reload' || fail "udev was not told to read the new rules"
 ran 'systemctl --machine=somebody@.host --user daemon-reload' ||
 	fail "the user's systemd was not told to read the new drop-in"
-[ "$(grep -c . "$log")" = 4 ] || fail "it ran something else as well"
+ran 'systemctl kill --kill-whom=main --signal=SIGHUP systemd-logind.service' ||
+	fail "logind was not told to read what the power key does"
+[ "$(grep -c . "$log")" = 5 ] || fail "it ran something else as well"
 [ ! -s "$tmp/err" ] || fail "it complained although everything worked"
 
 # --- Made by root itself: there is no user to reload for ------------------------
@@ -101,8 +103,8 @@ install DESTDIR="$tmp/stage" -- "$tmp/prefix/bin/tw-notify" || fail "the step fa
 # --- A reload that fails does not fail the install ------------------------------
 : >"$tmp/broken"
 install SUDO_USER=somebody || fail "a failed reload failed the install"
-[ "$(grep -c . "$log")" = 4 ] || fail "it gave up after the first reload that failed"
+[ "$(grep -c . "$log")" = 5 ] || fail "it gave up after the first reload that failed"
 grep -q 'could not reload' "$tmp/err" || fail "a failed reload went unsaid"
 rm "$tmp/broken"
 
-echo "ok: the step after meson install reloads systemd, polkit, udev and the user's systemd, and only for a real install"
+echo "ok: the step after meson install reloads systemd, polkit, udev, logind and the user's systemd, and only for a real install"

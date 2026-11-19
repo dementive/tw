@@ -1,8 +1,8 @@
 #!/bin/sh
 # Run by `meson install` once the files are in place: removes what an
 # earlier install put there for an option that is now off (the arguments,
-# each under the install prefix), then has systemd, udev and polkit read
-# what is there, so that nothing has to be reloaded by hand before the
+# each under the install prefix), then has systemd, logind, udev and polkit
+# read what is there, so that nothing has to be reloaded by hand before the
 # new units, rules and drop-ins count.
 #
 # Does nothing for a staged install (DESTDIR), a dry run, or an install made
@@ -44,6 +44,9 @@ attempt "polkit's rules" systemctl try-restart polkit.service
 if command -v udevadm >/dev/null 2>&1; then
 	attempt "udev's rules" udevadm control --reload
 fi
+# What the power key does. logind reads its settings again on SIGHUP and
+# has no reload command of its own.
+attempt "logind's settings" systemctl kill --kill-whom=main --signal=SIGHUP systemd-logind.service
 # The line added to the accessibility bus's unit is read by the systemd of
 # whoever is logged in: the user who ran sudo.
 user=${SUDO_USER:-}

@@ -72,7 +72,7 @@ what it would do and starts nothing.
 | `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation, text through fontconfig and FreeType), `bus.c` (D-Bus messages with no library; pure, unit tested), `config.h` |
 | `data/tw-session` | Session start script: picks the GPUs, points programs at the keyring, keeps the accessibility bus off, says what to do when tw cannot start |
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |
-| `data/` (rest) | udev rules, the Bluetooth blacklist, timer and service drop-in, the accessibility drop-in, the Thunderbolt rule, the login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify`, and `post-install.sh`, which `meson install` runs to have the system read all of it |
+| `data/` (rest) | udev rules, the Bluetooth blacklist, timer and service drop-in, the accessibility drop-in, the logind drop-in for the power key, the Thunderbolt rule, the login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify`, and `post-install.sh`, which `meson install` runs to have the system read all of it |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
 | `tests/` | `lib.sh` starts tw headless with a private runtime directory and PATH; `client.c`, `keys.c` and `clip.c` are the test programs; one `.sh` per area. [docs/testing.md](docs/testing.md) lists them |
 
