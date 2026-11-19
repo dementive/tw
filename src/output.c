@@ -85,17 +85,16 @@ bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box
 	return !wlr_box_empty(full);
 }
 
-static const struct tw_output_rule *output_rule(const char *name) {
-	static const struct tw_output_rule fallback = {NULL, 1.0f, TW_AUTO, TW_AUTO};
-	const struct tw_output_rule *rest = &fallback;
-	for (size_t i = 0; i < LENGTH(output_rules); i++) {
-		if (output_rules[i].name == NULL) {
-			rest = &output_rules[i];
-		} else if (strcmp(output_rules[i].name, name) == 0) {
-			return &output_rules[i];
+/* What machines.h says about this output: its own entry, or scale 1 at AUTO. */
+static const struct tw_output_rule *output_rule(struct tw_output *output) {
+	static const struct tw_output_rule other = {NULL, 1.0f, TW_AUTO, TW_AUTO};
+	const struct tw_output_rule *rules = output->server->machine->outputs;
+	for (size_t i = 0; i < TW_MACHINE_OUTPUTS && rules[i].name != NULL; i++) {
+		if (strcmp(rules[i].name, output->wlr_output->name) == 0) {
+			return &rules[i];
 		}
 	}
-	return rest;
+	return &other;
 }
 
 /*
@@ -148,12 +147,13 @@ void outputs_update_mode(struct tw_server *server) {
 /* Commits power, the scale config.h gives the output and a mode (NULL keeps
  * the one it has), or with `test` only asks whether it would take them.
  * wlroots leaves out of the commit what would not change. */
-static bool output_try(struct wlr_output *wlr_output, bool on,
+static bool output_try(struct tw_output *output, bool on,
 		struct wlr_output_mode *mode, bool test) {
+	struct wlr_output *wlr_output = output->wlr_output;
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, on);
-	wlr_output_state_set_scale(&state, output_rule(wlr_output->name)->scale);
+	wlr_output_state_set_scale(&state, output_rule(output)->scale);
 	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
 	}
@@ -174,16 +174,16 @@ static bool output_try(struct wlr_output *wlr_output, bool on,
 bool output_set_power(struct tw_output *output, bool on) {
 	struct wlr_output *wlr_output = output->wlr_output;
 	struct wlr_output_mode *wanted = on ? output_mode(output) : NULL;
-	bool done = output_try(wlr_output, on, wanted, false);
+	bool done = output_try(output, on, wanted, false);
 	/* Only an output with modes has others to fall back on. */
 	if (!done && wanted != NULL) {
 		struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr_output);
 		struct wlr_output_mode *had = wlr_output->current_mode;
 		if (preferred != wanted) {
-			done = output_try(wlr_output, on, preferred, false);
+			done = output_try(output, on, preferred, false);
 		}
 		if (!done && had != NULL && had != wanted && had != preferred) {
-			done = output_try(wlr_output, on, had, false);
+			done = output_try(output, on, had, false);
 		}
 		struct wlr_output_mode *mode;
 		wl_list_for_each(mode, &wlr_output->modes, link) {
@@ -191,8 +191,8 @@ bool output_set_power(struct tw_output *output, bool on) {
 				break;
 			}
 			if (mode != wanted && mode != preferred && mode != had &&
-					output_try(wlr_output, on, mode, true)) {
-				done = output_try(wlr_output, on, mode, false);
+					output_try(output, on, mode, true)) {
+				done = output_try(output, on, mode, false);
 			}
 		}
 	}
@@ -322,7 +322,7 @@ static size_t output_pick_workspace(struct tw_output *output) {
 static void output_enter(struct tw_output *output) {
 	struct tw_server *server = output->server;
 	struct wlr_output *wlr_output = output->wlr_output;
-	const struct tw_output_rule *rule = output_rule(wlr_output->name);
+	const struct tw_output_rule *rule = output_rule(output);
 	/* Picked before it counts as in use, or the workspace it showed before
 	 * would look taken: by itself. */
 	output->workspace = output_pick_workspace(output);

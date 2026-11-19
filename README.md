@@ -41,9 +41,9 @@ keys do the same.
 | Mod+T | terminal |
 | Mod+Space, Mod+D | launcher |
 | Mod+Q | close the window |
-| Mod+J / Mod+L | focus the column on the left / right |
+| Mod+J / Mod+L | focus the column on the left / right; past the end of the strip, the monitor on that side |
 | Mod+I / Mod+K | focus the window above / below in the column |
-| Mod+Ctrl+direction | move the focused column (left, right) or window (up, down) |
+| Mod+Ctrl+direction | move the focused column (left, right) or window (up, down); a column past the end of the strip goes on to the monitor on that side |
 | Mod+Shift+direction | go to the monitor on that side; with none there, the previous (up, left) or next (down, right) workspace |
 | Mod+Shift+Ctrl+direction | the same, taking the focused column along |
 | Mod+Home / Mod+End | focus the first / last column; with Ctrl, move the column there |
@@ -58,6 +58,7 @@ keys do the same.
 | Mod+Shift+P | screen off until the next input |
 | Print / Shift+Print | screenshot of the screen / of a region |
 | Mod+Shift+E | quit |
+| Mod+left-drag | pick up a window and let it go on another monitor, or beside another column |
 | Ctrl+Alt+F1 … F12 | text consoles |
 
 A three-finger swipe sideways drags the strip; up or down switches
@@ -70,7 +71,7 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | What | Where |
 | --- | --- |
 | Keys, gaps, column widths, timeouts, the terminal and other programs | [src/config.h](src/config.h) |
-| Screens (scale, position) and whether the machine may sleep | [src/machines/](src/machines/), one file per machine; the build picks the one named after the machine's board |
+| Screens (scale, position) and whether the machine may sleep | [src/machines.h](src/machines.h), an entry per machine; tw picks the one named after the machine's board as it starts |
 | Notifications: font, size, colours, how long they stay | [notify/config.h](notify/config.h) |
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |

@@ -154,6 +154,7 @@ struct tw_window {
 struct tw_server {
 	struct wl_display *display;
 	struct wl_event_loop *loop;
+	const struct tw_machine *machine; /* never NULL */
 	struct wl_event_source *sigint, *sigterm;
 
 	struct wlr_backend *backend;
@@ -233,6 +234,10 @@ struct tw_server {
 		TW_SWIPE_VERTICAL, /* switches workspace */
 	} swipe_axis;
 	double swipe_dx, swipe_dy;
+	/* Mod and the left button are moving a window with the mouse: `moved`
+	 * is that window, NULL once it has gone (strip_remove()). */
+	bool moving;
+	struct tw_window *moved;
 	uint32_t mod; /* what TW_MOD resolves to */
 	struct wl_listener new_input;
 	struct wl_listener new_virtual_keyboard;
@@ -323,9 +328,18 @@ struct tw_binding {
 };
 
 struct tw_output_rule {
-	const char *name; /* connector name such as "eDP-1"; NULL matches the rest */
+	const char *name; /* connector name such as "eDP-1" */
 	float scale;
 	int x, y; /* position in the screen area, or TW_AUTO */
+};
+
+/* What depends on the machine (machines.h); main() picks one by its board. */
+#define TW_MACHINE_OUTPUTS 4
+struct tw_machine {
+	const char *board; /* as the firmware names it; NULL for every other machine */
+	struct tw_output_rule outputs[TW_MACHINE_OUTPUTS]; /* the unused have no name */
+	int suspend_after_seconds;
+	int battery_suspend_percent;
 };
 
 /* main.c */
@@ -494,6 +508,9 @@ void strip_arrange(struct tw_server *server);
 bool strip_animate(struct tw_output *output);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
+/* Puts a window moved with the mouse where it was let go, at lx,ly: beside
+ * the column there, or onto that monitor's workspace. */
+void strip_drop(struct tw_server *server, struct tw_window *window, double lx, double ly);
 /* A touchpad swipe drags the strip. `dx` is the finger movement in pixels. */
 void strip_swipe_begin(struct tw_server *server, uint32_t time_msec);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);

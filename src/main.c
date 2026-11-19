@@ -201,7 +201,7 @@ static void handle_session_destroy(struct wl_listener *listener, void *data) {
 	wl_display_terminate(server->display);
 }
 
-static void usage(FILE *out, const char *name) {
+static void usage(FILE *out, const char *name, const struct tw_machine *machine) {
 	fprintf(out, "Usage: %s [-h] [-d] [-b seconds] [-z seconds] [-x seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
 		"      default %d)\n"
@@ -212,7 +212,33 @@ static void usage(FILE *out, const char *name) {
 		"  -d  log debug output\n"
 		"  -s  run a shell command once the compositor is up\n"
 		"  -h  show this help\n",
-		name, blank_after_seconds, suspend_after_seconds, x11_idle_seconds);
+		name, blank_after_seconds, machine->suspend_after_seconds, x11_idle_seconds);
+}
+
+/*
+ * The machines.h entry for the machine tw runs on, by the board name its
+ * firmware gives (the tests point TW_SYS at a made-up machine): the entry of
+ * that name, else the last, for every other machine.
+ */
+static const struct tw_machine *machine_pick(void) {
+	const char *sys = getenv("TW_SYS");
+	char path[PATH_MAX], board[128] = "";
+	snprintf(path, sizeof(path), "%s/class/dmi/id/board_name", sys != NULL ? sys : "/sys");
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd >= 0) {
+		ssize_t length = read(fd, board, sizeof(board) - 1);
+		board[length > 0 ? length : 0] = '\0';
+		board[strcspn(board, "\n")] = '\0';
+		close(fd);
+	}
+	const struct tw_machine *machine = &machines[LENGTH(machines) - 1];
+	for (size_t i = 0; i + 1 < LENGTH(machines); i++) {
+		if (strcmp(machines[i].board, board) == 0) {
+			machine = &machines[i];
+			break;
+		}
+	}
+	return machine;
 }
 
 /* A number of seconds given on the command line: digits and nothing else. */
@@ -242,8 +268,9 @@ static void backend_nested(struct wlr_backend *backend, void *data) {
 int main(int argc, char *argv[]) {
 	const char *startup_cmd = NULL;
 	enum wlr_log_importance verbosity = WLR_ERROR;
+	const struct tw_machine *machine = machine_pick();
 	int blank_after = blank_after_seconds;
-	int suspend_after = suspend_after_seconds;
+	int suspend_after = machine->suspend_after_seconds;
 	int x11_idle = x11_idle_seconds;
 
 	int c;
@@ -266,10 +293,10 @@ int main(int argc, char *argv[]) {
 			startup_cmd = optarg;
 			break;
 		case 'h':
-			usage(stdout, argv[0]);
+			usage(stdout, argv[0], machine);
 			return 0;
 		default:
-			usage(stderr, argv[0]);
+			usage(stderr, argv[0], machine);
 			return 1;
 		}
 		if (seconds != NULL && !parse_seconds(optarg, seconds)) {
@@ -278,12 +305,14 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	if (optind < argc) {
-		usage(stderr, argv[0]);
+		usage(stderr, argv[0], machine);
 		return 1;
 	}
 	wlr_log_init(verbosity, NULL);
+	wlr_log(WLR_DEBUG, "machine %s", machine->board != NULL ? machine->board : "other");
 
 	struct tw_server server = {0};
+	server.machine = machine;
 	server.blank_after_ms = seconds_to_ms(blank_after);
 	server.suspend_after_ms = seconds_to_ms(suspend_after);
 	server.x11_idle_ms = seconds_to_ms(x11_idle);

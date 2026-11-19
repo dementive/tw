@@ -89,42 +89,6 @@ egl = dependency('egl')
 glesv2 = dependency('glesv2')
 libm = cc.find_library('m')
 
-# --- The machine ---------------------------------------------------------------
-
-# What depends on the machine is in src/machines/<name>.h, which config.h
-# includes. 'auto' takes the file named after this machine's board if there
-# is one, and default.h otherwise.
-#
-# The choice is made here, at setup, and only here: a file for this board
-# added later is not seen by `meson compile`, only by
-# `meson setup --reconfigure`. So a build that fell back to default.h says
-# so, with the name the file would need.
-fs = import('fs')
-machine = get_option('machine')
-machine_note = ''
-if machine == 'auto'
-	machine = 'default'
-	# Read inside a shell command. Named to Meson as a file, by fs.read() or
-	# as an argument of its own, it would become something the build depends
-	# on: it looks new after every boot, and the first build after each one
-	# would set itself up again.
-	board = run_command('sh', '-c', 'cat /sys/class/dmi/id/board_name 2>/dev/null', check: false)
-	board = board.stdout().strip().to_lower().underscorify()
-	if board != '' and fs.is_file('src/machines' / board + '.h')
-		machine = board
-	elif board != ''
-		machine_note = ' (no src/machines/@0@.h for this board)'.format(board)
-		message(('this board is "@0@" and there is no src/machines/@0@.h, so the ' +
-			'build takes src/machines/default.h. After adding that file, run ' +
-			'meson setup --reconfigure on this build directory.').format(board))
-	endif
-endif
-if not fs.is_file('src/machines' / machine + '.h')
-	error('there is no src/machines/@0@.h; copy src/machines/default.h to make one'.format(machine))
-endif
-add_project_arguments('-DTW_MACHINE_H="machines/@0@.h"'.format(machine), language: 'c')
-summary('machine', 'src/machines/@0@.h@1@'.format(machine, machine_note), section: 'tw')
-
 # --- Protocols ---------------------------------------------------------------
 
 wayland_scanner = find_program(

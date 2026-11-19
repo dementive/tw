@@ -164,6 +164,97 @@ expect_state f "$visible" "the second column to stay partly in view"
 sleep 0.6 # nothing marks the end of the scroll; let it finish
 never_on f $right
 never_on c $right
+stop_tw
+
+# --- Across the end of the strip, and with the mouse ------------------------------
+# A fresh start, so that where each column is is known: no gap, each column
+# half a monitor wide (640 pixels), the first at the monitor's left edge.
+# entered_since <name> <point> <monitor>: the window came onto that monitor.
+entered_since() { since "$1" "$2" | grep -qx "output enter $3"; }
+# drag <from x,y> <to x,y>: Mod and the left button, from one place to another.
+drag() {
+	press "move:$1:$screen_size" hold:super down "move:$2:$screen_size" up hold:
+}
+start_tw
+start_client m1
+start_client m2
+press super+shift+l
+start_client m3
+# left: m1 m2 [focus m2]   right: m3
+expect_state m3 "$on" "a window to open on the second monitor"
+
+# Mod and a direction go on to the next monitor at either end of the strip.
+press super+shift+j
+expect_state m2 "$on" "the focus to be on the last column of the first monitor"
+press super+l
+expect_state m3 "$on" "Mod+L at the end of the strip to go on to the monitor on the right"
+press super+j
+expect_state m2 "$on" "Mod+J at the start of the strip to go back to the monitor on the left"
+
+# Mod+Ctrl and a direction take the column along, to the near end of the
+# strip there; the other way brings it back.
+point=$(lines m2)
+press super+ctrl+l
+wait_until "Mod+Ctrl+L at the end of the strip to move the column to the next monitor" \
+	entered_since m2 "$point" $right
+expect_state m2 "$on" "the focus to go along with the column"
+press super+l
+expect_state m3 "$on" "the moved column to come in at the near end, left of the one there"
+press super+j super+j
+expect_state m1 "$on" "Mod+J from the start of the strip to cross back to the left monitor"
+press super+l
+expect_state m2 "$on" "Mod+L from the end of the strip to cross to the right monitor again"
+point=$(lines m2)
+press super+ctrl+j
+wait_until "Mod+Ctrl+J at the start of the strip to bring the column back" \
+	entered_since m2 "$point" $left
+expect_state m2 "$on" "the focus to come back with it"
+# left: m1 m2 [focus m2]   right: m3
+
+# Mod and the left button carry a window to another monitor. Let go over an
+# empty part of it, the window goes after the column focused there.
+point=$(lines m1)
+drag 300,300 2200,300
+wait_until "a window dragged with Mod onto the other monitor to go there" \
+	entered_since m1 "$point" $right
+expect_state m1 "$on" "the dragged window to be focused"
+since m1 "$point" | grep -q '^button' && fail "the window heard the button that moved it"
+press super+j
+expect_state m3 "$on" "the dragged window to have gone after the column focused there"
+# right: m3 m1 [focus m3], m1 at 1920-2560
+
+# Let go over a column, it goes beside it, on the side of its middle the
+# pointer is on.
+drag 2200,300 1350,300
+expect_state m1 "$on" "the dragged window to be focused again"
+press super+l
+expect_state m3 "$on" "a window let go over the left half of another to go before it"
+press super+j
+expect_state m1 "$on" "the focus back on the moved window"
+# right: m1 m3 [focus m1]
+
+# Let go where it was, nothing moves.
+point=$(lines m3)
+drag 1400,300 1500,300
+sleep 0.2
+since m3 "$point" | grep -q '^configure' &&
+	fail "a window dropped on itself disturbed the column next to it"
+
+# A plain drag still goes to the window.
+# left: m2   right: m1 m3
+point=$(lines m2)
+press "move:300,300:$screen_size" down "move:350,320:$screen_size" up
+wait_until "a plain drag to reach the window" eval "since m2 $point | grep -q '^button'"
+since m2 "$point" | grep -q "^output enter $right" && fail "a plain drag moved the window"
+
+# Locked, Mod and the button move nothing.
+start_client locker --lock
+expect_line locker locked "the session to lock"
+point=$(lines m2)
+drag 300,300 2200,300
+press Return
+expect_line locker unlocked "the session to unlock"
+entered_since m2 "$point" $right && fail "a window moved with the mouse while locked"
 
 stop_tw
-echo "ok: two monitors, focus and columns between them, workspaces, mouse, a bar, fullscreen, trimming"
+echo "ok: two monitors, focus and columns between them and across the ends of the strip, workspaces, mouse, moving with the mouse, a bar, fullscreen, trimming"

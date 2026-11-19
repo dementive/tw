@@ -219,7 +219,7 @@ static int handle_change(int fd, uint32_t mask, void *data) {
 	}
 
 	int due = tw_battery_look(&power->battery, charge, power->fresh,
-		battery_warn_percent, battery_suspend_percent);
+		battery_warn_percent, server->machine->battery_suspend_percent);
 	power->fresh = false;
 	if (due & TW_BATTERY_WARN) {
 		wlr_log(WLR_INFO, "battery at %d%%, warning", charge);

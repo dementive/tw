@@ -697,6 +697,9 @@ bool strip_add(struct tw_window *window) {
 void strip_remove(struct tw_window *window) {
 	struct tw_server *server = window->server;
 	window_remove(window);
+	if (server->moved == window) {
+		server->moved = NULL; /* the mouse lets go of nothing */
+	}
 	if (server->focused == window) {
 		/* Cleared without telling the client: unmapped, it is sent nothing
 		 * (wlroots would drop it), and initial_commit() tells it it is not
@@ -707,7 +710,95 @@ void strip_remove(struct tw_window *window) {
 	strip_arrange(server);
 }
 
+/*
+ * Takes the window's column, or the dialog itself, to workspace `to` and
+ * gives it the focus there. The column goes next to `beside` (before or after
+ * it), or with `beside` NULL after the column focused there. What it leaves
+ * behind keeps its own focus unless the focus went with it. Whether or not
+ * the window had the focus, its client is told only if that changes.
+ */
+static void window_carry(struct tw_server *server, struct tw_window *window,
+		struct tw_workspace *to, struct tw_column *beside, bool before) {
+	struct tw_workspace *from = window->workspace;
+	if (window->floating) {
+		window_remove(window);
+		window->workspace = to;
+		floating_push(to, window);
+	} else {
+		struct tw_column *column = window->column;
+		if (from != to) {
+			struct tw_column *heir = column_heir(column);
+			if (from->tiled != NULL && from->tiled->column == column) {
+				from->tiled = heir != NULL ? heir->active : NULL;
+			}
+			if (from->focused != NULL && from->focused->column == column) {
+				from->focused = from->tiled != NULL ? from->tiled : first_floating(from);
+			}
+		}
+		wl_list_remove(&column->link);
+		struct wl_list *after;
+		if (beside != NULL) {
+			after = before ? beside->link.prev : &beside->link;
+		} else {
+			after = to->tiled != NULL ? &to->tiled->column->link : to->columns.prev;
+		}
+		wl_list_insert(after, &column->link);
+		column->workspace = to;
+		struct tw_window *member;
+		wl_list_for_each(member, &column->windows, link) {
+			member->workspace = to;
+		}
+		column->active = window;
+		to->tiled = window;
+	}
+	to->focused = window;
+	workspace_activate(server, workspace_index(server, to));
+	focus_update(server);
+	strip_arrange(server);
+}
+
+/*
+ * A window dropped with the mouse at lx,ly (input.c). Over a column, its own
+ * column goes beside that one, on the side of its middle the pointer is on,
+ * and onto that column's workspace. Anywhere else on a monitor (an empty
+ * part, a dialog), it goes to the workspace that monitor shows, after the
+ * column focused there; a dialog always goes that way. Dropped on itself or
+ * on its own workspace's empty part, nothing moves.
+ */
+void strip_drop(struct tw_server *server, struct tw_window *window, double lx, double ly) {
+	struct tw_output *output = output_at(server, lx, ly);
+	if (output == NULL || output->workspace >= TW_WORKSPACES) {
+		return;
+	}
+	struct tw_workspace *to = &server->workspaces[output->workspace];
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	struct tw_window *under = window_at(server, lx, ly, &surface, &sx, &sy);
+	struct tw_column *beside = NULL;
+	bool before = false;
+	if (!window->floating && under != NULL && !under->floating && under->workspace == to) {
+		if (under->column == window->column) {
+			return;
+		}
+		int x, y;
+		wlr_scene_node_coords(&under->scene_tree->node, &x, &y);
+		beside = under->column;
+		before = lx < x + under->width / 2.0;
+	} else if (to == window->workspace) {
+		return;
+	}
+	window_carry(server, window, to, beside, before);
+}
+
 /* --- Actions ---------------------------------------------------------------- */
+
+static void workspace_show(struct tw_server *server, size_t index);
+
+/* The output on the focused one's left (direction < 0) or right. */
+static struct tw_output *output_beside(struct tw_server *server, int direction) {
+	return output_adjacent(output_focused(server),
+		direction < 0 ? WLR_DIRECTION_LEFT : WLR_DIRECTION_RIGHT);
+}
 
 /* The strip's focused window, whether or not a dialog has the keyboard.
  * Moving focus along the strip starts from here and leaves the dialog. */
@@ -729,12 +820,21 @@ void action_close(struct tw_server *server, const union tw_arg *arg) {
 	}
 }
 
+/* Past either end of the strip, or on an empty one, the focus goes on to the
+ * monitor on that side, if there is one. */
 void action_focus(struct tw_server *server, const union tw_arg *arg) {
 	struct tw_window *window = strip_window(server);
-	if (window == NULL) {
-		return;
+	struct tw_column *column = window != NULL ? column_neighbour(window->column, arg->i) : NULL;
+	if (column == NULL) {
+		struct tw_output *output = output_beside(server, arg->i);
+		if (output != NULL) {
+			workspace_show(server, output->workspace);
+			return;
+		}
+		if (window == NULL) {
+			return;
+		}
 	}
-	struct tw_column *column = column_neighbour(window->column, arg->i);
 	window_focus(server, column != NULL ? column->active : window);
 	strip_arrange(server);
 }
@@ -760,11 +860,26 @@ void action_focus_window(struct tw_server *server, const union tw_arg *arg) {
 	strip_arrange(server);
 }
 
+/* Past either end of the strip the column goes on to the monitor on that
+ * side, if there is one, and comes in at the near end of the strip there:
+ * moving it back the other way returns it. */
 void action_move(struct tw_server *server, const union tw_arg *arg) {
 	struct tw_window *window = focused_tiled(server);
-	struct tw_column *neighbour = window != NULL ?
-		column_neighbour(window->column, arg->i) : NULL;
+	if (window == NULL) {
+		return;
+	}
+	struct tw_column *neighbour = column_neighbour(window->column, arg->i);
 	if (neighbour == NULL) {
+		struct tw_output *output = output_beside(server, arg->i);
+		if (output == NULL || output->workspace >= TW_WORKSPACES) {
+			return;
+		}
+		struct tw_workspace *to = &server->workspaces[output->workspace];
+		struct tw_column *end = NULL;
+		if (!wl_list_empty(&to->columns)) {
+			end = wl_container_of(arg->i > 0 ? to->columns.next : to->columns.prev, end, link);
+		}
+		window_carry(server, window, to, end, arg->i > 0);
 		return;
 	}
 	wl_list_remove(&window->column->link);
@@ -880,38 +995,11 @@ void strip_focus_output(struct tw_server *server, struct tw_output *output) {
 /* Sends the focused column (or the focused dialog) to another workspace and
  * follows it there. */
 static void workspace_take_column(struct tw_server *server, size_t index) {
-	struct tw_workspace *from = active_workspace(server);
-	struct tw_window *window = from->focused;
+	struct tw_window *window = active_workspace(server)->focused;
 	if (window == NULL || index >= TW_WORKSPACES || index == server->active) {
 		return;
 	}
-	struct tw_workspace *to = &server->workspaces[index];
-
-	if (window->floating) {
-		window_remove(window);
-		window->workspace = to;
-		floating_push(to, window);
-	} else {
-		struct tw_column *column = window->column;
-		struct tw_column *heir = column_heir(column);
-		from->tiled = heir != NULL ? heir->active : NULL;
-		from->focused = from->tiled != NULL ? from->tiled : first_floating(from);
-
-		wl_list_remove(&column->link);
-		wl_list_insert(to->tiled != NULL ? &to->tiled->column->link : to->columns.prev,
-			&column->link);
-		column->workspace = to;
-		struct tw_window *member;
-		wl_list_for_each(member, &column->windows, link) {
-			member->workspace = to;
-		}
-		to->tiled = window;
-	}
-	to->focused = window;
-	/* The window that moved keeps the focus, so its client hears nothing. */
-	workspace_activate(server, index);
-	focus_update(server);
-	strip_arrange(server);
+	window_carry(server, window, &server->workspaces[index], NULL, false);
 }
 
 /* Index of the next workspace in that direction that no other output shows,

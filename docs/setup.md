@@ -56,30 +56,24 @@ A few more are named where a check below needs them: `bluez` and
 ### This machine's settings
 
 Two things about a machine are compiled in: its screens (scale, position)
-and whether tw may put it to sleep. They live in one small file per
-machine, `src/machines/<name>.h`, and the build picks the file named after
-the machine's board. With no such file it uses
-[default.h](../src/machines/default.h): every screen at scale 1, no sleep.
-That works everywhere, so this step can wait until after the first login.
+and whether tw may put it to sleep. They are an entry per machine in
+[src/machines.h](../src/machines.h), named after the machine's board, and
+tw picks the entry as it starts, so one installed tw serves every machine
+its disk boots. A machine without an entry gets the last one: every screen
+at scale 1, no sleep. That works everywhere, so this step can wait until
+after the first login.
 
 ```sh
-tr 'A-Z' 'a-z' </sys/class/dmi/id/board_name | tr -c 'a-z0-9\n' _    # the name
-cp src/machines/default.h src/machines/<name>.h                      # then edit
+cat /sys/class/dmi/id/board_name    # the entry's .board
 ```
 
-`tw -d` logs each screen's connector name (`output eDP-1`) for the output
-rules. The build says which file it took ("machine: src/machines/..."), and
-when it took `default.h` for want of the board's own, the name that file
-would need. `-Dmachine=<name>` names one outright. Commit the file: the next
-machine then builds from the same tree.
+`tw -d` logs which entry it took (`machine G615LM`, or `machine other`) and
+each screen's connector name (`output eDP-1`) for the entry's outputs.
+Commit the entry: the next machine then builds from the same tree.
 
-The file is chosen when the build directory is set up, not at each build.
-After adding or renaming one, set the build up again before building, or
-the build goes on with the file it chose before:
-
-```sh
-meson setup --reconfigure build-release
-```
+A build directory set up before machines were picked at startup may
+remember the old `machine` option, and Meson then refuses to build in it
+("Unknown options: machine"). Delete that directory and set it up again.
 
 Three build options decide what else is installed. The defaults suit a
 laptop; look at Bluetooth before installing on a desktop.
@@ -111,9 +105,8 @@ sudo meson install -C build-release --no-rebuild --skip-subprojects
 Options go on the first line (`-Dbluetooth=false`), or later with
 `meson configure build-release -Dbluetooth=false`.
 
-After a change, `meson compile -C build-release` and the last line again
-(after a new or renamed file in `src/machines`, `meson setup --reconfigure
-build-release` first). The install has systemd, udev and polkit read what
+After a change, `meson compile -C build-release` and the last line again.
+The install has systemd, udev and polkit read what
 it brought, so nothing needs reloading by hand. A running session keeps the old `tw` until you log
 out and in again.
 
@@ -319,7 +312,7 @@ second later `pgrep -x tw-notify` prints nothing.
 ## 3. Sleep
 
 tw can suspend the machine after a time without input and when the battery
-runs low. Both are off in `src/machines/default.h`, and stay off until the
+runs low. Both are off in every entry of `src/machines.h`, and stay off until the
 machine has been seen to wake: one laptop did not, and had to be switched
 off and on again ([g533zw.md](g533zw.md#sleep)).
 
@@ -330,7 +323,7 @@ systemctl suspend
 ```
 
 Press a key or the power button. If the machine comes back with its screen
-and its network, give its file in `src/machines/` a time and a charge
+and its network, give its entry in `src/machines.h` a time and a charge
 (`suspend_after_seconds = 900`, `battery_suspend_percent = 5`), build and
 install. A long job run as `systemd-inhibit --what=sleep <command>` holds
 the idle suspend off.

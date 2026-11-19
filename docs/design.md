@@ -75,13 +75,42 @@ output is in use), so that a second one plugged in with it takes another,
 and the workspace waits suspended until the screens come on. An output that
 is not for a desktop (a VR headset, `non_desktop`) is left alone.
 
+An output's scale and place come from the entry in `src/machines.h` for the
+machine tw runs on, picked once as tw starts by the board name in
+`/sys/class/dmi/id/board_name` (`machine_pick()` in `main.c`), as are the
+machine's sleep settings. Picked at startup rather than when the build is
+set up, so that one installed tw is right on each machine its disk boots.
+An output the entry does not name is at scale 1, right of the others.
+
+**Moving between monitors.** Mod with left or right moves the focus along
+the strip and, past its end (or on an empty strip), on to the monitor on
+that side; Mod+Ctrl does the same with the focused column, which comes in at
+the near end of the strip there, so the opposite key brings it back.
+Mod+Shift+Ctrl takes it to that monitor's workspace after the column
+focused there instead. All of them come down to `window_carry()`.
+
+With the mouse, Mod and the left button pick up the window under the
+pointer and the release puts it down (`move_begin()`, `move_end()` in
+`input.c`, `strip_drop()`): over another column, its column goes beside
+that one, on the side of its middle the pointer is on, on whichever
+monitor that is; over an empty part of another monitor, or a dialog there,
+onto that monitor's workspace after its focused column. A dialog only
+changes workspace. The button is tw's: the window's client hears neither
+its press nor its release, and while it is held the pointer is over no
+window and shows a grabbing hand. Nothing moves on screen until the
+release. That keeps it to a hit test at each end and no work in between,
+and draws nothing tw would have to draw itself. A move starts only when no
+other button is held (a client waits for its release) and no drag and drop
+is under way, never while locked, and a release after the session locked
+or the window closed puts nothing down.
+
 **The lid.** A laptop's own screen (a connector named `eDP-`, `LVDS-` or
 `DSI-`) behind a closed lid is taken out of use while another output is
 there, as niri does: out of the layout, its layer surfaces closed, turned
 off (`output_leave()`), and its workspace goes as it does when an output is
 unplugged. Left in, it would keep a workspace nobody can see, and the
 pointer and new windows could land there. It comes back, placed by its
-`output_rules` entry, when the lid opens or the last other output goes away
+entry in `src/machines.h`, when the lid opens or the last other output goes away
 with the lid closed, so that there is always a screen; it shows the
 workspace it showed before if no other output has it by then. A screen
 plugged in behind a closed lid takes over from the laptop's own at once.
@@ -249,7 +278,9 @@ outliving either never points at a freed or stale tree.
 **Keys.** Direction keys follow one scheme: I, J, K, L are up, left, down,
 right, and the arrow keys do the same. Alone they move the focus; with Shift
 they go to the monitor on that side or, with none there, to the previous or
-next workspace; with Ctrl the focused window or column is taken along. The
+next workspace; with Ctrl the focused window or column is taken along. Left
+and right, alone or with Ctrl, go on past the end of the strip to the
+monitor on that side (**Moving between monitors** above). The
 `DIRECTION` macro in `config.h` binds all four meanings of a key at once.
 The other bindings follow niri's defaults. Bindings match on the unshifted
 keysym, so Shift combinations do not depend on the layout.

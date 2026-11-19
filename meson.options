@@ -1,10 +1,4 @@
 option(
-	'machine',
-	type: 'string',
-	value: 'auto',
-	description: 'Which src/machines/<name>.h holds this machine\'s settings (screens, sleep). auto: the one named after the board, else default',
-)
-option(
 	'bluetooth',
 	type: 'boolean',
 	value: true,

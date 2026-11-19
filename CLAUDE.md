@@ -55,14 +55,14 @@ what it would do and starts nothing.
 | File | Role |
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: layout, input, timeouts, programs, key bindings |
-| `src/machines/*.h` | What depends on the machine: its outputs, and whether tw may suspend it. One file per machine; the build takes the one named after the board (`-Dmachine`), else `default.h` |
+| `src/machines.h` | What depends on the machine: its outputs, and whether tw may suspend it. An entry per machine; tw takes the one named after the board as it starts (`machine_pick()`), else the last |
 | `src/tw.h` | The server struct and every function shared between files, grouped by file in the order `main()` starts them, as below |
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
 | `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler, a new renderer after a GPU reset |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
 | `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation) |
 | `src/strip.c` | Where windows go: workspaces, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
-| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, touchpad settings and gestures, lid switch, seat |
+| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, moving windows with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
 | `src/idle.c` | Screen blanking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
 | `src/lock.c` | Session lock for swaylock; locking by itself (`lock_now()`) and starting the locker |
@@ -140,9 +140,9 @@ tw never locks by itself unless the locker is installed
 (`program_installed()`): a lock nobody can open is worse than none.
 
 **Nothing sends a machine to sleep that has not been seen to wake.**
-`suspend_after_seconds` and `battery_suspend_percent` are 0 in
-`machines/default.h` and stay 0 in a machine's own file until its owner has
-suspended it by hand and seen it come back. The G533ZW did not.
+`suspend_after_seconds` and `battery_suspend_percent` are 0 in the last
+entry of `src/machines.h` and stay 0 in a machine's own entry until its
+owner has suspended it by hand and seen it come back. The G533ZW did not.
 
 **Stay out of the pixel business.** tw draws nothing around windows: no
 borders, blur, shadows, rounded corners or text. They need custom shaders

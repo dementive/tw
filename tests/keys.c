@@ -16,6 +16,9 @@
  *   down, up       press the left button, let it go: a drag in between
  *   pause:MS       wait, holding what is held, as a hand does; the button
  *                  is let go before this program exits
+ *   hold:MODS      hold modifiers down (hold:super, hold:super+ctrl) through
+ *                  the mouse actions that follow, until the next key
+ *                  combination; hold: with none lets them go
  *
  * Each action has been handled by tw by the time the next one starts, and
  * all of them by the time this program exits; it fails if tw goes away.
@@ -116,6 +119,20 @@ static uint32_t mod_mask(struct xkb_keymap *keymap, const char *name) {
 	return index == XKB_MOD_INVALID ? 0 : 1u << index;
 }
 
+/* The modifier named `name` (super, alt, ctrl, shift) as a mask, or 0. */
+static uint32_t mod_named(struct xkb_keymap *keymap, const char *name) {
+	if (strcmp(name, "super") == 0) {
+		return mod_mask(keymap, XKB_MOD_NAME_LOGO);
+	} else if (strcmp(name, "alt") == 0) {
+		return mod_mask(keymap, XKB_MOD_NAME_ALT);
+	} else if (strcmp(name, "ctrl") == 0) {
+		return mod_mask(keymap, XKB_MOD_NAME_CTRL);
+	} else if (strcmp(name, "shift") == 0) {
+		return mod_mask(keymap, XKB_MOD_NAME_SHIFT);
+	}
+	return 0;
+}
+
 /* Keycode whose unshifted keysym is `sym`, or 0. */
 static xkb_keycode_t find_keycode(struct xkb_keymap *keymap, xkb_keysym_t sym) {
 	xkb_keycode_t max = xkb_keymap_max_keycode(keymap);
@@ -182,21 +199,29 @@ int main(int argc, char *argv[]) {
 			perror("strdup");
 			return 1;
 		}
+		if (strncmp(combo, "hold:", 5) == 0) {
+			for (char *name = strtok(combo + 5, "+"); name != NULL; name = strtok(NULL, "+")) {
+				uint32_t mod = mod_named(keymap, name);
+				if (mod == 0) {
+					fprintf(stderr, "unknown modifier '%s' in '%s'\n", name, argv[i]);
+					return 1;
+				}
+				mods |= mod;
+			}
+			zwp_virtual_keyboard_v1_modifiers(keyboard, mods, 0, 0, 0);
+			sync_display(display);
+			free(combo);
+			continue;
+		}
 		char *key = combo;
 		for (char *plus; (plus = strchr(key, '+')) != NULL && plus[1] != '\0'; key = plus + 1) {
 			*plus = '\0';
-			if (strcmp(key, "super") == 0) {
-				mods |= mod_mask(keymap, XKB_MOD_NAME_LOGO);
-			} else if (strcmp(key, "alt") == 0) {
-				mods |= mod_mask(keymap, XKB_MOD_NAME_ALT);
-			} else if (strcmp(key, "ctrl") == 0) {
-				mods |= mod_mask(keymap, XKB_MOD_NAME_CTRL);
-			} else if (strcmp(key, "shift") == 0) {
-				mods |= mod_mask(keymap, XKB_MOD_NAME_SHIFT);
-			} else {
+			uint32_t mod = mod_named(keymap, key);
+			if (mod == 0) {
 				fprintf(stderr, "unknown modifier '%s' in '%s'\n", key, argv[i]);
 				return 1;
 			}
+			mods |= mod;
 		}
 
 		xkb_keysym_t sym = xkb_keysym_from_name(key, XKB_KEYSYM_NO_FLAGS);

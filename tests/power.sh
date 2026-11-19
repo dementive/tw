@@ -1,7 +1,8 @@
 #!/bin/sh
 # Running on battery: what tw makes of the power supplies the kernel lists,
-# and the command it runs for the state it finds as it starts. The machine is
-# made up: tw reads $run_dir/sys in place of /sys (see lib.sh).
+# and the command it runs for the state it finds as it starts; and which
+# machine tw takes itself for. The machine is made up: tw reads $run_dir/sys
+# in place of /sys (see lib.sh).
 #
 # Two things cannot be shown here. Only the kernel can announce that a supply
 # changed, so nothing that happens while tw runs is covered: a cable going in
@@ -135,4 +136,24 @@ wait_until "tw to say the command is not installed" \
 	grep -q 'not installed: tw-power saver' "$run_dir/tw.log"
 stop_tw
 
-echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command"
+# --- Which machine ---------------------------------------------------------------
+# tw takes the settings (src/machines.h) of the machine whose board the
+# firmware names, and the ones for every other machine otherwise.
+rm -rf "$run_dir/sys"
+machine() { # <board name, or "" for none> <the entry tw is to take>
+	if [ -n "$1" ]; then
+		mkdir -p "$run_dir/sys/class/dmi/id"
+		printf '%s\n' "$1" >"$run_dir/sys/class/dmi/id/board_name"
+	fi
+	start_tw -d
+	wait_until "tw to take the settings for $2 on a board named '$1'" \
+		grep -q "machine $2\$" "$run_dir/tw.log"
+	stop_tw
+	rm -rf "$run_dir/sys"
+}
+machine G533ZW G533ZW
+machine G615LM G615LM
+machine "G615LM-X" other
+machine "" other
+
+echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command, the machine by its board"

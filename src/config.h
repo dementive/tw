@@ -5,8 +5,8 @@
  * no memory and no startup time.
  *
  * What depends on the machine (its screens, whether it wakes from sleep) is
- * not in this file but in machines/<name>.h, one small file per machine;
- * see machines/default.h.
+ * not in this file but in machines.h, an entry per machine, which tw picks
+ * as it starts.
  */
 #ifndef TW_CONFIG_H
 #define TW_CONFIG_H
@@ -74,7 +74,7 @@ static const bool lock_on_lid_close = true;
 static const bool lock_on_idle = true;
 
 /* What suspends the machine. When that happens is the machine's business:
- * suspend_after_seconds and battery_suspend_percent in machines/. */
+ * suspend_after_seconds and battery_suspend_percent in machines.h. */
 static const char suspend_command[] = "systemctl suspend";
 
 /* --- On battery -------------------------------------------------------------- */
@@ -218,12 +218,8 @@ static const size_t clipboard_keep_bytes = 64 << 20;
 
 /* --- The machine ------------------------------------------------------------- */
 
-/* The build names the file (-Dmachine=<name>, or by the machine's board). */
 #define AUTO TW_AUTO
-#ifndef TW_MACHINE_H
-#define TW_MACHINE_H "machines/default.h"
-#endif
-#include TW_MACHINE_H
+#include "machines.h"
 #undef AUTO
 
 /* --- Key bindings ------------------------------------------------------------ */
@@ -241,14 +237,19 @@ static const size_t clipboard_keep_bytes = 64 << 20;
 
 /*
  * One direction key, four meanings:
- *   Mod+key             focus: left and right along the strip, up and down
+ *   Mod+key             focus: left and right along the strip, and past
+ *                       its end on to the monitor on that side; up and down
  *                       within a column
  *   Mod+Shift+key       workspaces: go to the monitor on that side; with no
  *                       monitor there, the previous (up, left) or next (down,
  *                       right) workspace
  *   Mod+Ctrl+key        move the focused column (left, right) or window (up,
- *                       down) that way
+ *                       down) that way; a column past the end of the strip
+ *                       goes on to the monitor on that side
  *   Mod+Shift+Ctrl+key  take the focused column along to where Mod+Shift goes
+ *
+ * And the mouse: Mod and the left button pick up a window, to let go on
+ * another monitor or beside another column.
  */
 #define DIRECTION(key, focus, focus_arg, move, move_arg, direction) \
 	{MOD,                key, focus,                           {.i = focus_arg}}, \

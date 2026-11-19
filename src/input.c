@@ -1,3 +1,4 @@
+#include <linux/input-event-codes.h>
 #include <math.h>
 #include <stdlib.h>
 #include <wlr/backend.h>
@@ -377,6 +378,11 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
 /* Gives the pointer to `surface`, at sx,sy in it, or to nothing. */
 static void pointer_enter(struct tw_server *server, uint32_t time_msec,
 		struct wlr_surface *surface, double sx, double sy) {
+	/* While a window is moved with the mouse the pointer is over nothing,
+	 * and keeps the grabbing hand (move_begin()). A lock takes it back. */
+	if (server->moving && !server->locked) {
+		return;
+	}
 	if (server->seat->drag != NULL) {
 		wlr_scene_node_set_position(&server->drag_icon_tree->node,
 			(int)server->cursor->x, (int)server->cursor->y);
@@ -630,11 +636,77 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
 	pointer_update(server, event->time_msec);
 }
 
+/* Mod held on the keyboard last used, with no other modifier a binding
+ * would count. */
+static bool mod_held(struct tw_server *server) {
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	return keyboard != NULL &&
+		(wlr_keyboard_get_modifiers(keyboard) & BINDING_MODS) == server->mod;
+}
+
+/*
+ * Mod and the left button pick up the window under the pointer, to be let go
+ * on another monitor or beside another column (strip_drop()). The button is
+ * tw's: the window's client hears neither its press nor its release. Not
+ * while locked, nor during a drag and drop or with another button held,
+ * whose release a client is waiting for. Until the button is let go, the
+ * pointer is over no window and shows a grabbing hand; nothing moves on
+ * screen before then.
+ */
+static bool move_begin(struct tw_server *server) {
+	struct wlr_seat *seat = server->seat;
+	if (server->locked || seat->drag != NULL || seat->pointer_state.button_count > 0 ||
+			!mod_held(server)) {
+		return false;
+	}
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	struct tw_window *window = window_at(server,
+		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	if (window == NULL) {
+		return false;
+	}
+	server->moving = true;
+	server->moved = window;
+	window_focus(server, window);
+	strip_arrange(server);
+	/* Leaving the window sets the default cursor (handle_pointer_focus_change()),
+	 * and lets go of a pointer lock the window held. */
+	wlr_seat_pointer_notify_clear_focus(seat);
+	wlr_cursor_set_xcursor(server->cursor, server->cursor_manager, "grabbing");
+	return true;
+}
+
+/* The left button is let go: the window goes where the pointer is, unless it
+ * closed meanwhile or the session was locked. */
+static void move_end(struct tw_server *server) {
+	struct tw_window *window = server->moved;
+	server->moving = false;
+	server->moved = NULL;
+	if (window != NULL && !server->locked) {
+		strip_drop(server, window, server->cursor->x, server->cursor->y);
+	}
+	/* Over nothing the hand would stay; a window sets its own cursor. */
+	wlr_cursor_set_xcursor(server->cursor, server->cursor_manager, "default");
+	pointer_refocus(server);
+}
+
 static void handle_cursor_button(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
 
 	idle_activity(server);
+	if (event->button == BTN_LEFT) {
+		if (server->moving) {
+			if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+				move_end(server);
+			}
+			return;
+		}
+		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && move_begin(server)) {
+			return;
+		}
+	}
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
 
 	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
