@@ -146,6 +146,32 @@ boot loader; elsewhere it is `sudo mkinitcpio -P`. After a reboot,
 `lsmod | grep '^xe '` prints nothing and
 `cat /sys/module/nvme/parameters/io_queue_depth` prints 128.
 
+### Keep the NPU's driver out
+
+Intel's processors from Meteor Lake on have an NPU, a unit for running
+neural networks, and the kernel loads its driver, `intel_vpu`, at boot. The
+driver loads the NPU's firmware and gives it a working area of 64 MB, which
+stays taken for the whole session, although the NPU sleeps and nothing uses
+it. What could use it is a program built on Intel's own libraries for it
+(OpenVINO and the NPU's user-space driver). Check that none is installed
+(no output):
+
+```sh
+pacman -Qq | grep -iE 'openvino|npu'
+```
+
+Then:
+
+```sh
+echo 'blacklist intel_vpu' | sudo tee /etc/modprobe.d/no-npu.conf
+sudo limine-mkinitcpio
+```
+
+It saves about 66 MB on the G615LM. On a machine without an NPU, such as
+the G533ZW, the line does nothing. After a reboot `lsmod | grep intel_vpu`
+prints nothing. To undo it, delete the file and run `limine-mkinitcpio`
+again.
+
 ### Let the wired network chip sleep
 
 On a laptop, a wired network controller with no cable in can stay fully

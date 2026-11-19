@@ -866,7 +866,14 @@ users: `nvidia-powerd` and `nvidia-persistenced` are stopped before the
 driver is unloaded and started again with the GPU, each if it is enabled.
 Before the GPU leaves the bus, its other NVIDIA functions (its sound, on
 some a USB-C controller) are allowed to sleep: the slot loses power only
-when every function on it is asleep.
+when every function on it is asleep. While the GPU is off, those other
+functions' `link/clkpm` in sysfs must not be read: kernel 7.3.4 frees the
+link's power state along with the GPU but keeps the file, and reading it
+crashes the reading program with a NULL dereference in the kernel
+(`clkpm_show`). That was seen on the G615LM, from a probe that read every
+`/sys/bus/pci/devices/*/link/*`. Nothing tw runs reads that file. A
+program killed there may never release the file, and the next `tw-gpu on`
+re-creates it, so reboot before using the GPU again.
 
 The helper leaves alone a GPU that another driver than NVIDIA's has
 (nouveau), and one whose driver is no longer on the disk: after a kernel
