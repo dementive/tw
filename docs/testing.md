@@ -204,10 +204,11 @@ must be empty.
 
 ## Seen on a real machine
 
-What has been seen to work outside the tests, all on the G533ZW (CachyOS,
-November 2026), and what has not been seen yet. Take a line out of the
-last column once it has been seen; the figures that go with these are in
-[g533zw.md](g533zw.md).
+What has been seen to work outside the tests, and what has not been seen
+yet, on CachyOS in November 2026. Everything was seen on the G533ZW unless
+it names the G615LM. Take a line out of the last column once it has been
+seen; the figures that go with these are in [g533zw.md](g533zw.md) and
+[g615lm.md](g615lm.md).
 
 | Area | Seen | Not seen yet |
 | --- | --- | --- |
@@ -217,13 +218,14 @@ last column once it has been seen; the figures that go with these are in
 | Clipboard | in a headless tw with real programs: a copy from foot outliving foot and pasted into another foot; `wl-copy --foreground`; a PNG byte for byte; `wl-copy --clear`; no wakeup while holding a copy | the installed build in daily use; copies from Chromium, GTK or Qt; a copy through xwayland-satellite, and tw stopping that helper while it owns the clipboard |
 | Battery | announcements of an unchanged battery and charger every 35 to 110 s, acted on only when something changed; a made-up battery running down with real announcements: one warning, suspends at 5%, 4% and 2% and none on the charger; at a login on battery, the panel at 60 Hz from its first modeset and power-saver; at a login on mains, `tw-power balanced` without a password prompt | the panel changing mode while tw runs, and whether the screen blinks; a USB-C charger as a supply; the root helper writing the real `/sys`; a real suspend from a low battery; a wake-up told from the clocks |
 | Notifications | `notify-send`, `busctl` and `dbus-send` all agree with `bus.c`; wrapping, the urgent border, one picture per change; under dbus-broker, tw's entry in `/usr/local` winning and each start a transient unit of its own; with fontconfig, in a headless tw: Latin, Greek, Cyrillic, Japanese and symbols, each from the first font that has them | the fontconfig build on a real screen at 1.25; a notification from the Claude app and its window coming forward after a click; a monitor going away under the list |
-| NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go | a window on the real screen drawn by the GPU; a monitor on it; suspend while it is off; a machine whose GPU is a 3D controller; a machine whose first GPU has no `boot_vga`, or one whose NVIDIA GPU has it beside the panel's GPU; the guard after a kernel update, and the message with no driver installed; `nvidia-persistenced` stopped and started with the GPU; a GPU whose slot stayed powered for want of its sound function sleeping |
-| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB; the sleep rule matching by the adapter's interface after a boot (`udevadm test` in its dry-run mode matched it to the G533ZW's adapter, which also calls itself Bluetooth as a whole device); a Wi-Fi and Bluetooth chip that does not |
+| NVIDIA GPU | RTX 3070 Ti, driver 620.70: the polkit rule; load and unload; the GPU in D3cold off the bus; Vulkan and OpenGL from it into a tw drawing with Intel, on Wayland and X11; `tw-gpu launch` from fuzzel; off the bus, `nvidia-smi`, `fastfetch` and `btop` refused and the GPU left off; ten switch-ons in a row; a GPU in use left alone and off once let go; at login, waiting for the login screen to let go; on the G615LM (RTX 5060, same driver), a monitor on it, plugged in at login, through a USB-C hub, with tw drawing on Intel | a window on the real screen drawn by the GPU; suspend while it is off; a machine whose GPU is a 3D controller; a machine whose first GPU has no `boot_vga`, or one whose NVIDIA GPU has it beside the panel's GPU; the guard after a kernel update, and the message with no driver installed; `nvidia-persistenced` stopped and started with the GPU; a GPU whose slot stayed powered for want of its sound function sleeping |
+| Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused; on the G615LM (BE200, `8087:0036`), the sleep rule after a boot: the adapter asleep with `control` at `auto` and no driver | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB; a Wi-Fi and Bluetooth chip that does not call itself Bluetooth as a whole device (both laptops' adapters do, so the rule's match by interface is not what was tested) |
 | Thunderbolt | udev accepts the rule; nothing more | any device at all; whether a dock's USB ports and display outputs work before it is approved |
 
 Nothing that needs a suspend can be seen on the G533ZW: it did not wake
 from one, and sleep stays off there ([g533zw.md](g533zw.md#decisions)).
-Those items wait for another machine.
+Those items wait for another machine; the G615LM has not been suspended
+yet ([g615lm.md](g615lm.md#sleep)).
 
 The real runs found faults the made-up machines had not, and each is in a
 test now: the GPU switched off at the first login before the login screen

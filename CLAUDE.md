@@ -13,6 +13,7 @@ This file is what a change has to know and keep. The rest is in `docs/`:
 | [docs/setup.md](docs/setup.md) | a change needs a new program or a step done by hand: the owner's guide to installing tw on a machine |
 | [docs/system.md](docs/system.md) | the owner asks about slimming the system around tw: services, kernel settings, replacing KDE's parts. Not tw; optional |
 | [docs/g533zw.md](docs/g533zw.md) | the owner asks about memory, battery or sleep on their laptop: measurements, what was tried, what they decided |
+| [docs/g615lm.md](docs/g615lm.md) | the same for the second laptop the SSD boots (ROG Strix G16): its hardware, its GPUs and monitor ports, the G533ZW's settings checked there |
 
 ## Build, test, run
 
@@ -180,8 +181,8 @@ one is its own change, with the cleanup said in `docs/setup.md`.
 `docs/system.md`. How a part works goes in `docs/design.md`, not here.
 Something seen on a real machine for the first time, or found to be
 untestable, goes in `docs/testing.md`. A measurement or a decision about
-the owner's laptop goes in `docs/g533zw.md`. Keep this file to what every
-change needs.
+one of the owner's laptops goes in that laptop's file, `docs/g533zw.md` or
+`docs/g615lm.md`. Keep this file to what every change needs.
 
 ## Working with the owner
 
