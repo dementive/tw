@@ -137,7 +137,7 @@ sudo limine-mkinitcpio
 
 | Line | What it does | Saves | Leave it out when |
 | --- | --- | --- | --- |
-| `blacklist xe` | the kernel loads two drivers for an Intel GPU, `i915` and the newer `xe`, and only one drives it; this keeps `xe` and its helper modules out | about 5 MB | the GPU is driven by `xe` (`readlink /sys/class/drm/card*/device/driver` says so), or the machine has no Intel GPU |
+| `blacklist xe` | the kernel loads two drivers for an Intel GPU, `i915` and the newer `xe`, and only one drives it; this keeps `xe` and its helper modules out | about 5 MB | the GPU is driven by `xe` (`readlink /sys/class/drm/card*/device/driver` says so), as on Intel's chips from Lunar Lake on, or the machine has no Intel GPU. Check every machine the disk boots |
 | `options nvme io_queue_depth=128` | the SSD driver makes room for 1,023 requests under way in each of its queues, one queue per CPU thread; 128 each is still far more than a desktop uses | about 9 MB | the machine has no NVMe disk |
 
 Both modules are loaded from the boot image, so the file has to go into
