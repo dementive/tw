@@ -180,6 +180,15 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	 * if they changed size, anchor, layer and the like. */
 	if (layer_surface->initial_commit) {
 		surface->awaiting_initial_commit = false;
+		/* A surface over the windows that does not ask for the keyboard is
+		 * a notification (tw-notify, mako) or an on-screen display: what it
+		 * shows wants to be seen, so the screen comes on for it. A
+		 * launcher asks for the keyboard and comes from input anyway. */
+		if (layer_surface->current.layer >= ZWLR_LAYER_SHELL_V1_LAYER_TOP &&
+				layer_surface->current.keyboard_interactive ==
+					ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+			idle_wake(surface->server);
+		}
 	} else if (layer_surface->current.committed == 0) {
 		return;
 	}

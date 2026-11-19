@@ -336,9 +336,16 @@ screen back. The screen is 2.4 W of an idle laptop's 6.4
 soon, and locking comes much later so that one is not forever unlocking.
 One timer serves all three, not re-armed per input event: input records a
 timestamp, and when the timer fires it does what is due and sleeps until
-the next thing is. A locker that is not installed takes the lock step out
-as tw starts, as a missing suspend command does the suspend one: a lock
-that is due and refused would keep the timer firing. A visible surface with
+the next thing is. A notification turns the screen back on for another
+`blank_after_seconds` (`idle_wake()`, from `layer.c`: a surface on the top
+or overlay layer that does not ask for the keyboard, as `tw-notify` and
+mako draw, at its first commit). It is not input: locking and suspending
+count from the last input alone, so notifications never keep an empty desk
+unlocked, and the screen's own clock counts from whichever came later. A
+launcher asks for the keyboard and comes from input anyway. A locker that
+is not installed takes the lock step out as tw starts, as a missing suspend
+command does the suspend one: a lock that is due and refused would keep the
+timer firing. A visible surface with
 an idle inhibitor holds all three off; one on a hidden workspace,
 or a layer surface behind the lock curtain or on a screen that is off, does
 not. While the outputs are off every window is suspended, and the pointer

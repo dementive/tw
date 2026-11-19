@@ -48,6 +48,9 @@
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
  *   --layer-inhibit  the same, asking to keep the screen on
+ *   --notification  a 300x80 layer surface on the overlay layer in the top
+ *                 right corner that does not take the keyboard, like a
+ *                 notification
  *   --bar         a layer surface 30 pixels high across the top of the
  *                 screen that keeps those 30 pixels to itself, like a bar
  *   --bar-menu    the same bar on the bottom layer, as waybar's default is,
@@ -1240,6 +1243,14 @@ int main(int argc, char *argv[]) {
 				wp_fractional_scale_manager_v1_get_fractional_scale(scale_manager, surface),
 				&scale_listener, NULL);
 		}
+		wl_surface_commit(surface);
+	} else if (strcmp(mode, "--notification") == 0) {
+		struct zwlr_layer_surface_v1 *layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+			layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "notifications");
+		zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
+		zwlr_layer_surface_v1_set_size(layer_surface, 300, 80);
+		zwlr_layer_surface_v1_set_anchor(layer_surface,
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
 		wl_surface_commit(surface);
 	} else if (strcmp(mode, "--bar") == 0 || strcmp(mode, "--bar-menu") == 0) {
 		bar_menu = strcmp(mode, "--bar-menu") == 0;

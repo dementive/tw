@@ -288,6 +288,7 @@ struct tw_server {
 	int suspend_after_ms; /* 0 never suspends */
 	int suspend_tries;    /* suspend attempts since the last input */
 	int64_t last_activity_ms;
+	int64_t woken_ms; /* when a notification last turned the screen on */
 	int64_t lit_check_ms; /* when input last looked for an output left dark */
 	bool blanked; /* outputs are powered off */
 	bool idle_inhibited; /* a visible surface asked to keep the screen on */
@@ -589,6 +590,10 @@ void idle_finish(struct tw_server *server);
 void idle_activity(struct tw_server *server);
 /* Re-checks whether a visible surface is keeping the screen on. */
 void idle_update_inhibited(struct tw_server *server);
+/* Turns the screen on, if it is off, for another blank_after_seconds, as a
+ * notification does: something wants to be seen. Not input: the lock and
+ * suspend clocks go on, so notifications never keep an empty desk unlocked. */
+void idle_wake(struct tw_server *server);
 /* Locks the session (unless lock_after_ms is 0) and runs suspend_command. */
 void suspend_now(struct tw_server *server);
 /* Powers the outputs off until the next input. */

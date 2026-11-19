@@ -1,7 +1,8 @@
 #!/bin/sh
 # Screen blanking: the outputs power off after a while without input and every
 # window is told to stop drawing; a visible idle inhibitor (a video player)
-# holds that off. Blanking locks nothing. With a locker installed the session
+# holds that off, and a notification turns the screen back on. Blanking
+# locks nothing. With a locker installed the session
 # locks after a longer time without input, and the machine is suspended after
 # a longer one still.
 # $3 = tw-test-keys.
@@ -51,6 +52,22 @@ last_line_matches video configure "suspended=0" ||
 kill "$video_pid"
 expect_state a "suspended=1" "the screen to turn off once the inhibitor is gone"
 
+stop_tw
+
+# A notification turns the screen back on, for another blank timeout; a
+# launcher, which takes the keyboard and comes from input anyway, does not.
+start_tw -b 2
+start_client n
+expect_state n "$on" "the window to start visible"
+expect_state n "suspended=1" "the screen to turn off after two seconds without input"
+start_client launcher --layer
+launcher_pid=$last_client_pid
+sleep 0.5
+last_line_matches n configure "suspended=1" || fail "a launcher turned the screen on"
+kill "$launcher_pid"
+start_client note --notification
+expect_state n "suspended=0" "a notification to turn the screen back on"
+expect_state n "suspended=1" "the screen to turn off again two seconds after the notification"
 stop_tw
 
 # Mod+Shift+P turns the screen off at once, with the timeout disabled. Letting
@@ -143,6 +160,20 @@ expect_state d "$on" "the locker to unlock again"
 
 stop_tw
 
+# A notification turns the screen on but is not input: it does not put the
+# lock off. Without input since tw started, the lock is due at four seconds;
+# counted from the notification it would come one and a half later.
+locked_before=$(grep -c '^locked' "$run_dir/locker.log")
+start_tw -b 1 -l 4
+start_client g
+expect_state g "suspended=1" "the screen to turn off after a second without input"
+sleep 0.5
+start_client news --notification
+expect_state g "suspended=0" "a notification to turn the screen back on"
+sleep 3.1
+locks $((locked_before + 1)) || fail "a notification put the lock off: it counted as input"
+stop_tw
+
 # --- Suspend -------------------------------------------------------------------
 # After a longer time without input tw locks the session and runs the suspend
 # command. The stand-in suspends nothing, so tw finds the machine still awake
@@ -210,4 +241,4 @@ sleep 2.5
 	fail "after the inhibitor went, the next attempt was not a period away"
 
 stop_tw
-echo "ok: blanking, inhibitors, manual power-off, abandoned lock without a locker, lock on idle after blanking, locker restart, suspend, the clock after an inhibitor"
+echo "ok: blanking, inhibitors, a notification waking the screen, manual power-off, abandoned lock without a locker, lock on idle after blanking and despite a notification, locker restart, suspend, the clock after an inhibitor"

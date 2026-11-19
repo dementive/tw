@@ -310,6 +310,23 @@ installed. To check, after logging in again: `notify-send Hello there`
 shows a box in the top right corner that goes after six seconds, and a
 second later `pgrep -x tw-notify` prints nothing.
 
+### The screen back on when Claude Code is done
+
+The screen goes off 30 seconds after the last input, and a notification
+turns it back on. Claude Code can send one when it finishes and when it
+needs an answer, through two hooks in `~/.claude/settings.json` (merged
+into what is there; `/hooks` in Claude Code shows them):
+
+```json
+"hooks": {
+  "Stop": [{"hooks": [{"type": "command", "command": "grep -qsx On /sys/class/drm/card*-*/dpms || notify-send -a 'Claude Code' 'Claude Code' 'Done, waiting for you' 2>/dev/null || true"}]}],
+  "Notification": [{"hooks": [{"type": "command", "command": "grep -qsx On /sys/class/drm/card*-*/dpms || notify-send -a 'Claude Code' 'Claude Code' 'Needs your input' 2>/dev/null || true"}]}]
+}
+```
+
+Each sends a notification only while every screen is off (no connector's
+`dpms` reads `On`), so a reply watched as it comes needs none.
+
 ## 3. Sleep
 
 tw can suspend the machine after a time without input and when the battery

@@ -41,6 +41,14 @@ static bool away(const struct tw_server *server) {
 	return server->session != NULL && !server->session->active;
 }
 
+/* What the screen's time to go off counts from: the last input, or a later
+ * notification that turned it on (idle_wake()). Locking and suspending count
+ * from input alone. */
+static int64_t blank_clock(const struct tw_server *server) {
+	return server->woken_ms > server->last_activity_ms ?
+		server->woken_ms : server->last_activity_ms;
+}
+
 /* Sets the timer for whatever is due next: blanking, locking, or a suspend
  * attempt.
  * Call when one of those has just happened, the screen came back on, an
@@ -50,26 +58,29 @@ static void idle_timer_start(struct tw_server *server) {
 	if (server->idle_timer == NULL) {
 		return;
 	}
-	int64_t next = 0; /* in milliseconds of idleness; 0 if nothing is due */
 	if (away(server)) {
 		/* Nothing is due: coming back is activity. */
 		wl_event_source_timer_update(server->idle_timer, 0);
 		return;
 	}
+	int64_t next = 0; /* when the next step is due, on now_ms()'s clock; 0 if none */
 	if (!server->blanked && server->blank_after_ms > 0) {
-		next = server->blank_after_ms;
+		next = blank_clock(server) + server->blank_after_ms;
 	}
-	if (!server->locked && server->lock_after_ms > 0 &&
-			(next == 0 || server->lock_after_ms < next)) {
-		next = server->lock_after_ms;
-	}
-	if (server->suspend_after_ms > 0) {
-		int64_t due = (int64_t)server->suspend_after_ms * (server->suspend_tries + 1);
+	if (!server->locked && server->lock_after_ms > 0) {
+		int64_t due = server->last_activity_ms + server->lock_after_ms;
 		if (next == 0 || due < next) {
 			next = due;
 		}
 	}
-	int64_t wait = next - (now_ms() - server->last_activity_ms);
+	if (server->suspend_after_ms > 0) {
+		int64_t due = server->last_activity_ms +
+			(int64_t)server->suspend_after_ms * (server->suspend_tries + 1);
+		if (next == 0 || due < next) {
+			next = due;
+		}
+	}
+	int64_t wait = next - now_ms();
 	wl_event_source_timer_update(server->idle_timer,
 		next == 0 ? 0 : (wait > 0 ? (int)wait : 1));
 }
@@ -135,7 +146,8 @@ static int handle_idle_timer(void *data) {
 		}
 	}
 	/* The screen goes off sooner and by itself: nobody needs to unlock it. */
-	if (!server->blanked && server->blank_after_ms > 0 && idle_ms >= server->blank_after_ms) {
+	if (!server->blanked && server->blank_after_ms > 0 &&
+			now_ms() - blank_clock(server) >= server->blank_after_ms) {
 		set_blanked(server, true);
 	}
 	if (server->suspend_after_ms > 0 &&
@@ -228,6 +240,18 @@ static int handle_clock_jump(int fd, uint32_t mask, void *data) {
 
 void action_blank(struct tw_server *server, const union tw_arg *arg) {
 	set_blanked(server, true);
+}
+
+void idle_wake(struct tw_server *server) {
+	if (away(server)) {
+		return;
+	}
+	server->woken_ms = now_ms();
+	if (server->blanked) {
+		set_blanked(server, false); /* sets the timer */
+	} else {
+		idle_timer_start(server);
+	}
 }
 
 /* `dying` is an inhibitor that is being destroyed but is still in the list. */
