@@ -1039,10 +1039,11 @@ how to tell and when to keep boltd.
 
 A laptop's own keyboard is often a USB device, and the kernel keeps a USB
 device awake unless told it may sleep. Awake, it is polled every few
-milliseconds, and on the G615LM that alone kept the processor out of its
-deepest idle state (package C10): letting it sleep took the idle laptop from
-7.37 to 6.29 W, and C10 from none to 56% of the time
-([g615lm.md](g615lm.md#battery)). `tw-keyboard.rules` tells the kernel so
+milliseconds, and on both of the owner's laptops that alone kept the
+processor out of its deepest idle state (package C10). Letting it sleep took
+the idle G615LM from 7.37 to 6.29 W and C10 from none to 56% of the time
+([g615lm.md](g615lm.md#battery)), and the G533ZW from 8.36 to 6.45 W and
+C10 from none to 78% ([g533zw.md](g533zw.md#before-and-after)). `tw-keyboard.rules` tells the kernel so
 for a keyboard that is built in: one on a port the firmware calls `fixed`,
 with a boot-keyboard interface (HID class 03, subclass 01, protocol 01) in
 udev's `ID_USB_INTERFACES`. It sleeps two seconds after the last key (the
