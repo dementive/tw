@@ -180,10 +180,11 @@ static const char keyboard_light_down[] = "brightnessctl -q " KEYBOARD " set 1-"
  * the one here: about 10 MB from login, then the first terminal is no
  * dearer than a foot of its own and every further one cheaper. It listens
  * on a socket named after this tw's display, so a tw run nested has its
- * own.
+ * own. It draws each window with 4 threads rather than one per CPU (20 on
+ * the G533ZW): about 1 MB less, and still quick on a 4K monitor.
  */
 static const char *const autostart[] = {
-	"foot --server",
+	"foot --server -o main.workers=4",
 	NULL,
 };
 

@@ -666,7 +666,11 @@ own is about 10 MB of its own memory (fonts, glyph caches, the parsed
 configuration) besides its window's buffers; the server has these once, so
 every terminal after the first is that much cheaper and opens sooner. The
 first costs the same as before, but the server's 10 MB are there from login,
-before any terminal is open.
+before any terminal is open. The server draws each window with 4 threads
+(`-o main.workers=4`) rather than foot's default of one per CPU: 20 threads
+a window on the G533ZW, each with its stack and its kernel stack, for about
+1 MB; measured headless with two windows, 41 threads and 5.9 MB against 9
+threads and 5.6 MB, the rest in the kernel.
 
 - `-E` runs the shell with footclient's environment, which is tw's, rather
   than the server's, which was tw's at login: `DISPLAY` and anything set
