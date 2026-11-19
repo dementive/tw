@@ -76,21 +76,24 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |
 
-`tw -h` lists its options: `-d` logs what it does, `-b`, `-z` and `-x`
-override the screen-off, suspend and X11 timeouts.
+`tw -h` lists its options: `-d` logs what it does, `-b`, `-l`, `-z` and
+`-x` override the screen-off, lock, suspend and X11 timeouts.
 
 ## What tw does by itself
 
-- **Screen and lock.** The screen goes off after 5 minutes without input
-  and the session locks; closing the lid locks too. A window that inhibits
-  idling (a playing video) holds the screen on while it is visible.
+- **Screen and lock.** The screen goes off after 30 seconds without input
+  and locks nothing; any input, or a notification, turns it back on. The
+  session locks after 15 minutes without input. Closing the lid with no
+  monitor plugged in locks too. A window that inhibits idling (a playing
+  video) holds the screen on while it is visible.
 - **Sleep.** Off until the machine has been seen to wake from one; see
   [setup.md](docs/setup.md#3-sleep).
 - **On battery** every screen runs at 60 Hz and the machine is set to its
   power-saver profile; plugging in brings back the full rate and the
-  balanced profile. The screen may blink once as it changes. There is no
-  battery indicator: at 10% a notification says so, and stays until
-  clicked.
+  balanced profile. The screen may blink once as it changes. After 5
+  seconds without input each screen shows at most 2 new frames a second,
+  never for videos, games or anything fullscreen. There is no battery
+  indicator: at 10% a notification says so, and stays until clicked.
 - **The clipboard** keeps what you copied after the program you copied it
   from has closed, up to 64 MB. A program that empties the clipboard on
   purpose, as a password manager does, is obeyed.

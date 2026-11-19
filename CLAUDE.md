@@ -41,9 +41,10 @@ subprojects' own tests. `--skip-subprojects` keeps wlroots' headers and
 library out of `/usr/local`.
 
 `-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per
-window and an `output <name>` line per monitor. `-b <seconds>` and
-`-z <seconds>` override the screen-blanking and suspend timeouts, and
-`-x <seconds>` how long after the last X11 program the X server is stopped.
+window and an `output <name>` line per monitor. `-b <seconds>`, `-l <seconds>`
+and `-z <seconds>` override the screen-blanking, locking and suspend
+timeouts, and `-x <seconds>` how long after the last X11 program the X
+server is stopped.
 
 Never run `data/tw-session` from inside a desktop session to try it out: it
 publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.

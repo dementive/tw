@@ -570,7 +570,7 @@ in; a new output, an output coming back on and a change of power supply all
 ask it. wlroots refuses a mode for an output that is off, so
 `outputs_update_mode()` skips those and `output_set_power()` sets the mode
 as it turns one on. If the output refuses it, it gets its preferred mode,
-then its old one, then the first of its modes it takes (`output_commit()`):
+then its old one, then the first of its modes it takes:
 a dock, a hub or a cable may not carry the preferred mode, and a monitor
 just plugged in has no old one. A dark screen is the one failure this must
 not have.

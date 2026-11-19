@@ -2,8 +2,9 @@
 
 Three kinds of evidence stand behind tw, and this file keeps them apart:
 what the tests check on every run, what no test can reach, and what has
-been seen to work on a real machine (so far one: an ASUS ROG Strix G533ZW,
-see [g533zw.md](g533zw.md)). Add to the last part whenever something is
+been seen to work on a real machine (so far two ASUS ROG Strix laptops, the
+G533ZW and the G615LM, see [g533zw.md](g533zw.md) and
+[g615lm.md](g615lm.md)). Add to the last part whenever something is
 seen for the first time, and take things off the "not seen yet" lists.
 
 ## Running the tests
@@ -27,7 +28,7 @@ tests run each script against a made-up machine: a directory standing in for
 
 | Test | What it covers |
 | --- | --- |
-| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery decision |
+| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery and lid decisions, which connector is the laptop's own |
 | `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end; big-endian ones passed over by their length; what a broken header still says; `Notify` bodies read to the byte by the same `bus_notify_read()` tw-notify uses |
 | `smoke` | everything a client can observe: no file tw was handed open reaching a program it starts; sizes, focus, every key binding (the level keys with stand-ins for `wpctl`, `brightnessctl` and `notify-send`), workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held; windows offered fullscreen and nothing else; focus requests with a made-up token or one naming no surface refused |
 | `columns` | windows sharing a column, floating dialogs; a dialog that maps again drawn in front; a game that goes fullscreen without the focus leaving it where it was, and getting it when the dialog in front closes; a game of a fixed size going fullscreen in the strip and floating again after, and one that asks to start fullscreen and changes its mind before its first frame; a tiled window's menu drawn above a dialog; a hidden window that unmaps and maps again as a dialog told it is neither suspended nor tiled from its first configure; a dialog's client-drawn shadow not cropped (the pointer reaches it) |
@@ -166,7 +167,7 @@ must be empty.
   screens on, are untested (`handle_session_active()` in `idle.c`).
 - **An output refusing to come on.** Headless outputs never refuse, so
   input trying one again (`outputs_power()` in `idle.c`) is untested, and
-  so is `output_commit()` falling back from a refused mode to the first
+  so is `output_set_power()` falling back from a refused mode to the first
   mode the monitor takes.
 - **Refresh rates.** Its outputs have no modes, so of the battery mode only
   the choice is tested (`tw_refresh_saves()`), not the loop over an
