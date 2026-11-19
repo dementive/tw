@@ -42,7 +42,7 @@ fi
 rm -f "$run_dir/start.log"
 
 # --- Autostart -----------------------------------------------------------------
-# config.h's autostart list is empty: tw starts no helper with the session.
+# config.h's autostart list starts foot's terminal server and nothing else.
 # These two are installed and must not be started. D-Bus starts a
 # notification service when a notification arrives, and tw keeps what was
 # copied itself (tests/clipboard.sh).
@@ -53,7 +53,14 @@ fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart
 fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
 launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log")" = "$1" ]; }
 fake_program foot "[ ! -e /proc/\$\$/fd/9 ] || echo 'fd 9' >>'$run_dir/leaked.log'
-echo opened >>'$run_dir/terminal.log'"
+case \$1 in
+--server) echo 'foot --server' >>'$run_dir/autostart.log' ;;
+*) echo opened >>'$run_dir/terminal.log' ;;
+esac"
+# foot's terminal server: answers unless told there is none.
+fake_program footclient "[ ! -e /proc/\$\$/fd/9 ] || echo 'fd 9' >>'$run_dir/leaked.log'
+[ ! -e '$run_dir/no-server' ] || exit 1
+echo \"client \$*\" >>'$run_dir/terminal.log'"
 # And for what the laptop keys run: each changes a level and shows it. The
 # text tools they read the level with are the real ones.
 ln -s "$(command -v awk)" "$(command -v cut)" "$bin_dir/"
@@ -74,7 +81,11 @@ wait_until "Mod+Space to start the launcher" launched 1
 press super+d
 wait_until "Mod+D to start the launcher" launched 2
 press super+t
-wait_until "Mod+T to start the terminal" grep -qx opened "$run_dir/terminal.log"
+wait_until "Mod+T to open a terminal through foot's server" grep -qx 'client -E -N' "$run_dir/terminal.log"
+! grep -qx opened "$run_dir/terminal.log" || fail "Mod+T started a foot of its own while the server answered"
+touch "$run_dir/no-server"
+press super+t
+wait_until "Mod+T with no terminal server to start a foot of its own" grep -qx opened "$run_dir/terminal.log"
 [ ! -e "$run_dir/leaked.log" ] || fail "a program tw started inherited a file tw was given"
 press XF86KbdBrightnessUp
 wait_until "the keyboard-light key to raise it" levels 'brightnessctl -q --device=*::kbd_backlight set 1+'
@@ -84,9 +95,9 @@ wait_until "the keyboard-light key to lower it" levels 'brightnessctl -q --devic
 press XF86AudioRaiseVolume
 wait_until "the volume to show" levels 'notify-send --app-name=tw --urgency=low --expire-time=1500 --hint=string:x-canonical-private-synchronous:volume Volume 45%, muted'
 # By now tw has long been through its startup: it started what the keys
-# asked for and nothing by itself.
-[ ! -e "$run_dir/autostart.log" ] ||
-	fail "tw started a helper with the session: $(cat "$run_dir/autostart.log")"
+# asked for, and by itself only the terminal server.
+[ "$(cat "$run_dir/autostart.log" 2>/dev/null)" = "foot --server" ] ||
+	fail "tw started with the session: $(cat "$run_dir/autostart.log" 2>/dev/null)"
 
 # --- Columns -------------------------------------------------------------------
 start_client a
@@ -328,4 +339,4 @@ if grep -l 'keys held' "$run_dir"/*.log >/dev/null 2>&1; then
 fi
 
 stop_tw
-echo "ok: no autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"
+echo "ok: autostart, columns $size, bindings, workspaces, focus requests, layer shell, fullscreen $full, lock, clean exit"

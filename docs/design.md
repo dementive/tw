@@ -10,6 +10,7 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [The clipboard](#the-clipboard)
 - [On battery](#on-battery)
 - [Notifications: tw-notify](#notifications-tw-notify)
+- [The terminal](#the-terminal)
 - [The session script](#the-session-script)
 - [The NVIDIA GPU: tw-gpu](#the-nvidia-gpu-tw-gpu)
 - [Bluetooth: tw-bluetooth](#bluetooth-tw-bluetooth)
@@ -644,6 +645,36 @@ back to drawing its own notifications when a service does not list it.
 The service file is installed under `/usr/local/share`, which D-Bus reads
 before `/usr/share` with the first to claim a name winning, so tw's entry
 beats another notification service's without that one being removed.
+
+## The terminal
+
+The terminal is foot in server mode. `config.h` starts `foot --server`
+with the session, the one program in its autostart list, and Mod+T runs
+`footclient -E -N`: a new window of that one process. Each `foot` of its
+own is about 10 MB of its own memory (fonts, glyph caches, the parsed
+configuration) besides its window's buffers; the server has these once, so
+every terminal after the first is that much cheaper and opens sooner. The
+first costs the same as before, but the server's 10 MB are there from login,
+before any terminal is open.
+
+- `-E` runs the shell with footclient's environment, which is tw's, rather
+  than the server's, which was tw's at login: `DISPLAY` and anything set
+  since reach the shell as they would a `foot` tw started.
+- `-N` returns at once, so `|| foot` starts a `foot` of its own only when
+  no server answered: the server crashed, or it is not installed.
+- The server listens on `$XDG_RUNTIME_DIR/foot-$WAYLAND_DISPLAY.sock`,
+  which footclient finds by the same name. A tw run nested has its own
+  server, and its terminals open in it rather than in the session around it.
+- It is started by tw, not by systemd's `foot-server.socket`: that unit
+  only starts once systemd has been told `WAYLAND_DISPLAY`, which the
+  session script does at the same moment tw starts its autostart list, and
+  a unit under systemd takes every program started from a terminal with it
+  when it stops.
+
+What it costs: a crash of the server closes every terminal, and all of
+them share one thread for input and output, so several terminals printing
+heavily at once (two builds side by side) are a little slower than they
+were in separate processes.
 
 ## The session script
 

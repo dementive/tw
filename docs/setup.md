@@ -40,7 +40,7 @@ sudo pacman -S foot fuzzel swaylock xwayland-satellite \
 
 | Program | What it is for |
 | --- | --- |
-| foot | terminal (Mod+T) |
+| foot | terminal (Mod+T); one server process, started with the session, draws every terminal window |
 | fuzzel | launcher (Mod+Space, Mod+D) |
 | swaylock | lock screen (Mod+Alt+L, lid close, idle). Without it tw does not lock at all |
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |

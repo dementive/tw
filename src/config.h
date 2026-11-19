@@ -114,7 +114,12 @@ static const char battery_warn_command[] =
 /* The launcher is any layer-shell client. It starts each program through
  * `tw-gpu launch`, which switches the NVIDIA GPU on for the ones whose
  * desktop entry asks for the discrete GPU, and otherwise just runs them. */
-static const char terminal[] = "foot";
+/* The terminal is a window of foot's server (started below, in autostart):
+ * one process draws every terminal, so each after the first costs about
+ * 10 MB less and opens sooner. -E gives the shell tw's environment, as a
+ * foot started by tw would have. If the server is gone (it crashed, taking
+ * its windows with it), a foot of its own. */
+static const char terminal[] = "footclient -E -N || foot";
 static const char launcher[] = "fuzzel --launch-prefix='tw-gpu launch'";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
@@ -170,10 +175,15 @@ static const char keyboard_light_down[] = "brightnessctl -q " KEYBOARD " set 1-"
  * short, and leave out what can start by itself when it is needed. One that
  * is not installed is skipped.
  *
- * It is empty: D-Bus starts tw-notify when a program sends a notification,
- * and tw keeps what was copied itself (clipboard_keep_bytes).
+ * D-Bus starts tw-notify when a program sends a notification, and tw keeps
+ * what was copied itself (clipboard_keep_bytes). foot's terminal server is
+ * the one here: about 10 MB from login, then the first terminal is no
+ * dearer than a foot of its own and every further one cheaper. It listens
+ * on a socket named after this tw's display, so a tw run nested has its
+ * own.
  */
 static const char *const autostart[] = {
+	"foot --server",
 	NULL,
 };
 
