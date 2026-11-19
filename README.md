@@ -133,3 +133,8 @@ has the rebuild.
 | [docs/testing.md](docs/testing.md) | what the tests cover, what they cannot, what has been seen on real hardware |
 | [docs/g533zw.md](docs/g533zw.md) | the laptop tw was written on: memory and battery measurements, decisions |
 | [CLAUDE.md](CLAUDE.md) | the rules a change has to keep |
+
+## License
+
+MIT; see [LICENSE](LICENSE). The protocol files in `protocols/` keep the
+licenses written at their top.
