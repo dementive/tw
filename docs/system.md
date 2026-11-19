@@ -34,8 +34,20 @@ sudo pacman -Rns alsa-plugins wl-clip-persist
 | alsa-plugins | extras for programs that talk to ALSA directly | one of them, an AC-3 encoder, is loaded by WirePlumber at every login and brings FFmpeg along, 79 libraries in all: WirePlumber is 25 MB in `btop` without it instead of 37. What goes with it is AC-3 to an S/PDIF receiver, and ALSA's own bridges to JACK, OSS and PulseAudio |
 | wl-clip-persist | kept what you had copied when its program exited | tw does that itself |
 
-Leave `avahi-daemon` alone if you use KDE Connect, which finds devices
-through it.
+`avahi-daemon` finds and announces devices on the local network (mDNS).
+KDE Connect does not use it: since at least 26.08 it has its own mDNS, and
+none of its libraries links avahi. Whatever does ask for avahi does so over
+D-Bus, which starts it then, so it need not run from boot. That takes
+removing only its link from the boot target: `systemctl disable` would also
+remove the alias D-Bus starts it by. About 1 MB of its own, and no waking
+up for the mDNS traffic of every phone and speaker on the network:
+
+```sh
+sudo rm /etc/systemd/system/multi-user.target.wants/avahi-daemon.service
+sudo systemctl stop avahi-daemon.service
+```
+
+`systemctl enable avahi-daemon` puts it back.
 
 ### Keep the shell from starting Xwayland
 
