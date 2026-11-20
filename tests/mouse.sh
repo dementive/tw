@@ -60,11 +60,16 @@ expect_state d "$on" "the wheel spun two notches to have gone one workspace"
 press hold:super+shift wheel:-1
 expect_state c "$on" "Mod+Shift and the wheel up to show the previous workspace"
 
-# The tilt goes sideways: with one monitor, to the next or previous workspace.
-press hold:super tilt:1
-expect_state d "$on" "Mod and the wheel tilted right to show the next workspace"
+# Tilted, with Mod it goes along the strip, and with Mod+Shift, with one
+# monitor, to the next or previous workspace.
 press hold:super tilt:-1
-expect_state c "$on" "Mod and the wheel tilted left to show the previous workspace"
+expect_state b "$on" "Mod and the wheel tilted left to focus the column on the left"
+press hold:super tilt:1
+expect_state c "$on" "Mod and the wheel tilted right to focus the column on the right"
+press hold:super+shift tilt:1
+expect_state d "$on" "Mod+Shift and the wheel tilted right to show the next workspace"
+press hold:super+shift tilt:-1
+expect_state c "$on" "Mod+Shift and the wheel tilted left to show the previous workspace"
 [ "$(cat "$run_dir"/[a-d].log | grep -c '^axis')" = 1 ] ||
 	fail "a window heard the wheel turned with Mod: $(grep -H '^axis' "$run_dir"/[a-d].log)"
 

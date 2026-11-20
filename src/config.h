@@ -407,7 +407,8 @@ static const struct tw_binding bindings[] = {
  *                             program under the pointer; with Mod, along the
  *                             strip
  *   wheel tilt                scrolls sideways in the program; with Mod,
- *                             what Mod+Shift+J and L do
+ *                             along the strip, with Mod+Shift to the
+ *                             monitor or workspace on that side
  *   G6, "sniper"     (thumb)  held, it is Mod for the mouse: the mouse
  *                             alone scrolls the strip, drags it and carries
  *                             windows
@@ -416,8 +417,9 @@ static const struct tw_binding bindings[] = {
  *
  * G6 and G9 reach tw only once the mouse has been told to send buttons 6
  * and 7 for them: by itself it handles them itself (G6 slows the pointer
- * while held, G9 switches its profile), and tw never hears of them. docs/setup.md, "The mouse", has the one command that tells it; the
- * mouse keeps it in its own memory.
+ * while held, G9 switches its profile), and tw never hears of them.
+ * docs/setup.md, "The mouse", has how to tell it; the mouse keeps it in its
+ * own memory.
  *
  * Mod and the left button pick up the window under the pointer, to let go
  * on another monitor or beside another column. Mod and the middle button
@@ -446,9 +448,11 @@ static const struct tw_button_binding button_bindings[] = {
  * column there. One notch is one step. The strip stops at its ends, so a
  * wheel spun freely does not run on to the next monitor; a workspace step
  * waits out a cooldown in milliseconds, so it does not run through all
- * nine. The tilt goes sideways, like Mod+Shift+J and L: to the monitor on
- * that side or the previous or next workspace. A mouse repeats a tilt held
- * down; its cooldown makes one tilt one step.
+ * nine. The tilt is the same sideways, as J and L: Mod along the strip,
+ * Mod+Ctrl carrying the column, Mod+Shift to the monitor on that side or
+ * else the previous or next workspace, Mod+Shift+Ctrl carrying the column
+ * there. A mouse repeats a tilt held down; its cooldown makes one tilt one
+ * step.
  */
 static const struct tw_scroll_binding scroll_bindings[] = {
 	/* modifiers          direction        action                              argument                       cooldown */
@@ -460,10 +464,14 @@ static const struct tw_scroll_binding scroll_bindings[] = {
 	{MOD | SHIFT,         TW_SCROLL_DOWN,  action_workspace_relative,          {.i = +1},                     150},
 	{MOD | SHIFT | CTRL,  TW_SCROLL_UP,    action_move_to_workspace_relative,  {.i = -1},                     150},
 	{MOD | SHIFT | CTRL,  TW_SCROLL_DOWN,  action_move_to_workspace_relative,  {.i = +1},                     150},
-	{MOD,                 TW_SCROLL_LEFT,  action_workspace_toward,            {.i = WLR_DIRECTION_LEFT},     400},
-	{MOD,                 TW_SCROLL_RIGHT, action_workspace_toward,            {.i = WLR_DIRECTION_RIGHT},    400},
-	{MOD | CTRL,          TW_SCROLL_LEFT,  action_move_to_workspace_toward,    {.i = WLR_DIRECTION_LEFT},     400},
-	{MOD | CTRL,          TW_SCROLL_RIGHT, action_move_to_workspace_toward,    {.i = WLR_DIRECTION_RIGHT},    400},
+	{MOD,                 TW_SCROLL_LEFT,  action_focus_column,                {.i = -1},                     400},
+	{MOD,                 TW_SCROLL_RIGHT, action_focus_column,                {.i = +1},                     400},
+	{MOD | CTRL,          TW_SCROLL_LEFT,  action_move,                        {.i = -1},                     400},
+	{MOD | CTRL,          TW_SCROLL_RIGHT, action_move,                        {.i = +1},                     400},
+	{MOD | SHIFT,         TW_SCROLL_LEFT,  action_workspace_toward,            {.i = WLR_DIRECTION_LEFT},     400},
+	{MOD | SHIFT,         TW_SCROLL_RIGHT, action_workspace_toward,            {.i = WLR_DIRECTION_RIGHT},    400},
+	{MOD | SHIFT | CTRL,  TW_SCROLL_LEFT,  action_move_to_workspace_toward,    {.i = WLR_DIRECTION_LEFT},     400},
+	{MOD | SHIFT | CTRL,  TW_SCROLL_RIGHT, action_move_to_workspace_toward,    {.i = WLR_DIRECTION_RIGHT},    400},
 };
 #undef MOUSE_G6
 #undef MOUSE_G9

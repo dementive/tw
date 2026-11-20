@@ -76,7 +76,8 @@ are the program's, as always (back and forward in a browser).
 | Mod+Ctrl+wheel | move the focused column left / right |
 | Mod+Shift+wheel | previous / next workspace, one at most every 150 ms |
 | Mod+Shift+Ctrl+wheel | the same, taking the focused column along |
-| Mod+wheel tilted | as Mod+Shift+J / L: the monitor on that side, else the previous / next workspace; with Ctrl, taking the column along |
+| Mod+wheel tilted | focus the column on the left / right, as the wheel; with Ctrl, move the column |
+| Mod+Shift+wheel tilted | as Mod+Shift+J / L: the monitor on that side, else the previous / next workspace; with Ctrl, taking the column along |
 | Mod+left-drag | pick up a window and let it go on another monitor, or beside another column |
 | Mod+middle-drag | hold the strip and drag it; let go, it settles on a column |
 | Mod+right click | cycle the width of the window under the pointer |
