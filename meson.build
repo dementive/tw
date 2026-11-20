@@ -457,7 +457,7 @@ endforeach
 # what tw allocated does not, so that is the figure that catches a
 # regression. docs/testing.md has the measured ranges.
 budget_idle_wakeups = 0   # context switches in 3 s with idle clients mapped
-budget_own_kb = 2800      # PSS minus pixel buffers, 3 clients mapped
+budget_own_kb = 3600      # PSS minus pixel buffers, 3 clients mapped
 budget_alloc_kb = 850     # of which allocated by tw itself
 if get_option('buildtype') == 'release'
 	test(

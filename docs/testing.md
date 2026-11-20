@@ -68,7 +68,7 @@ client:
 | Budget | Now | Measured |
 | --- | --- | --- |
 | idle wakeups in 3 s | 0 | 0 |
-| own memory (PSS minus pixel buffers) | 2800 kB | 2445 to 2713 on the G533ZW until 2026-11-15; since 2026-11-19, on the system both laptops now share, 3191 to 3440 on the G615LM and 3245 to 3403 on the G533ZW: the machine's doing, since the commits before and after that day's changes read the same back to back |
+| own memory (PSS minus pixel buffers) | 3600 kB | 2445 to 2713 on the G533ZW until 2026-11-15; since 2026-11-19, on the system both laptops now share, 3191 to 3440 on the G615LM and 3225 to 3443 on the G533ZW: the machine's doing, since the commits before and after that day's changes read the same back to back |
 | of which allocated by tw | 850 kB | 800 to 812 |
 
 They ratchet down; raising one needs a stated reason.
