@@ -62,22 +62,49 @@ window so as it appears (`wm_capabilities`: fullscreen only). Left to
 wlroots' default, a program that draws its own title bar (GTK 4) shows
 buttons for them that do nothing.
 
-**Outputs.** Each output shows one workspace (`output->workspace`), and no
-two outputs show the same one; the rest are hidden. `server->active` is the
-workspace with the focus, and the output showing it is the focused output:
-new windows open there. Going to a workspace that another output shows moves
-the focus to that output; the workspace stays where it is. Unplugging an
-output hides its workspace, unless it was the one in use: the oldest
-remaining output then shows it instead (`output_hand_over()` in
-`output.c`). No window is ever moved because a monitor went away. With more than one
-output, a window sticking out of its output is trimmed at the edge
-(the `cut_left` and `cut_right` of `window_place()`), or it would show up
-on the neighbour. A monitor plugged
-in while the screens are off stays off with them, with no mode yet; it
-holds its workspace all the same (`output_showing()` asks only whether an
-output is in use), so that a second one plugged in with it takes another,
-and the workspace waits suspended until the screens come on. An output that
-is not for a desktop (a VR headset, `non_desktop`) is left alone.
+**Outputs.** Each monitor has nine workspaces of its own, a desk
+(`struct tw_desk`), and its output shows one of them (`desk->shown`); Mod+1
+to Mod+9 and Mod+Page_Up/Down go through the focused monitor's nine.
+`server->active` is the workspace with the focus, always the one its desk
+shows, and that desk's output is the focused output: new windows open
+there. A desk is made the first time its monitor is seen and kept until tw
+exits, known by the name the monitor gives itself (`"<make> <model>
+<serial>"`, the same at any connector and on either laptop), else by its
+connector; a second monitor alike to one in use, with no serial to tell
+them apart, goes by its connector. `strip_output_enter()` and
+`strip_output_leave()` in `strip.c` attach and detach it as the output
+comes into use and goes out of it (unplugged, behind the lid, turned off
+with the monitors tool).
+
+A monitor that goes away is waited for: its desk is out of sight, its
+windows suspended, and if it had the focus the focus falls to the oldest
+other output's workspace (`desk->focus_fell`). Some monitors disconnect
+themselves in standby, a while after the screens go off, and come back on
+their own (the G615LM's HDMI monitor does, [g615lm.md](g615lm.md#gpus-and-monitors)):
+moving their windows would be wrong. So the wait counts only while the
+screens are on: `desk_timer`, a one-shot timer, is armed for
+`monitor_wait_seconds` (5; `-m` sets it) when a monitor with windows is
+gone, the screens are on and another monitor is there, and disarmed when
+the screens go off. A monitor back in time finds everything as it was, and
+gets the focus back if it is still where it fell. When the timer runs out
+(`desks_merge()`), the windows go to the same-numbered workspaces of the
+focused monitor, columns after its own, and each remembers its desk
+(`window->home`); if the focus is still where it fell, what was in view on
+the gone monitor comes into view, with its focused window. When the monitor
+returns, the windows still remembering it go back (`workspace_return()`): a
+column of them whole, one the user put into a column of others on its own,
+and the focus goes along if it is on one of them. A window the user moves
+to another workspace or monitor (`column_link()`, `window_carry()`)
+forgets its home and stays. Windows that open before any output is there go
+on a spare desk with no monitor, which is treated the same way.
+
+With more than one output, a window sticking out of its output is trimmed
+at the edge (the `cut_left` and `cut_right` of `window_place()`), or it
+would show up on the neighbour. A monitor plugged in while the screens are
+off stays off with them, with no mode yet; it holds its desk all the same
+(being in use is `output_in_use()`), and its workspace waits suspended
+until the screens come on. An output that is not for a desktop (a VR
+headset, `non_desktop`) is left alone.
 
 An output's scale and place come from the entry in `src/machines.h` for the
 machine tw runs on, picked once as tw starts by the board name in
@@ -147,12 +174,12 @@ or the window closed puts nothing down.
 **The lid.** A laptop's own screen (a connector named `eDP-`, `LVDS-` or
 `DSI-`) behind a closed lid is taken out of use while another output is
 there, as niri does: out of the layout, its layer surfaces closed, turned
-off (`output_leave()`), and its workspace goes as it does when an output is
-unplugged. Left in, it would keep a workspace nobody can see, and the
-pointer and new windows could land there. It comes back, placed by its
-entry in `src/machines.h`, when the lid opens or the last other output goes away
-with the lid closed, so that there is always a screen; it shows the
-workspace it showed before if no other output has it by then. A screen
+off (`output_leave()`), and its desk goes out of sight as when a monitor is
+unplugged: after the wait its windows go to the monitor. Left in, it would
+keep workspaces nobody can see, and the pointer and new windows could land
+there. It comes back, placed by its entry in `src/machines.h`, when the lid
+opens or the last other output goes away with the lid closed, so that
+there is always a screen; it gets its desk and its windows back. A screen
 plugged in behind a closed lid takes over from the laptop's own at once.
 `outputs_lid()` runs on each move of the lid and each output that comes or
 goes, and `tw_lid_look()` in `layout.c` decides. Blanking leaves the screen
@@ -795,8 +822,8 @@ does not pass a test commit with. What it takes is kept with the output
 keep it: the screens coming back on after idleness, the slower mode on
 battery (which starts from the chosen mode, not the preferred one), the
 lid. An output turned off is out of use just as the laptop's own screen is
-behind a closed lid (`output_in_use()`): out of the layout, its workspace
-handed over, its layer surfaces closed (`output_leave()` takes the reason).
+behind a closed lid (`output_in_use()`): out of the layout, its desk out
+of sight as when a monitor is unplugged, its layer surfaces closed (`output_leave()` takes the reason).
 It does not count for the lid either, and if it is all that is left, it
 comes back on (`outputs_lid()`): there is always a screen.
 

@@ -11,14 +11,18 @@
  * focus_update() the only thing that sends focus events. What a window is to
  * its client (its size, its scene nodes, what it is told) is window.c's.
  */
+#define _GNU_SOURCE
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/log.h>
 
 #include "tw.h"
 #include "config.h"
@@ -33,16 +37,18 @@ struct tw_column {
 };
 
 static struct tw_workspace *active_workspace(struct tw_server *server) {
-	return &server->workspaces[server->active];
+	return server->active;
 }
 
-static size_t workspace_index(struct tw_server *server, const struct tw_workspace *workspace) {
-	return (size_t)(workspace - server->workspaces);
+struct tw_output *workspace_output(const struct tw_workspace *workspace) {
+	const struct tw_desk *desk = workspace->desk;
+	return desk->output != NULL && desk->shown == workspace_index(workspace) ?
+		desk->output : NULL;
 }
 
 bool workspace_boxes(struct tw_server *server, const struct tw_workspace *workspace,
 		struct wlr_box *area, struct wlr_box *full) {
-	return output_boxes(output_showing(server, workspace_index(server, workspace)), area, full);
+	return output_boxes(workspace_output(workspace), area, full);
 }
 
 /* --- Columns ---------------------------------------------------------------- */
@@ -370,25 +376,28 @@ static void windows_moved(struct tw_server *server) {
 void strip_arrange(struct tw_server *server) {
 	/* With the screen off or locked every window is suspended. */
 	bool shown = screen_on(server);
-	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		struct tw_workspace *workspace = &server->workspaces[i];
-		struct tw_output *output = output_showing(server, i);
-		struct wlr_box area, full;
-		if (!output_boxes(output, &area, &full)) {
-			workspace_suspend(workspace);
-			continue;
-		}
-		workspace_arrange(server, workspace, &area, &full, shown);
-
-		/* If the view is not where it should be, glide there. The animation
-		 * is stepped from the output's frame handler, so it costs nothing
-		 * once it has arrived. */
-		if (shown && !workspace->swiping && workspace->view_pos != workspace->view_x) {
-			if (!output->animating) {
-				output->animating = true;
-				output->animation_last_ms = now_ms();
+	struct tw_desk *desk;
+	wl_list_for_each(desk, &server->desks, link) {
+		for (size_t i = 0; i < TW_WORKSPACES; i++) {
+			struct tw_workspace *workspace = &desk->workspaces[i];
+			struct tw_output *output = workspace_output(workspace);
+			struct wlr_box area, full;
+			if (!output_boxes(output, &area, &full)) {
+				workspace_suspend(workspace);
+				continue;
 			}
-			wlr_output_schedule_frame(output->wlr_output);
+			workspace_arrange(server, workspace, &area, &full, shown);
+
+			/* If the view is not where it should be, glide there. The
+			 * animation is stepped from the output's frame handler, so
+			 * it costs nothing once it has arrived. */
+			if (shown && !workspace->swiping && workspace->view_pos != workspace->view_x) {
+				if (!output->animating) {
+					output->animating = true;
+					output->animation_last_ms = now_ms();
+				}
+				wlr_output_schedule_frame(output->wlr_output);
+			}
 		}
 	}
 	windows_moved(server);
@@ -404,8 +413,7 @@ bool strip_animate(struct tw_output *output) {
 	double dt = (double)(now - output->animation_last_ms) / 1000.0;
 	output->animation_last_ms = now;
 
-	struct tw_workspace *workspace = output->workspace < TW_WORKSPACES ?
-		&server->workspaces[output->workspace] : NULL;
+	struct tw_workspace *workspace = output_workspace(output);
 	if (workspace == NULL || workspace->swiping || !screen_on(server) ||
 			!output_boxes(output, &area, &full)) {
 		output->animating = false;
@@ -427,9 +435,12 @@ bool strip_animate(struct tw_output *output) {
 
 /* The workspace a swipe began on, which may no longer be the active one. */
 static struct tw_workspace *swiping_workspace(struct tw_server *server) {
-	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		if (server->workspaces[i].swiping) {
-			return &server->workspaces[i];
+	struct tw_desk *desk;
+	wl_list_for_each(desk, &server->desks, link) {
+		for (size_t i = 0; i < TW_WORKSPACES; i++) {
+			if (desk->workspaces[i].swiping) {
+				return &desk->workspaces[i];
+			}
 		}
 	}
 	return NULL;
@@ -600,21 +611,24 @@ void focus_update(struct tw_server *server) {
 	pointer_constraint_update(server);
 }
 
-/* Makes a workspace the active one: on the output that already shows it, or
- * else on the focused output, which then shows it in place of its own. */
-static void workspace_activate(struct tw_server *server, size_t index) {
-	if (output_showing(server, index) == NULL) {
-		struct tw_output *output = output_focused(server);
-		if (output != NULL) {
-			output->workspace = index;
-		}
+/* Makes a workspace the active one, shown on its monitor in place of the
+ * one there. False for a workspace whose monitor is gone. */
+static bool workspace_activate(struct tw_server *server, struct tw_workspace *workspace) {
+	if (workspace->desk->output == NULL) {
+		return false;
 	}
-	server->active = index;
+	workspace->desk->shown = workspace_index(workspace);
+	server->active = workspace;
+	return true;
 }
 
 void window_focus(struct tw_server *server, struct tw_window *window) {
 	struct tw_workspace *workspace = window->workspace;
-	workspace_activate(server, workspace_index(server, workspace));
+	/* Out of sight with its monitor (asked for by a program): it stays
+	 * there until its windows come over to a monitor that is here. */
+	if (!workspace_activate(server, workspace)) {
+		return;
+	}
 	workspace->focused = window;
 	if (window->floating) {
 		wl_list_remove(&window->link);
@@ -684,6 +698,7 @@ bool strip_add(struct tw_window *window) {
 	 * changed its mind about fullscreen since. */
 	bool fullscreen = window->xdg_toplevel->requested.fullscreen;
 	window->fullscreen = window->float_after_fullscreen = false;
+	window->home = NULL;
 	if (window->floating) {
 		window->workspace = workspace;
 		floating_push(workspace, window);
@@ -731,42 +746,59 @@ void strip_remove(struct tw_window *window) {
  * behind keeps its own focus unless the focus went with it. Whether or not
  * the window had the focus, its client is told only if that changes.
  */
+/* Unlinks a column from its workspace, which keeps its focus on what is left. */
+static void column_unlink(struct tw_column *column) {
+	struct tw_workspace *from = column->workspace;
+	struct tw_column *heir = column_heir(column);
+	if (from->tiled != NULL && from->tiled->column == column) {
+		from->tiled = heir != NULL ? heir->active : NULL;
+	}
+	if (from->focused != NULL && from->focused->column == column) {
+		from->focused = from->tiled != NULL ? from->tiled : first_floating(from);
+	}
+	wl_list_remove(&column->link);
+}
+
+/* Links an unlinked column into a workspace after `after`. Its windows are
+ * where the user put them, or back where they belong: no longer away from
+ * home either way. */
+static void column_link(struct tw_column *column, struct tw_workspace *to,
+		struct wl_list *after) {
+	wl_list_insert(after, &column->link);
+	column->workspace = to;
+	struct tw_window *member;
+	wl_list_for_each(member, &column->windows, link) {
+		member->workspace = to;
+		member->home = NULL;
+	}
+}
+
 static void window_carry(struct tw_server *server, struct tw_window *window,
 		struct tw_workspace *to, struct tw_column *beside, bool before) {
-	struct tw_workspace *from = window->workspace;
 	if (window->floating) {
 		window_remove(window);
 		window->workspace = to;
+		window->home = NULL;
 		floating_push(to, window);
 	} else {
 		struct tw_column *column = window->column;
-		if (from != to) {
-			struct tw_column *heir = column_heir(column);
-			if (from->tiled != NULL && from->tiled->column == column) {
-				from->tiled = heir != NULL ? heir->active : NULL;
-			}
-			if (from->focused != NULL && from->focused->column == column) {
-				from->focused = from->tiled != NULL ? from->tiled : first_floating(from);
-			}
+		if (column->workspace != to) {
+			column_unlink(column);
+		} else {
+			wl_list_remove(&column->link);
 		}
-		wl_list_remove(&column->link);
 		struct wl_list *after;
 		if (beside != NULL) {
 			after = before ? beside->link.prev : &beside->link;
 		} else {
 			after = to->tiled != NULL ? &to->tiled->column->link : to->columns.prev;
 		}
-		wl_list_insert(after, &column->link);
-		column->workspace = to;
-		struct tw_window *member;
-		wl_list_for_each(member, &column->windows, link) {
-			member->workspace = to;
-		}
+		column_link(column, to, after);
 		column->active = window;
 		to->tiled = window;
 	}
 	to->focused = window;
-	workspace_activate(server, workspace_index(server, to));
+	workspace_activate(server, to);
 	focus_update(server);
 	strip_arrange(server);
 }
@@ -781,10 +813,10 @@ static void window_carry(struct tw_server *server, struct tw_window *window,
  */
 void strip_drop(struct tw_server *server, struct tw_window *window, double lx, double ly) {
 	struct tw_output *output = output_at(server, lx, ly);
-	if (output == NULL || output->workspace >= TW_WORKSPACES) {
+	struct tw_workspace *to = output != NULL ? output_workspace(output) : NULL;
+	if (to == NULL) {
 		return;
 	}
-	struct tw_workspace *to = &server->workspaces[output->workspace];
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
 	struct tw_window *under = window_at(server, lx, ly, &surface, &sx, &sy);
@@ -806,7 +838,7 @@ void strip_drop(struct tw_server *server, struct tw_window *window, double lx, d
 
 /* --- Actions ---------------------------------------------------------------- */
 
-static void workspace_show(struct tw_server *server, size_t index);
+static void workspace_show(struct tw_server *server, struct tw_workspace *workspace);
 
 /* The output on the focused one's left (direction < 0) or right. */
 static struct tw_output *output_beside(struct tw_server *server, int direction) {
@@ -842,7 +874,7 @@ void action_focus(struct tw_server *server, const union tw_arg *arg) {
 	if (column == NULL) {
 		struct tw_output *output = output_beside(server, arg->i);
 		if (output != NULL) {
-			workspace_show(server, output->workspace);
+			workspace_show(server, output_workspace(output));
 			return;
 		}
 		if (window == NULL) {
@@ -885,10 +917,10 @@ void action_move(struct tw_server *server, const union tw_arg *arg) {
 	struct tw_column *neighbour = column_neighbour(window->column, arg->i);
 	if (neighbour == NULL) {
 		struct tw_output *output = output_beside(server, arg->i);
-		if (output == NULL || output->workspace >= TW_WORKSPACES) {
+		struct tw_workspace *to = output != NULL ? output_workspace(output) : NULL;
+		if (to == NULL) {
 			return;
 		}
-		struct tw_workspace *to = &server->workspaces[output->workspace];
 		struct tw_column *end = NULL;
 		if (!wl_list_empty(&to->columns)) {
 			end = wl_container_of(arg->i > 0 ? to->columns.next : to->columns.prev, end, link);
@@ -991,19 +1023,18 @@ void action_fullscreen(struct tw_server *server, const union tw_arg *arg) {
 	strip_arrange(server);
 }
 
-/* Goes to a workspace. One that another output shows stays there, and the
- * focus moves to that output. */
-static void workspace_show(struct tw_server *server, size_t index) {
-	if (index >= TW_WORKSPACES || index == server->active) {
+/* Goes to a workspace, on its own monitor; NULL goes nowhere. */
+static void workspace_show(struct tw_server *server, struct tw_workspace *workspace) {
+	if (workspace == NULL || workspace == server->active ||
+			!workspace_activate(server, workspace)) {
 		return;
 	}
-	workspace_activate(server, index);
 	focus_update(server);
 	strip_arrange(server);
 }
 
 void strip_focus_output(struct tw_server *server, struct tw_output *output) {
-	workspace_show(server, output->workspace);
+	workspace_show(server, output_workspace(output));
 }
 
 bool strip_focus_box(struct tw_server *server, struct tw_window **window, struct wlr_box *box) {
@@ -1030,34 +1061,34 @@ bool strip_focus_box(struct tw_server *server, struct tw_window **window, struct
 
 /* Sends the focused column (or the focused dialog) to another workspace and
  * follows it there. */
-static void workspace_take_column(struct tw_server *server, size_t index) {
+static void workspace_take_column(struct tw_server *server, struct tw_workspace *to) {
 	struct tw_window *window = active_workspace(server)->focused;
-	if (window == NULL || index >= TW_WORKSPACES || index == server->active) {
+	if (window == NULL || to == NULL || to == server->active) {
 		return;
 	}
-	window_carry(server, window, &server->workspaces[index], NULL, false);
+	window_carry(server, window, to, NULL, false);
 }
 
-/* Index of the next workspace in that direction that no other output shows,
- * or TW_WORKSPACES if there is none. */
-static size_t workspace_relative(struct tw_server *server, int direction) {
-	size_t index = server->active;
-	while (direction < 0 ? index > 0 : index + 1 < TW_WORKSPACES) {
-		index = direction < 0 ? index - 1 : index + 1;
-		if (output_showing(server, index) == NULL) {
-			return index;
-		}
-	}
-	return TW_WORKSPACES;
+/* Workspace number `index` (0 for Mod+1) of the focused monitor, or NULL. */
+static struct tw_workspace *workspace_numbered(struct tw_server *server, int index) {
+	return index >= 0 && index < TW_WORKSPACES ?
+		&server->active->desk->workspaces[index] : NULL;
+}
+
+/* The previous (direction < 0) or next workspace of the focused monitor, or
+ * NULL past the first or the last. */
+static struct tw_workspace *workspace_relative(struct tw_server *server, int direction) {
+	return workspace_numbered(server,
+		(int)workspace_index(server->active) + (direction < 0 ? -1 : +1));
 }
 
 /* The workspace in a direction (enum wlr_direction): the one on the monitor
  * on that side if there is such a monitor, otherwise the previous (up, left)
- * or next (down, right) workspace. TW_WORKSPACES if there is none. */
-static size_t workspace_toward(struct tw_server *server, int direction) {
+ * or next (down, right) workspace of this one. NULL if there is none. */
+static struct tw_workspace *workspace_toward(struct tw_server *server, int direction) {
 	struct tw_output *output = output_adjacent(output_focused(server), direction);
 	if (output != NULL) {
-		return output->workspace;
+		return output_workspace(output);
 	}
 	bool back = direction == WLR_DIRECTION_UP || direction == WLR_DIRECTION_LEFT;
 	return workspace_relative(server, back ? -1 : +1);
@@ -1072,7 +1103,7 @@ void action_move_to_workspace_toward(struct tw_server *server, const union tw_ar
 }
 
 void action_workspace(struct tw_server *server, const union tw_arg *arg) {
-	workspace_show(server, (size_t)arg->i);
+	workspace_show(server, workspace_numbered(server, arg->i));
 }
 
 void action_workspace_relative(struct tw_server *server, const union tw_arg *arg) {
@@ -1080,16 +1111,334 @@ void action_workspace_relative(struct tw_server *server, const union tw_arg *arg
 }
 
 void action_move_to_workspace(struct tw_server *server, const union tw_arg *arg) {
-	workspace_take_column(server, (size_t)arg->i);
+	workspace_take_column(server, workspace_numbered(server, arg->i));
 }
 
 void action_move_to_workspace_relative(struct tw_server *server, const union tw_arg *arg) {
 	workspace_take_column(server, workspace_relative(server, arg->i));
 }
 
-void strip_init(struct tw_server *server) {
+/* --- Monitors ----------------------------------------------------------------- */
+
+static void desk_init(struct tw_desk *desk, char *name) {
+	desk->name = name;
 	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		wl_list_init(&server->workspaces[i].columns);
-		wl_list_init(&server->workspaces[i].floating);
+		desk->workspaces[i].desk = desk;
+		wl_list_init(&desk->workspaces[i].columns);
+		wl_list_init(&desk->workspaces[i].floating);
+	}
+}
+
+static struct tw_desk *desk_find(struct tw_server *server, const char *name) {
+	struct tw_desk *desk;
+	wl_list_for_each(desk, &server->desks, link) {
+		if (desk->name != NULL && strcmp(desk->name, name) == 0) {
+			return desk;
+		}
+	}
+	return NULL;
+}
+
+/* The name a monitor's desk goes by: "<make> <model> <serial>", which is the
+ * same at any connector and on any machine, else the connector. A second
+ * monitor alike to one in use, with no serial to tell them apart, goes by
+ * its connector. NULL if out of memory. */
+static char *desk_name(struct tw_server *server, const struct wlr_output *output) {
+	char *name = NULL;
+	if (output->make != NULL && output->model != NULL &&
+			output->make[0] != '\0' && output->model[0] != '\0') {
+		bool serial = output->serial != NULL && output->serial[0] != '\0';
+		if (asprintf(&name, "%s %s%s%s", output->make, output->model,
+				serial ? " " : "", serial ? output->serial : "") < 0) {
+			name = NULL;
+		}
+	}
+	struct tw_desk *twin = name != NULL ? desk_find(server, name) : NULL;
+	if (name == NULL || (twin != NULL && twin->output != NULL)) {
+		free(name);
+		name = strdup(output->name);
+	}
+	return name;
+}
+
+static bool desk_has_windows(const struct tw_desk *desk) {
+	for (size_t i = 0; i < TW_WORKSPACES; i++) {
+		if (!wl_list_empty(&desk->workspaces[i].columns) ||
+				!wl_list_empty(&desk->workspaces[i].floating)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * Puts everything on `from` at the end of `to`: the strip after its columns,
+ * the dialogs in front of its own. Each window remembers the monitor it came
+ * from, unless it already remembers an earlier one; the spare is not one to
+ * go back to.
+ */
+static void workspace_merge(struct tw_workspace *from, struct tw_workspace *to) {
+	struct tw_desk *home = from->desk->name != NULL ? from->desk : NULL;
+	struct tw_column *column;
+	struct tw_window *window;
+	wl_list_for_each(column, &from->columns, link) {
+		column->workspace = to;
+		wl_list_for_each(window, &column->windows, link) {
+			window->workspace = to;
+			window->home = window->home != NULL ? window->home : home;
+		}
+	}
+	wl_list_for_each(window, &from->floating, link) {
+		window->workspace = to;
+		window->home = window->home != NULL ? window->home : home;
+	}
+	wl_list_insert_list(to->columns.prev, &from->columns);
+	wl_list_init(&from->columns);
+	wl_list_insert_list(&to->floating, &from->floating);
+	wl_list_init(&from->floating);
+	if (to->tiled == NULL) {
+		to->tiled = from->tiled;
+	}
+	if (to->focused == NULL) {
+		to->focused = from->focused;
+	}
+	from->tiled = from->focused = NULL;
+	from->view_x = 0;
+	from->view_pos = from->view_velocity = 0;
+	from->swiping = false;
+}
+
+/*
+ * The monitors that went away have been waited for long enough: their
+ * windows go to the same-numbered workspaces of the focused monitor. If the
+ * focus fell from one of them and has stayed where it fell, what was in view
+ * there comes into view here, with its focused window.
+ */
+static void desks_merge(struct tw_server *server) {
+	struct tw_desk *to = server->active->desk;
+	if (to->output == NULL) {
+		return;
+	}
+	struct tw_workspace *bring = NULL;
+	struct tw_window *bring_window = NULL;
+	struct tw_desk *desk;
+	wl_list_for_each(desk, &server->desks, link) {
+		if (desk->output != NULL || !desk_has_windows(desk)) {
+			continue;
+		}
+		if (desk->focus_fell != NULL && desk->focus_fell == server->active) {
+			bring = &to->workspaces[desk->shown];
+			bring_window = desk->workspaces[desk->shown].focused;
+		}
+		desk->focus_fell = NULL;
+		wlr_log(WLR_DEBUG, "desk %s: its monitor is still gone, its windows go to %s",
+			desk->name != NULL ? desk->name : "(spare)", to->name);
+		for (size_t i = 0; i < TW_WORKSPACES; i++) {
+			workspace_merge(&desk->workspaces[i], &to->workspaces[i]);
+		}
+	}
+	if (bring_window != NULL) {
+		window_focus(server, bring_window);
+	} else if (bring != NULL) {
+		workspace_activate(server, bring);
+	}
+	focus_update(server);
+	strip_arrange(server);
+}
+
+/* Arms the wait for monitors that went away, or disarms it: it runs only
+ * while the screens are on, a monitor is here and one that is not left
+ * windows behind. */
+static void desks_wait(struct tw_server *server) {
+	bool due = !server->blanked && server->active->desk->output != NULL;
+	if (due) {
+		due = false;
+		struct tw_desk *desk;
+		wl_list_for_each(desk, &server->desks, link) {
+			if (desk->output == NULL && desk_has_windows(desk)) {
+				due = true;
+				break;
+			}
+		}
+	}
+	if (!due || server->desk_timer == NULL || server->monitor_wait_ms <= 0) {
+		if (server->desk_timer_armed) {
+			wl_event_source_timer_update(server->desk_timer, 0);
+			server->desk_timer_armed = false;
+		}
+		if (due) {
+			desks_merge(server);
+		}
+		return;
+	}
+	if (!server->desk_timer_armed) {
+		wl_event_source_timer_update(server->desk_timer, server->monitor_wait_ms);
+		server->desk_timer_armed = true;
+	}
+}
+
+static int handle_desk_timer(void *data) {
+	struct tw_server *server = data;
+	server->desk_timer_armed = false;
+	desks_merge(server);
+	return 0;
+}
+
+/* A window that went to another monitor with the rest of its own goes back,
+ * into a column of its own at the end of the strip. */
+static void window_return(struct tw_window *window, struct tw_workspace *to) {
+	if (window->floating) {
+		window_remove(window);
+		window->workspace = to;
+		floating_push(to, window);
+	} else {
+		struct tw_column *column = column_new(to, to->columns.prev);
+		if (column == NULL) {
+			return;
+		}
+		column->width_idx = window->column->width_idx;
+		window_remove(window);
+		column_insert(column, window, &column->windows);
+		column->active = window;
+		if (to->tiled == NULL) {
+			to->tiled = window;
+		}
+	}
+	window->home = NULL;
+	if (to->focused == NULL) {
+		to->focused = window;
+	}
+}
+
+/* Brings back to `to` the windows of `from` that belong to to's monitor: a
+ * column of them whole, one shared with other windows one by one. */
+static void workspace_return(struct tw_workspace *from, struct tw_workspace *to) {
+	struct tw_desk *home = to->desk;
+	struct tw_column *column, *next_column;
+	struct tw_window *window, *next;
+	wl_list_for_each_safe(column, next_column, &from->columns, link) {
+		size_t count = 0, homed = 0;
+		wl_list_for_each(window, &column->windows, link) {
+			count++;
+			homed += window->home == home;
+		}
+		if (homed == 0) {
+			continue;
+		}
+		if (homed < count) {
+			/* The column stays: some of it is not going. */
+			wl_list_for_each_safe(window, next, &column->windows, link) {
+				if (window->home == home) {
+					window_return(window, to);
+				}
+			}
+			continue;
+		}
+		column_unlink(column);
+		column_link(column, to, to->columns.prev);
+		if (to->tiled == NULL) {
+			to->tiled = column->active;
+		}
+		if (to->focused == NULL) {
+			to->focused = column->active;
+		}
+	}
+	wl_list_for_each_safe(window, next, &from->floating, link) {
+		if (window->home == home) {
+			window_return(window, to);
+		}
+	}
+}
+
+void strip_output_enter(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	char *name = desk_name(server, output->wlr_output);
+	struct tw_desk *desk = name != NULL ? desk_find(server, name) : NULL;
+	if (desk != NULL) {
+		free(name);
+	} else if (name != NULL && (desk = calloc(1, sizeof(*desk))) != NULL) {
+		desk_init(desk, name);
+		wl_list_insert(server->desks.prev, &desk->link);
+	} else {
+		free(name);
+		wlr_log(WLR_ERROR, "out of memory, output %s shows nothing", output->wlr_output->name);
+		return;
+	}
+	desk->output = output;
+	output->desk = desk;
+
+	/* The focused window goes along if it is one coming back. */
+	struct tw_window *focused = server->active->focused;
+	struct tw_desk *desk_other;
+	wl_list_for_each(desk_other, &server->desks, link) {
+		if (desk_other != desk) {
+			for (size_t i = 0; i < TW_WORKSPACES; i++) {
+				workspace_return(&desk_other->workspaces[i], &desk->workspaces[i]);
+			}
+		}
+	}
+	if (focused != NULL && focused->workspace->desk == desk) {
+		focused->workspace->focused = focused;
+		workspace_activate(server, focused->workspace);
+	} else if (server->active->desk->output == NULL ||
+			(desk->focus_fell != NULL && desk->focus_fell == server->active)) {
+		/* The first monitor, or the one the focus fell from, back
+		 * before it moved on. */
+		server->active = output_workspace(output);
+	}
+	desk->focus_fell = NULL;
+	wlr_log(WLR_DEBUG, "output %s: desk %s, workspace %zu", output->wlr_output->name,
+		desk->name, desk->shown + 1);
+	focus_update(server);
+	desks_wait(server);
+}
+
+void strip_output_leave(struct tw_output *output) {
+	struct tw_server *server = output->server;
+	struct tw_desk *desk = output->desk;
+	if (desk == NULL) {
+		return;
+	}
+	desk->output = NULL;
+	output->desk = NULL;
+	output->animating = false;
+	if (server->active->desk == desk) {
+		struct tw_output *heir = output_oldest(server, output);
+		struct tw_workspace *to = heir != NULL ? output_workspace(heir) : NULL;
+		if (to != NULL) {
+			server->active = to;
+			desk->focus_fell = to;
+		}
+	}
+	wlr_log(WLR_DEBUG, "output %s: desk %s out of sight", output->wlr_output->name, desk->name);
+	focus_update(server);
+	desks_wait(server);
+}
+
+void strip_screens_changed(struct tw_server *server) {
+	desks_wait(server);
+}
+
+void strip_init(struct tw_server *server) {
+	wl_list_init(&server->desks);
+	desk_init(&server->spare, NULL);
+	wl_list_insert(&server->desks, &server->spare.link);
+	server->active = &server->spare.workspaces[0];
+	/* Never armed until a monitor goes away with windows on it. */
+	server->desk_timer = wl_event_loop_add_timer(server->loop, handle_desk_timer, server);
+}
+
+void strip_finish(struct tw_server *server) {
+	if (server->desk_timer != NULL) {
+		wl_event_source_remove(server->desk_timer);
+		server->desk_timer = NULL;
+	}
+	struct tw_desk *desk, *tmp;
+	wl_list_for_each_safe(desk, tmp, &server->desks, link) {
+		wl_list_remove(&desk->link);
+		if (desk != &server->spare) {
+			free(desk->name);
+			free(desk);
+		}
 	}
 }

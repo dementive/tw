@@ -84,8 +84,67 @@ wait_until "the last screen kept on" said one "status: One screen stays on."
 press Escape
 wait_until "the box to leave" sh -c "! kill -0 $box_pid 2>/dev/null"
 
+# --- A screen that goes away, and comes back ------------------------------------
+# Each screen has nine workspaces of its own. Turned off with the monitors
+# tool, a screen goes as an unplugged one does: its windows wait for it while
+# the screens are on for -m seconds, then go to the same-numbered workspaces
+# of the focused screen, and back to it when it returns.
+stop_tw
+rm -f "$kept"
+on='activated=1 suspended=0'
+visible='activated=0 suspended=0'
+hidden='suspended=1'
+right_off() { keep "HEADLESS-1 off" "HEADLESS-2 on 1280x720@0 1.00 0,0"; monitors --apply; }
+right_on() { keep "HEADLESS-1 on 1280x720@0 1.00 1280,0" "HEADLESS-2 on 1280x720@0 1.00 0,0"; monitors --apply; }
+entered_since() { since "$1" "$2" | grep -qx "output enter $3"; } # <name> <point> <screen>
+start_tw -m 2
+start_client l1
+press super+shift+l
+start_client r1
+press super+2
+start_client r2
+expect_line r2 "output enter HEADLESS-1" "a window on the right screen's workspace 2"
+# left: l1 on 1   right: r1 on 1, [r2] on 2
+
+# Back before the wait is over, nothing has moved, and the focus that fell
+# to the other screen goes back with it.
+point=$(lines r2)
+right_off
+expect_state l1 "$on" "the focus to fall to the screen left"
+expect_state r2 "$hidden" "the window of the screen that went to be out of sight"
+right_on
+expect_state r2 "$on" "the screen back in time to get its focus back"
+entered_since r2 "$point" HEADLESS-2 && fail "a window moved although its screen came back in time"
+
+# While the screens are off the wait stands still, as when a monitor drops
+# off in standby: nothing moves, however long they stay off.
+press super+shift+p
+right_off
+sleep 3
+entered_since r2 "$point" HEADLESS-2 && fail "a window moved while the screens were off"
+
+# With the screens on, after the wait, the windows come over: r2 to
+# workspace 2, in view and focused since the focus stayed where it fell, r1
+# to workspace 1, out of view.
+press x
+wait_until "the windows of the screen that stayed away to come over" entered_since r2 "$point" HEADLESS-2
+expect_state r2 "$on" "the window that had the focus to be in view and focused"
+expect_state r1 "$hidden" "the other window to wait on workspace 1"
+press super+1
+expect_state l1 "$on" "Mod+1 to show workspace 1 of the screen left"
+expect_state r1 "$visible" "the window that came over to be on workspace 1 there"
+
+# Turned on again, the screen gets them back, showing the workspace it
+# showed; the focus stays where the user put it.
+point=$(lines r1)
+right_on
+wait_until "the windows to go back to their screen" entered_since r1 "$point" HEADLESS-1
+expect_state r2 "$visible" "the screen back to show its workspace 2"
+expect_state r1 "$hidden" "its workspace 1 to be out of view"
+expect_state l1 "$on" "the focus to stay where it was"
+
 stop_tw
 for log in "$run_dir"/*.log; do
 	! grep -q 'Sanitizer\|runtime error' "$log" || fail "sanitizer report in $(basename "$log")"
 done
-echo "ok: listed, put back as tw starts, off and on, refused, the box applying, keeping, going back"
+echo "ok: listed, put back as tw starts, off and on, refused, the box applying, keeping, going back, a screen going away and coming back"

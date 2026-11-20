@@ -1,11 +1,11 @@
 #!/bin/sh
-# Two monitors. Each shows a workspace of its own out of the same nine; the
+# Two monitors. Each has nine workspaces of its own and shows one of them; the
 # focus and columns move between them, and a window is only ever drawn on the
 # monitor its workspace is on. $3 = tw-test-keys.
 #
 # The headless backend provides two 1280x720 outputs and announces the second
-# one first, so they end up side by side with HEADLESS-2 on the left showing
-# workspace 1 and HEADLESS-1 on the right showing workspace 2.
+# one first, so they end up side by side with HEADLESS-2 on the left and
+# HEADLESS-1 on the right, each showing its own workspace 1.
 # Unplugging a monitor cannot be simulated and is not covered.
 set -eu
 . "$(dirname "$0")/lib.sh"
@@ -29,7 +29,7 @@ only_states_since() { ! since "$1" "$2" | grep '^configure' | grep -Eqv "$3"; }
 
 start_tw
 
-# --- A workspace per monitor ----------------------------------------------------
+# --- A monitor each ------------------------------------------------------------
 start_client a
 expect_line a "output enter $left" "the first window to open on the first monitor"
 expect_state a "$on" "the first window to be focused"
@@ -61,37 +61,39 @@ press super+shift+ctrl+l
 expect_line a "output enter $right" "Mod+Shift+Ctrl+L to move the column to the monitor on the right"
 expect_line a "output leave $left" "the moved column to leave its old monitor"
 expect_state a "$on" "the focus to follow the moved column"
-# left: workspace 1, empty.   right: workspace 2 with b [a]
+# left: workspace 1, empty.   right: workspace 1 with b [a]
 
-# --- Workspaces across monitors -------------------------------------------------
-# A workspace that the other monitor shows stays there; the focus goes to it.
-press super+1
-expect_state a "$visible" "Mod+1 to move the focus to the monitor showing workspace 1"
+# --- Each monitor has nine workspaces of its own --------------------------------
+# Mod and a number go to that workspace of the focused monitor, on that
+# monitor; the other monitor keeps showing what it shows.
+press super+shift+j
 start_client c
-expect_line c "output enter $left" "a window opened then to appear on that monitor"
+expect_line c "output enter $left" "a window opened on the left monitor to appear there"
+press super+shift+l
+expect_state a "$on" "Mod+Shift+L to move the focus back to the right monitor"
+expect_state c "$visible" "the left monitor to keep showing its window"
+c_point=$(lines c) # c is not to be touched until the pointer comes to it
 press super+2
-expect_state a "$on" "Mod+2 to return the focus to the monitor showing workspace 2"
-expect_state c "$visible" "workspace 1 to stay on its monitor"
-c_point=$(lines c) # c is not to be touched until it is clicked on
-
-# A hidden workspace replaces the one on the focused monitor only.
-press super+3
-expect_state a "$hidden" "Mod+3 to replace workspace 2 on the focused monitor"
-expect_state b "$hidden" "all of workspace 2 to be hidden"
+expect_state a "$hidden" "Mod+2 to show the right monitor's own workspace 2"
+expect_state b "$hidden" "all of the right monitor's workspace 1 to be hidden"
 start_client d
-expect_line d "output enter $right" "a window on workspace 3 to appear on the second monitor"
+expect_line d "output enter $right" "a window on workspace 2 to appear on the right monitor"
+press super+1
+expect_state a "$on" "Mod+1 to bring back the right monitor's workspace 1, with its focus"
+expect_state d "$hidden" "workspace 2 of the right monitor to be hidden again"
 
 # With no monitor on that side, Shift and a direction step through the
 # workspaces of this monitor instead.
 press super+shift+l
-expect_state d "$hidden" "Mod+Shift+L, with no monitor further right, to go to the next workspace"
+expect_state d "$on" "Mod+Shift+L, with no monitor further right, to go to the next workspace"
 press super+shift+i
-expect_state d "$on" "Mod+Shift+I, with no monitor above, to go to the previous workspace"
+expect_state a "$on" "Mod+Shift+I, with no monitor above, to go to the previous workspace"
 
-# Stepping through workspaces skips the one the other monitor shows.
+# Stepping through workspaces stays on this monitor, and stops at its first.
+press super+Page_Down
+expect_state d "$on" "Mod+Page_Down to go to workspace 2"
 press super+Page_Up
-expect_state a "$on" "Mod+Page_Up to go from workspace 3 to workspace 2"
-expect_state d "$hidden" "workspace 3 to be hidden again"
+expect_state a "$on" "Mod+Page_Up to go back to workspace 1"
 point=$(lines a)
 press super+Page_Up
 
@@ -101,7 +103,7 @@ pointer_to 100 100
 expect_state c "$on" "the pointer moved onto a window on the other monitor to focus it"
 expect_state a "$visible" "the window that lost the focus to stay visible"
 only_states_since a "$point" "$visible" ||
-	fail "Mod+Page_Up took the workspace away from the other monitor"
+	fail "Mod+Page_Up on the first workspace did something"
 only_states_since c "$c_point" "$on" ||
 	fail "switching workspaces on one monitor disturbed the other"
 

@@ -43,8 +43,9 @@ library out of `/usr/local`.
 `-d` turns on debug logging; tw logs a `map <app_id> <w>x<h>` line per
 window and an `output <name>` line per monitor. `-b <seconds>`, `-l <seconds>`
 and `-z <seconds>` override the screen-blanking, locking and suspend
-timeouts, and `-x <seconds>` how long after the last X11 program the X
-server is stopped.
+timeouts, `-x <seconds>` how long after the last X11 program the X
+server is stopped, and `-m <seconds>` how long a monitor that went away is
+waited for before its windows move.
 
 Never run `data/tw-session` from inside a desktop session to try it out: it
 publishes its `WAYLAND_DISPLAY` to the user's D-Bus and systemd environment.
@@ -62,7 +63,7 @@ what it would do and starts nothing.
 | `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler and its cap on battery, VRR and tearing for a fullscreen window, outputs set by a program (wlr-output-management), a new renderer after a GPU reset |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
 | `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation), the window list and recording a window |
-| `src/strip.c` | Where windows go: workspaces, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
+| `src/strip.c` | Where windows go: each monitor's nine workspaces (its desk) and what happens to them when it goes away, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, moving windows with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
 | `src/idle.c` | Screen blanking, locking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
@@ -78,8 +79,8 @@ what it would do and starts nothing.
 | `tests/` | `lib.sh` starts tw headless with a private runtime directory and PATH; `client.c`, `keys.c`, `clip.c` and `capture.c` are the test programs; one `.sh` per area. [docs/testing.md](docs/testing.md) lists them |
 
 How it hangs together, in one paragraph; [docs/design.md](docs/design.md)
-has the rest. Each workspace is a strip of columns, each output shows one
-workspace, and `strip_arrange()` is the only thing that positions windows:
+has the rest. Each workspace is a strip of columns, each monitor has nine
+of its own and its output shows one, and `strip_arrange()` is the only thing that positions windows:
 call it after anything that changes a strip, the focus, a width or an
 output. `focus_update()` is the only thing that sends focus events: change
 `workspace->focused`, `server->active`, `server->keyboard_layer` or the

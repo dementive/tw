@@ -26,30 +26,17 @@
 #include "config.h"
 
 /*
- * Several outputs. There are TW_WORKSPACES workspaces in all, and each output
- * shows one of them; the rest are hidden. The output showing the active
- * workspace has the focus. Unplugging an output only hides its workspace, so
- * no window ever has to be moved because a monitor went away.
+ * Several outputs. Each monitor has nine workspaces of its own (a desk,
+ * strip.c's) and shows one of them. The output showing the active workspace
+ * has the focus.
+ *
+ * Whether an output holds its desk depends only on its being in use, not on
+ * its having a mode yet: one plugged in while the screens are off has none
+ * until they come on. output_boxes() fails for it, so its workspace waits
+ * suspended.
  */
-
-/*
- * Whether an output holds a workspace depends only on its being in use, not
- * on its having a mode yet: one plugged in while the screens are off has
- * none until they come on, and a second output must not take its workspace
- * meanwhile. output_boxes() fails for it, so its workspace waits suspended.
- */
-struct tw_output *output_showing(struct tw_server *server, size_t workspace) {
-	struct tw_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		if (output->workspace == workspace && output_in_use(output)) {
-			return output;
-		}
-	}
-	return NULL;
-}
-
 struct tw_output *output_focused(struct tw_server *server) {
-	return output_showing(server, server->active);
+	return server->active->desk->output;
 }
 
 struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except) {
@@ -226,10 +213,11 @@ bool output_set_power(struct tw_output *output, bool on) {
 /* The fullscreen window this output shows, or NULL: one that is on screen,
  * not scrolled away or hidden behind the lock. */
 static struct tw_window *output_fullscreen(const struct tw_output *output) {
-	if (output->workspace >= TW_WORKSPACES) {
+	struct tw_workspace *workspace = output_workspace(output);
+	if (workspace == NULL) {
 		return NULL;
 	}
-	struct tw_window *window = workspace_fullscreen(&output->server->workspaces[output->workspace]);
+	struct tw_window *window = workspace_fullscreen(workspace);
 	return window != NULL && window->scene_tree->node.enabled ? window : NULL;
 }
 
@@ -278,8 +266,8 @@ static bool frame_capped(const struct tw_output *output, struct wlr_scene_output
 			now - server->last_activity_ms < (int64_t)battery_idle_after_seconds * 1000) {
 		return false;
 	}
-	return (output->workspace >= TW_WORKSPACES ||
-		workspace_fullscreen(&server->workspaces[output->workspace]) == NULL) &&
+	return (output_workspace(output) == NULL ||
+		workspace_fullscreen(output_workspace(output)) == NULL) &&
 		!output_plays(scene_output, server);
 }
 
@@ -424,24 +412,6 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
 	wlr_output_commit_state(output->wlr_output, event->state);
 }
 
-/*
- * An output is leaving the layout, or going away. Its workspace is hidden
- * from here on. If that is where the user was working, the oldest remaining
- * output shows it instead of its own, so that an output going never takes
- * the current work out of sight.
- */
-static void output_hand_over(struct tw_output *output) {
-	struct tw_server *server = output->server;
-	if (output->workspace != server->active || !output_in_use(output)) {
-		return;
-	}
-	struct tw_output *heir = output_oldest(server, output);
-	if (heir != NULL) {
-		heir->workspace = server->active;
-		output->workspace = TW_WORKSPACES;
-	}
-}
-
 /* Detaches an output from its wlr_output and frees it. */
 static void output_free(struct tw_output *output) {
 	if (output->frame_timer != NULL) {
@@ -461,7 +431,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct tw_server *server = output->server;
 	layers_output_destroyed(server, output->wlr_output);
 	/* The output layout raises its change event next, which arranges. */
-	output_hand_over(output);
+	strip_output_leave(output);
 	output_free(output);
 	/* The last monitor of a docked laptop with its lid closed: the
 	 * laptop's own screen comes back. */
@@ -471,37 +441,12 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	outputs_restore(server);
 }
 
-/*
- * The workspace an output shows as it comes into the layout: the active one
- * if no output shows it, then the one it showed before if that is hidden,
- * then the lowest-numbered hidden one. TW_WORKSPACES if there are more
- * outputs than workspaces.
- */
-static size_t output_pick_workspace(struct tw_output *output) {
-	struct tw_server *server = output->server;
-	if (output_showing(server, server->active) == NULL) {
-		return server->active;
-	}
-	if (output->workspace < TW_WORKSPACES && output_showing(server, output->workspace) == NULL) {
-		return output->workspace;
-	}
-	for (size_t i = 0; i < TW_WORKSPACES; i++) {
-		if (output_showing(server, i) == NULL) {
-			return i;
-		}
-	}
-	return TW_WORKSPACES;
-}
-
 /* Turns an output on (unless the screens are off) and puts it in the layout,
- * showing a workspace. */
+ * showing a workspace of its monitor's desk. */
 static void output_enter(struct tw_output *output) {
 	struct tw_server *server = output->server;
 	struct wlr_output *wlr_output = output->wlr_output;
 	const struct tw_output_rule *rule = output_rule(output);
-	/* Picked before it counts as in use, or the workspace it showed before
-	 * would look taken: by itself. */
-	output->workspace = output_pick_workspace(output);
 	output->lid_off = false;
 
 	/* While the screens are off a new one stays off with them, until the
@@ -517,8 +462,8 @@ static void output_enter(struct tw_output *output) {
 			wlr_output->model, wlr_output->serial != NULL ? " " : "",
 			wlr_output->serial != NULL ? wlr_output->serial : "");
 	}
-	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
-		wlr_output->name, output_scale(output), output->workspace + 1);
+	wlr_log(WLR_DEBUG, "output %s: scale %.2f", wlr_output->name, output_scale(output));
+	strip_output_enter(output);
 
 	/* Where the monitors tool put it, else where machines.h does. Adding to
 	 * the layout raises its change event, which arranges. */
@@ -547,7 +492,7 @@ static void output_enter(struct tw_output *output) {
 static void output_leave(struct tw_output *output, bool *why) {
 	struct tw_server *server = output->server;
 	struct wlr_output *wlr_output = output->wlr_output;
-	output_hand_over(output);
+	strip_output_leave(output);
 	*why = true;
 	output->animating = false;
 	layers_output_destroyed(server, wlr_output);
@@ -640,7 +585,6 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 	}
 	output->server = server;
 	output->wlr_output = wlr_output;
-	output->workspace = TW_WORKSPACES;
 	output->builtin = tw_connector_builtin(wlr_output->name);
 	/* Without it the output is simply never capped. */
 	output->frame_timer = wl_event_loop_add_timer(server->loop, handle_frame_timer, output);

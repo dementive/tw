@@ -108,9 +108,11 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 - **Screen readers** find no programs to talk to: the session keeps the
   accessibility bus off, which saves three background processes. Log in
   with `TW_A11Y=1` set to keep it.
-- **Several monitors** each show one workspace. Unplugging one hides its
-  workspace, or moves it to another monitor if it was the one in use; no
-  window is moved. "Monitors" in the launcher turns them on and off and
+- **Several monitors** each have nine workspaces of their own. A monitor
+  that goes away is waited for while the screens are on (5 seconds); then
+  its windows go to the same workspaces of the focused monitor, and back
+  when it returns. One that drops off in standby and comes back moves
+  nothing. "Monitors" in the launcher turns them on and off and
   sets their resolution, refresh rate, scale and place; what you keep is
   put back whenever the same monitors are plugged in again.
 

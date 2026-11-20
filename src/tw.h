@@ -23,6 +23,7 @@
 
 struct tw_clipboard;
 struct tw_column;
+struct tw_desk;
 struct tw_layer_surface;
 struct tw_lock;
 struct tw_power;
@@ -36,9 +37,10 @@ struct wlr_xdg_popup;
 struct wlr_xdg_toplevel;
 struct wlr_xdg_toplevel_decoration_v1;
 
-/* One scrolling strip. It is on screen while an output shows it; each output
- * shows a different one. */
+/* One scrolling strip, one of a monitor's nine (tw_desk). It is on screen
+ * while that monitor's output shows it. */
 struct tw_workspace {
+	struct tw_desk *desk;
 	struct wl_list columns;  /* tw_column.link; the strip, left to right */
 	struct wl_list floating; /* tw_window.link; dialogs, topmost first */
 	/* Both are remembered while the workspace is hidden. */
@@ -56,14 +58,34 @@ struct tw_workspace {
 	bool on_output; /* an output showed it when it was last arranged */
 };
 
+/*
+ * A monitor's nine workspaces. Made the first time the monitor is seen and
+ * kept until tw exits, so that it finds them again when it comes back: a desk
+ * is known by the name the monitor gives itself (make, model, serial), else
+ * by its connector. A desk with no output is out of sight: its monitor is
+ * unplugged or behind a closed lid, or it is the spare that windows open on
+ * before any output is there. After a while its windows go to the focused
+ * monitor (strip.c), each remembering it (tw_window.home) to go back.
+ */
+struct tw_desk {
+	struct wl_list link; /* tw_server.desks */
+	char *name;          /* NULL for the spare */
+	struct tw_output *output; /* NULL while out of sight */
+	size_t shown;        /* index of the workspace its output shows */
+	/* Where the focus went when the output went with it, or NULL: the
+	 * focus comes back if it is still there when the monitor does. */
+	struct tw_workspace *focus_fell;
+	struct tw_workspace workspaces[TW_WORKSPACES];
+};
+
 struct tw_output {
 	struct wl_list link; /* tw_server.outputs */
 	struct tw_server *server;
 	struct wlr_output *wlr_output;
 	struct wlr_box usable; /* layout box minus layer-shell exclusive zones */
-	/* Index of the workspace it shows; no two outputs show the same one.
-	 * TW_WORKSPACES if there are more outputs than workspaces. */
-	size_t workspace;
+	/* Its monitor's workspaces, one of which it shows; NULL while out of use
+	 * (strip_output_enter(), strip_output_leave()). */
+	struct tw_desk *desk;
 	/* That workspace's view is gliding toward view_x. Stepped once per frame
 	 * of this output, which is also what stops it: no frame, no work. */
 	bool animating;
@@ -130,6 +152,10 @@ struct tw_window {
 	struct wl_list link;
 	struct tw_server *server;
 	struct tw_workspace *workspace; /* NULL unless mapped */
+	/* The desk it was taken from when that monitor went away, to go back
+	 * to when it returns; NULL if it is where it belongs, or was moved by
+	 * the user since. */
+	struct tw_desk *home;
 	struct tw_column *column;       /* NULL unless mapped and tiled; strip.c's */
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_xdg_toplevel_decoration_v1 *decoration; /* NULL if none */
@@ -260,10 +286,17 @@ struct tw_server {
 	struct wl_listener request_activate;
 
 	/* strip.c */
-	struct tw_workspace workspaces[TW_WORKSPACES];
-	/* Index of the workspace with the focus. The output showing it is the
-	 * focused output: new windows open there. */
-	size_t active;
+	struct wl_list desks; /* tw_desk.link; the spare first */
+	struct tw_desk spare;
+	/* The workspace with the focus, never NULL, always the one its desk
+	 * shows. Its desk's output is the focused output: new windows open
+	 * there. */
+	struct tw_workspace *active;
+	/* Runs out monitor_wait_seconds after the screens are on with a desk
+	 * out of sight that has windows (strip.c); disarmed otherwise. */
+	struct wl_event_source *desk_timer;
+	bool desk_timer_armed;
+	int monitor_wait_ms; /* monitor_wait_seconds, or -m; 0 does not wait */
 	struct tw_window *focused; /* the window whose client is told it is active */
 
 	/* input.c */
@@ -367,10 +400,20 @@ struct tw_server {
 	int x11_idle_ms;    /* 0 never stops the X11 helper */
 };
 
-/* An output in use is in the layout and shows a workspace: one neither
- * behind a closed lid nor turned off with the monitors tool. */
+/* An output in use is in the layout and holds its monitor's desk: one
+ * neither behind a closed lid nor turned off with the monitors tool. */
 static inline bool output_in_use(const struct tw_output *output) {
 	return !output->lid_off && !output->chosen.off;
+}
+
+/* The position of a workspace on its desk: 0 for Mod+1. */
+static inline size_t workspace_index(const struct tw_workspace *workspace) {
+	return (size_t)(workspace - workspace->desk->workspaces);
+}
+
+/* The workspace an output shows, or NULL while it is out of use. */
+static inline struct tw_workspace *output_workspace(const struct tw_output *output) {
+	return output->desk != NULL ? &output->desk->workspaces[output->desk->shown] : NULL;
 }
 
 /* Nothing is on screen while the outputs are off or the session is locked. */
@@ -442,9 +485,6 @@ void output_init(struct tw_server *server);
  * built its shaders. Nothing for the software renderer. */
 void renderer_release_compiler(struct wlr_renderer *renderer);
 void output_finish(struct tw_server *server);
-/* The output in use that shows this workspace, or NULL if it is hidden. It
- * may have no mode yet; output_boxes() then fails. */
-struct tw_output *output_showing(struct tw_server *server, size_t workspace);
 /* The output with the focus (the one showing the active workspace), or NULL. */
 struct tw_output *output_focused(struct tw_server *server);
 /* The oldest output in use, other than `except`; NULL if there is none. */
@@ -584,6 +624,23 @@ bool strip_animate(struct tw_output *output);
 struct tw_window *workspace_fullscreen(const struct tw_workspace *workspace);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
+/* The output in use that shows this workspace, or NULL if it is hidden. It
+ * may have no mode yet; output_boxes() then fails. */
+struct tw_output *workspace_output(const struct tw_workspace *workspace);
+/*
+ * An output comes into use: it gets its monitor's desk, made now if this is
+ * the first time, and shows the workspace that desk showed last. Windows
+ * taken from that desk while it was gone come back, and so does the focus if
+ * it has not moved since. Before the output joins the layout.
+ */
+void strip_output_enter(struct tw_output *output);
+/* An output goes out of use (unplugged, behind the lid). Its desk is out of
+ * sight; the focus goes to the oldest other output if it was here. */
+void strip_output_leave(struct tw_output *output);
+/* The screens went off or came on: the wait for a monitor that went away
+ * counts only while they are on. */
+void strip_screens_changed(struct tw_server *server);
+void strip_finish(struct tw_server *server);
 /*
  * Where the focus comes to rest once the view has glided there: the active
  * window and its box, or with none (NULL) the usable area of the focused

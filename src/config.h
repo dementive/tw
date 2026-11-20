@@ -35,6 +35,15 @@ static const size_t default_column_width = 1; /* index into column_widths */
 static const int scroll_stiffness = 800;
 
 /*
+ * Each monitor has nine workspaces of its own. A monitor that goes away (a
+ * cable pulled, or one that disconnects itself while the screens are off) is
+ * waited for this many seconds of the screens being on; its windows then go
+ * to the same-numbered workspaces of the focused monitor, and back when it
+ * returns.
+ */
+static const int monitor_wait_seconds = 5;
+
+/*
  * Variable refresh rate (VRR: FreeSync, "G-Sync compatible") while a window is
  * fullscreen on a screen that can do it: the screen waits for the game's next
  * frame instead of showing the last one again, so a game that falls short of

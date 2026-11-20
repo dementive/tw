@@ -204,7 +204,7 @@ static void handle_session_destroy(struct wl_listener *listener, void *data) {
 
 static void usage(FILE *out, const char *name, const struct tw_machine *machine) {
 	fprintf(out, "Usage: %s [-h] [-d] [-b seconds] [-l seconds] [-z seconds] [-x seconds]\n"
-		"          [-s startup-command]\n"
+		"          [-m seconds] [-s startup-command]\n"
 		"  -b  turn the screen off after this long without input (0: never;\n"
 		"      default %d)\n"
 		"  -l  lock the session after this long without input (0: never;\n"
@@ -213,11 +213,13 @@ static void usage(FILE *out, const char *name, const struct tw_machine *machine)
 		"      default %d)\n"
 		"  -x  stop the X11 server when no X11 program has been connected for\n"
 		"      this long (0: never; default %d)\n"
+		"  -m  wait this long for a monitor that went away before its windows go\n"
+		"      to the focused one (0: at once; default %d)\n"
 		"  -d  log debug output\n"
 		"  -s  run a shell command once the compositor is up\n"
 		"  -h  show this help\n",
 		name, blank_after_seconds, lock_after_seconds, machine->suspend_after_seconds,
-		x11_idle_seconds);
+		x11_idle_seconds, monitor_wait_seconds);
 }
 
 /*
@@ -278,9 +280,10 @@ int main(int argc, char *argv[]) {
 	int lock_after = lock_after_seconds;
 	int suspend_after = machine->suspend_after_seconds;
 	int x11_idle = x11_idle_seconds;
+	int monitor_wait = monitor_wait_seconds;
 
 	int c;
-	while ((c = getopt(argc, argv, "b:dl:s:x:z:h")) != -1) {
+	while ((c = getopt(argc, argv, "b:dl:m:s:x:z:h")) != -1) {
 		int *seconds = NULL;
 		switch (c) {
 		case 'b':
@@ -291,6 +294,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'x':
 			seconds = &x11_idle;
+			break;
+		case 'm':
+			seconds = &monitor_wait;
 			break;
 		case 'z':
 			seconds = &suspend_after;
@@ -326,6 +332,7 @@ int main(int argc, char *argv[]) {
 	server.lock_after_ms = seconds_to_ms(lock_after);
 	server.suspend_after_ms = seconds_to_ms(suspend_after);
 	server.x11_idle_ms = seconds_to_ms(x11_idle);
+	server.monitor_wait_ms = seconds_to_ms(monitor_wait);
 
 	/* A program that pastes may close its end before tw has written all
 	 * of a copy it keeps (clipboard.c), and writing to a closed pipe kills
@@ -472,6 +479,7 @@ teardown:
 	input_finish(&server);
 	window_finish(&server);
 	layer_finish(&server);
+	strip_finish(&server);
 	output_finish(&server);
 	wlr_scene_node_destroy(&server.scene->tree.node);
 

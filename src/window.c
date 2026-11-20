@@ -404,7 +404,7 @@ static void handle_map(struct wl_listener *listener, void *data) {
 	const char *app_id = window->xdg_toplevel->app_id;
 	wlr_log(WLR_DEBUG, "map %s %dx%d workspace=%zu decorations=%s%s%s",
 		app_id != NULL ? app_id : "(no app_id)", window->width, window->height,
-		server->active + 1, window->decoration != NULL ? "server" : "client",
+		workspace_index(server->active) + 1, window->decoration != NULL ? "server" : "client",
 		window->fullscreen ? " fullscreen" : "", window->floating ? " floating" : "");
 }
 

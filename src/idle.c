@@ -123,6 +123,7 @@ static void set_blanked(struct tw_server *server, bool blanked) {
 
 	/* Suspends every window while the screen is off, resumes them after. */
 	strip_arrange(server);
+	strip_screens_changed(server);
 	if (!blanked) {
 		idle_timer_start(server);
 	}
