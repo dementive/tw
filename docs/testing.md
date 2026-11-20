@@ -170,9 +170,11 @@ must be empty.
   window with a shadow, and that a menu's surface left behind by a closed
   window, or given a new menu, points at no freed or stale scene tree.
 - **The G502 HERO itself.** The tests press the buttons tw expects for G6
-  and G9 (`BTN_MOUSE + 5` and `+ 6`) through a virtual pointer. That
-  `ratbagctl`'s "button 6" and "button 7" arrive as those two was read
-  from libratbag and the kernel's HID input code, not seen. Also not
+  and G9 (`BTN_MOUSE + 5` and `+ 6`) through a virtual pointer. On the
+  owner's mouse `ratbagctl` was seen to save "button 6" and "button 7" for
+  them, and the speeds and lights with them ([setup.md](setup.md#the-mouse-a-g502s-own-buttons));
+  that they arrive as those two codes was read from the kernel's HID input
+  code, not seen. Also not
   seen: how fast the mouse repeats a tilt held down, and so whether the
   tilt's cooldown (400 ms) makes one tilt one step; a high-resolution
   wheel sending parts of a notch (the G502 HERO, on the kernel's generic

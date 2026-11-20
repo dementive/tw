@@ -356,33 +356,62 @@ for the mouse, and G9 opens the launcher. It is one setting, saved in the
 mouse's own memory, so it holds on every machine and every system the
 mouse is plugged into. G7 and G8 keep changing the pointer speed (DPI).
 
-`libratbag` writes it, and is needed only for this:
+`libratbag` writes it, and is needed only for this. No `sudo`: `ratbagctl`
+asks its service, which D-Bus starts.
 
 ```sh
 sudo pacman -S libratbag
+ratbagctl G502 info
+```
+
+Mind the profiles. A G502 HERO that was never set up with Logitech's own
+program has nothing in its memory: `info` lists its five profiles as
+`(disabled)` and runs on a default built into it. Saving anything saves the
+whole active profile, its pointer speeds and lights included, and on the
+owner's mouse that put one speed in it (6400, the four others at 100 and
+switched off): the pointer went slow and G7 and G8 had nothing to step
+through. So set the speeds and the lights in the same go, and the buttons
+last, which saves it all at once (`--nocommit` holds each change until a
+command without it). The speeds are the mouse's own out of the box, 1600
+to start; `r` keeps the lines short:
+
+```sh
+p=$(ratbagctl G502 profile active get)
+r() { ratbagctl --nocommit G502 profile "$p" "$@"; }
+i=0; for dpi in 400 800 1600 2400 3200; do
+	r resolution $i enabled set; r resolution $i dpi set $dpi; i=$((i + 1))
+done
+r resolution default set 2
+r resolution active set 2
+r led 0 set mode off   # the lights: off, or `set mode on` and `set color RRGGBB`
+r led 1 set mode off
+ratbagctl G502 profile "$p" enable
 ratbagctl G502 info | grep Button
 ```
 
-Out of the box the list says `'resolution-alternate'` for G6 and
-`'profile-cycle-up'` for G9; G7 and G8 are `'resolution-down'` and
-`'resolution-up'`, which stay. Give G6 and G9 the numbers 6 and 7, with
-the number at the start of each one's line:
+The list says `'resolution-alternate'` for G6 and `'profile-cycle-up'` for
+G9, at numbers 5 and 8 on the owner's mouse; G7 and G8 are
+`'resolution-down'` and `'resolution-up'`, which stay. Give G6 and G9 the
+buttons 6 and 7, the second command saving everything:
 
 ```sh
-ratbagctl G502 button <G6's number> action set button 6
-ratbagctl G502 button <G9's number> action set button 7
+r button 5 action set button 6
+ratbagctl G502 profile "$p" button 8 action set button 7
+ratbagctl G502 info   # the speeds, the lights and the buttons, nothing "(dirty)"
 ```
 
 Check it under tw: hold G6 and turn the wheel, and the focus moves along
-the strip; G9 opens the launcher. Then libratbag can go:
+the strip; G9 opens the launcher; G7 and G8 change the speed. Then
+libratbag can go:
 
 ```sh
 sudo systemctl stop ratbagd
 sudo pacman -Rns libratbag
 ```
 
-To undo it, the same two commands with `special resolution-alternate` and
-`special profile-cycle-up` in place of `button 6` and `button 7`. Another
+To undo the buttons, the same two commands with `special
+resolution-alternate` and `special profile-cycle-up` in place of `button 6`
+and `button 7`. Another
 mouse's extra buttons are bound in `src/config.h` the same way, by the
 button number its tool gives them (button N arrives as `BTN_MOUSE + N - 1`).
 
