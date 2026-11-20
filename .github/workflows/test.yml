@@ -42,7 +42,9 @@ jobs:
           ' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
       - name: Build
         run: runuser -u build -- sh -ec 'cd ~/tw && meson setup build -Db_sanitize=address,undefined && ninja -C build'
+      # A failing test's whole output is printed: what the script says on
+      # failure (each program's log) is the only record of a run.
       - name: Test
         run: |
-          runuser -u build -- sh -ec 'cd ~/tw && meson test -C build --suite tw ||
+          runuser -u build -- sh -ec 'cd ~/tw && meson test -C build --suite tw --print-errorlogs ||
             { grep -h "^FAIL" build/meson-logs/testlog.txt; exit 1; }'
