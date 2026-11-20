@@ -885,6 +885,15 @@ void action_focus(struct tw_server *server, const union tw_arg *arg) {
 	strip_arrange(server);
 }
 
+void action_focus_column(struct tw_server *server, const union tw_arg *arg) {
+	struct tw_window *window = strip_window(server);
+	struct tw_column *column = window != NULL ? column_neighbour(window->column, arg->i) : NULL;
+	if (column != NULL) {
+		window_focus(server, column->active);
+		strip_arrange(server);
+	}
+}
+
 void action_focus_edge(struct tw_server *server, const union tw_arg *arg) {
 	struct tw_workspace *workspace = active_workspace(server);
 	if (wl_list_empty(&workspace->columns)) {

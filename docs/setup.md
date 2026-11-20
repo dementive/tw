@@ -344,6 +344,48 @@ the password on the last line if iwd has none); Return on Bluetooth
 switches it on, or lists the devices (Return pairs and connects).
 Logging out, restarting and powering off ask for Return twice.
 
+### The mouse: a G502's own buttons
+
+With Mod held, the wheel, the thumb buttons and the middle and right
+buttons drive the strip; the README's "Mouse" table has them all. That
+needs no setup. A Logitech G502 HERO's sniper button (G6) and the button
+behind its wheel (G9) do too, but only once the mouse has been told to send
+them to the computer: out of the box it handles them itself (G6 slows the
+pointer while held, G9 switches its profile). tw takes G6, held, as Mod
+for the mouse, and G9 opens the launcher. It is one setting, saved in the
+mouse's own memory, so it holds on every machine and every system the
+mouse is plugged into. G7 and G8 keep changing the pointer speed (DPI).
+
+`libratbag` writes it, and is needed only for this:
+
+```sh
+sudo pacman -S libratbag
+ratbagctl G502 info | grep Button
+```
+
+Out of the box the list says `'resolution-alternate'` for G6 and
+`'profile-cycle-up'` for G9; G7 and G8 are `'resolution-down'` and
+`'resolution-up'`, which stay. Give G6 and G9 the numbers 6 and 7, with
+the number at the start of each one's line:
+
+```sh
+ratbagctl G502 button <G6's number> action set button 6
+ratbagctl G502 button <G9's number> action set button 7
+```
+
+Check it under tw: hold G6 and turn the wheel, and the focus moves along
+the strip; G9 opens the launcher. Then libratbag can go:
+
+```sh
+sudo systemctl stop ratbagd
+sudo pacman -Rns libratbag
+```
+
+To undo it, the same two commands with `special resolution-alternate` and
+`special profile-cycle-up` in place of `button 6` and `button 7`. Another
+mouse's extra buttons are bound in `src/config.h` the same way, by the
+button number its tool gives them (button N arrives as `BTN_MOUSE + N - 1`).
+
 ### Setting the screens
 
 "Monitors" in the launcher opens `tw-monitors`: the screens as they are

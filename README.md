@@ -59,11 +59,34 @@ keys do the same.
 | Mod+Shift+P | screen off until the next input |
 | Print / Shift+Print | screenshot of the screen / of a region |
 | Mod+Shift+E | quit |
-| Mod+left-drag | pick up a window and let it go on another monitor, or beside another column |
 | Ctrl+Alt+F1 … F12 | text consoles |
 
 A three-finger swipe sideways drags the strip; up or down switches
 workspace. The volume and brightness keys work.
+
+## Mouse
+
+Made for a Logitech G502 HERO; any mouse with a wheel and thumb buttons
+gets all but the last two rows. Without Mod every button and the wheel
+are the program's, as always (back and forward in a browser).
+
+| Mouse | What it does |
+| --- | --- |
+| Mod+wheel | focus the column on the left (up) / right (down); stops at the ends of the strip |
+| Mod+Ctrl+wheel | move the focused column left / right |
+| Mod+Shift+wheel | previous / next workspace, one at most every 150 ms |
+| Mod+Shift+Ctrl+wheel | the same, taking the focused column along |
+| Mod+wheel tilted | as Mod+Shift+J / L: the monitor on that side, else the previous / next workspace; with Ctrl, taking the column along |
+| Mod+left-drag | pick up a window and let it go on another monitor, or beside another column |
+| Mod+middle-drag | hold the strip and drag it; let go, it settles on a column |
+| Mod+right click | cycle the width of the window under the pointer |
+| Mod+back / forward | focus the column on the left / right, as Mod+J / L |
+| G6 (sniper, held) | Mod for the mouse: every row above without the keyboard |
+| G9 | launcher |
+
+G6 and G9 need a one-time setting saved in the mouse:
+[setup.md](docs/setup.md#the-mouse-a-g502s-own-buttons). G7 and G8 still
+change the pointer speed (DPI).
 
 ## Configuring
 

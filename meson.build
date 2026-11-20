@@ -508,6 +508,9 @@ headless_tests = {
 	'columns': [tw, test_client, test_keys],
 	# the mouse: pointer focus, click to focus, pointer lock and confinement
 	'pointer': [tw, test_client, test_keys],
+	# the mouse's bindings: the wheel, buttons, a button held as Mod, the
+	# strip held with the mouse
+	'mouse': [tw, test_client, test_keys],
 	# two monitors: a workspace on each, focus and columns between them
 	'outputs': [tw, test_client, test_keys],
 	# screen blanking, inhibitors, locking on idle, with a two-second timeout

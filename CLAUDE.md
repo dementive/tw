@@ -56,7 +56,7 @@ what it would do and starts nothing.
 
 | File | Role |
 | --- | --- |
-| `src/config.h` | All configuration, compile-time: layout, input, timeouts, programs, key bindings |
+| `src/config.h` | All configuration, compile-time: layout, input, timeouts, programs, key and mouse bindings |
 | `src/machines.h` | What depends on the machine: its outputs, and whether tw may suspend it. An entry per machine; tw takes the one named after the board as it starts (`machine_pick()`), else the last. Then `monitors`: screens carried between machines, by make and model |
 | `src/tw.h` | The server struct and every function shared between files, grouped by file in the order `main()` starts them, as below |
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
@@ -64,7 +64,7 @@ what it would do and starts nothing.
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
 | `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation), the window list and recording a window |
 | `src/strip.c` | Where windows go: each monitor's nine workspaces (its desk) and what happens to them when it goes away, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
-| `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, moving windows with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
+| `src/input.c` | Keyboards and pointers (real and virtual), bindings of keys, mouse buttons and the wheel, a mouse button held as Mod, pointer lock and confinement, drag and drop, moving windows and holding the strip with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
 | `src/idle.c` | Screen blanking, locking and suspend after inactivity, idle inhibitors, noticing a wake-up, `suspend_now()` |
 | `src/lock.c` | Session lock for swaylock; locking by itself (`lock_now()`) and starting the locker |

@@ -320,10 +320,24 @@ struct tw_server {
 		TW_SWIPE_VERTICAL, /* switches workspace */
 	} swipe_axis;
 	double swipe_dx, swipe_dy;
-	/* Mod and the left button are moving a window with the mouse: `moved`
-	 * is that window, NULL once it has gone (strip_remove()). */
+	/* The mouse carries something until `moving_button` comes up: with Mod
+	 * and the left button a window, `moved`, NULL once it has gone
+	 * (strip_remove()); with Mod and the middle button the strip
+	 * (`moving_strip`). */
 	bool moving;
+	bool moving_strip;
+	uint32_t moving_button;
 	struct tw_window *moved;
+	/* Mouse buttons whose press was tw's, so their release is too, by
+	 * evdev code from BTN_MOUSE on. mod_button's bit is set while it is
+	 * held. */
+	uint32_t buttons_taken;
+	/* Wheel movement towards the next step of a scroll binding, in 120ths
+	 * of a notch, vertical and horizontal; and the binding that last ran,
+	 * with when, for its cooldown. */
+	int32_t scroll_sum[2];
+	const struct tw_scroll_binding *scroll_last;
+	uint32_t scroll_last_msec;
 	/* The window under the pointer when it last moved or was given to what
 	 * is under it, NULL over none or once that window has gone
 	 * (strip_remove()). Focus follows the mouse only onto another one. */
@@ -433,6 +447,30 @@ struct tw_binding {
 	xkb_keysym_t sym; /* unshifted keysym, e.g. XKB_KEY_h even with Shift */
 	tw_action action;
 	union tw_arg arg;
+};
+
+/* A mouse button: its press runs the action, on what is under the pointer. */
+struct tw_button_binding {
+	uint32_t mods;
+	uint32_t button; /* evdev code: BTN_LEFT, BTN_SIDE, BTN_MOUSE + 5 */
+	tw_action action;
+	union tw_arg arg;
+};
+
+/* The wheel, or the wheel tilted: the action runs once a notch, and not
+ * again until cooldown_ms after it last ran. */
+enum tw_scroll {
+	TW_SCROLL_UP,
+	TW_SCROLL_DOWN,
+	TW_SCROLL_LEFT,
+	TW_SCROLL_RIGHT,
+};
+struct tw_scroll_binding {
+	uint32_t mods;
+	enum tw_scroll direction;
+	tw_action action;
+	union tw_arg arg;
+	int cooldown_ms;
 };
 
 struct tw_output_rule {
@@ -650,7 +688,8 @@ bool strip_focus_box(struct tw_server *server, struct tw_window **window, struct
 /* Puts a window moved with the mouse where it was let go, at lx,ly: beside
  * the column there, or onto that monitor's workspace. */
 void strip_drop(struct tw_server *server, struct tw_window *window, double lx, double ly);
-/* A touchpad swipe drags the strip. `dx` is the finger movement in pixels. */
+/* A touchpad swipe, or Mod and the middle button, drags the strip. `dx` is
+ * the movement of the fingers or the cursor in pixels. */
 void strip_swipe_begin(struct tw_server *server, uint32_t time_msec);
 void strip_swipe_update(struct tw_server *server, double dx, uint32_t time_msec);
 /* Lets go: the strip glides to the nearest column edge. */
@@ -659,6 +698,8 @@ void strip_swipe_end(struct tw_server *server, bool cancelled, uint32_t time_mse
 /* Actions on the focused column. arg.i is a direction (-1 left, +1 right). */
 void action_close(struct tw_server *server, const union tw_arg *arg);
 void action_focus(struct tw_server *server, const union tw_arg *arg);
+/* Along the strip and no further: a wheel spun past its end stops there. */
+void action_focus_column(struct tw_server *server, const union tw_arg *arg);
 void action_focus_edge(struct tw_server *server, const union tw_arg *arg);
 void action_move(struct tw_server *server, const union tw_arg *arg);
 void action_move_edge(struct tw_server *server, const union tw_arg *arg);

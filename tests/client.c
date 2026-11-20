@@ -18,6 +18,8 @@
  *   output enter <name> | output leave <name>           which monitor shows it
  *   pointer motion <x> <y>, button <code> <pressed|released>    (motion when its
  *                      wl_pointer.frame arrives)
+ *   axis <0|1> <value>                                  scrolling: 0 vertical,
+ *                      1 horizontal; the value in pixels, as tw sent it
  *   closed                                              asked to close; it exits
  *   token, activate, activate forged                    see the focus modes below
  *   x11 connected, x11 served, x11 closed               with --x11
@@ -924,6 +926,8 @@ static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t s
 
 static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
 		uint32_t axis, wl_fixed_t value) {
+	printf("axis %u %d\n", axis, wl_fixed_to_int(value));
+	fflush(stdout);
 }
 
 static const struct wl_pointer_listener pointer_listener = {

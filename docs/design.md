@@ -172,6 +172,38 @@ other button is held (a client waits for its release) and no drag and drop
 is under way, never while locked, and a release after the session locked
 or the window closed puts nothing down.
 
+**The mouse's bindings.** Mouse buttons and the wheel have tables of their
+own in `config.h`, matched like the keys (`binding_mods_match()`) and run
+through the same `binding_run()`, so the cursor follows the focus as it
+does for a key. A button bound there (`button_take()`) runs on what is
+under the pointer, focused first as a click would focus it, and is tw's
+from press to release: the client hears neither, which a bitmask of the
+buttons taken (`buttons_taken`) remembers between the two. `mod_button`
+(the G502's G6) is one more such button that runs nothing: while it is
+held, `pointer_mods()` counts Mod as held for every mouse binding and for
+picking up a window or the strip, so the mouse alone does what Mod and
+the mouse do. It counts for the mouse only, never for keys. The wheel
+(`scroll_take()`) runs a binding once a notch: libinput reports a notch as
+120, a high-resolution wheel in parts of that, and `scroll_sum` adds the
+parts up, starting again from nothing when the wheel turns back. Only a
+wheel counts; a touchpad's scrolling has no notches and stays the
+program's. A binding with a cooldown does not run again until that many
+milliseconds after it last ran, by the events' own timestamps, so a free-
+spinning wheel or a tilt the mouse repeats while held does not run through
+all the workspaces, and nothing waits on a timer. The strip stops at its
+ends for the wheel (`action_focus_column()`), where Mod+J and L go on to
+the next monitor: a wheel spun past the end stays on its screen.
+
+Mod and the middle button take hold of the strip under the pointer, the
+focus going there first as for a click: `move_begin()` starts a swipe
+(`strip_swipe_begin()`), each movement of the cursor moves the strip by as
+much (`pointer_update()`), so what was under the pointer stays under it,
+and the release ends the swipe, which settles on a column edge with the
+speed the hand had, as for three fingers. It shares the window move's
+state (`server->moving`): the pointer is over nothing and shows the
+grabbing hand meanwhile, and no other binding runs. A lock during the
+hold puts the strip back where it was taken.
+
 **The lid.** A laptop's own screen (a connector named `eDP-`, `LVDS-` or
 `DSI-`) behind a closed lid is taken out of use while another output is
 there, as niri does: out of the layout, its layer surfaces closed, turned

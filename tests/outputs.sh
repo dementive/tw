@@ -56,6 +56,19 @@ only_states_since a "$point" "$visible" ||
 press super+shift+Left
 expect_state a "$on" "Mod+Shift+Left to move the focus back"
 
+# Mod and the wheel stop at the end of the strip, where Mod+J and L go on to
+# the monitor on that side: a wheel spun freely stays on its screen. The
+# window opened next opens where the focus is.
+press super+shift+l
+expect_state b "$on" "Mod+Shift+L to move the focus to the right monitor"
+press hold:super wheel:-1
+start_client wheel
+expect_line wheel "output enter $right" "Mod and the wheel up past the start of the strip to stay on its monitor"
+press super+q
+expect_line wheel closed "Mod+Q to close the window"
+press super+shift+Left
+expect_state a "$on" "Mod+Shift+Left to move the focus back"
+
 # --- Moving a column to the other monitor ---------------------------------------
 press super+shift+ctrl+l
 expect_line a "output enter $right" "Mod+Shift+Ctrl+L to move the column to the monitor on the right"

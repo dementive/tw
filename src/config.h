@@ -11,6 +11,7 @@
 #ifndef TW_CONFIG_H
 #define TW_CONFIG_H
 
+#include <linux/input-event-codes.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <xkbcommon/xkbcommon.h>
@@ -314,8 +315,7 @@ static const size_t clipboard_keep_bytes = 64 << 20;
  *                       goes on to the monitor on that side
  *   Mod+Shift+Ctrl+key  take the focused column along to where Mod+Shift goes
  *
- * And the mouse: Mod and the left button pick up a window, to let go on
- * another monitor or beside another column.
+ * The mouse has its own bindings, below the keys'.
  */
 #define DIRECTION(key, focus, focus_arg, move, move_arg, direction) \
 	{MOD,                key, focus,                           {.i = focus_arg}}, \
@@ -396,6 +396,77 @@ static const struct tw_binding bindings[] = {
 	{0,             XKB_KEY_XF86KbdBrightnessUp,   action_spawn,            {.s = keyboard_light_up}},
 	{0,             XKB_KEY_XF86KbdBrightnessDown, action_spawn,            {.s = keyboard_light_down}},
 };
+
+/* --- Mouse bindings ---------------------------------------------------------- */
+
+/*
+ * Made for a Logitech G502 HERO, and as good for any mouse with a wheel and
+ * thumb buttons. Its own extra buttons:
+ *
+ *   back, forward    (thumb)  BTN_SIDE, BTN_EXTRA: back and forward in the
+ *                             program under the pointer; with Mod, along the
+ *                             strip
+ *   wheel tilt                scrolls sideways in the program; with Mod,
+ *                             what Mod+Shift+J and L do
+ *   G6, "sniper"     (thumb)  held, it is Mod for the mouse: the mouse
+ *                             alone scrolls the strip, drags it and carries
+ *                             windows
+ *   G9               (top)    the launcher
+ *   G7, G8           (top)    the mouse's own: the pointer speed (DPI)
+ *
+ * G6 and G9 reach tw only once the mouse has been told to send buttons 6
+ * and 7 for them: by itself it handles them itself (G6 slows the pointer
+ * while held, G9 switches its profile), and tw never hears of them. docs/setup.md, "The mouse", has the one command that tells it; the
+ * mouse keeps it in its own memory.
+ *
+ * Mod and the left button pick up the window under the pointer, to let go
+ * on another monitor or beside another column. Mod and the middle button
+ * (pressing the wheel) take hold of the strip, which follows the mouse and
+ * settles on the nearest column edge when let go, as after a swipe. Neither
+ * is in the tables below. A button bound here is tw's, press and release:
+ * the program under the pointer never hears of it.
+ */
+#define MOUSE_G6 (BTN_MOUSE + 5) /* "button 6" in ratbagctl */
+#define MOUSE_G9 (BTN_MOUSE + 6) /* "button 7" */
+
+/* Counts as Mod for the mouse while held. 0: no such button. */
+static const uint32_t mod_button = MOUSE_G6;
+
+static const struct tw_button_binding button_bindings[] = {
+	/* modifiers    button      action                  argument */
+	{MOD,           BTN_RIGHT,  action_cycle_width,     {0}},
+	{MOD,           BTN_SIDE,   action_focus,           {.i = -1}},
+	{MOD,           BTN_EXTRA,  action_focus,           {.i = +1}},
+	{0,             MOUSE_G9,   action_spawn,           {.s = launcher}},
+};
+
+/*
+ * The wheel, as the direction keys: Mod along the strip, Mod+Ctrl carrying
+ * the column, Mod+Shift through the workspaces, Mod+Shift+Ctrl carrying the
+ * column there. One notch is one step. The strip stops at its ends, so a
+ * wheel spun freely does not run on to the next monitor; a workspace step
+ * waits out a cooldown in milliseconds, so it does not run through all
+ * nine. The tilt goes sideways, like Mod+Shift+J and L: to the monitor on
+ * that side or the previous or next workspace. A mouse repeats a tilt held
+ * down; its cooldown makes one tilt one step.
+ */
+static const struct tw_scroll_binding scroll_bindings[] = {
+	/* modifiers          direction        action                              argument                       cooldown */
+	{MOD,                 TW_SCROLL_UP,    action_focus_column,                {.i = -1},                     0},
+	{MOD,                 TW_SCROLL_DOWN,  action_focus_column,                {.i = +1},                     0},
+	{MOD | CTRL,          TW_SCROLL_UP,    action_move,                        {.i = -1},                     0},
+	{MOD | CTRL,          TW_SCROLL_DOWN,  action_move,                        {.i = +1},                     0},
+	{MOD | SHIFT,         TW_SCROLL_UP,    action_workspace_relative,          {.i = -1},                     150},
+	{MOD | SHIFT,         TW_SCROLL_DOWN,  action_workspace_relative,          {.i = +1},                     150},
+	{MOD | SHIFT | CTRL,  TW_SCROLL_UP,    action_move_to_workspace_relative,  {.i = -1},                     150},
+	{MOD | SHIFT | CTRL,  TW_SCROLL_DOWN,  action_move_to_workspace_relative,  {.i = +1},                     150},
+	{MOD,                 TW_SCROLL_LEFT,  action_workspace_toward,            {.i = WLR_DIRECTION_LEFT},     400},
+	{MOD,                 TW_SCROLL_RIGHT, action_workspace_toward,            {.i = WLR_DIRECTION_RIGHT},    400},
+	{MOD | CTRL,          TW_SCROLL_LEFT,  action_move_to_workspace_toward,    {.i = WLR_DIRECTION_LEFT},     400},
+	{MOD | CTRL,          TW_SCROLL_RIGHT, action_move_to_workspace_toward,    {.i = WLR_DIRECTION_RIGHT},    400},
+};
+#undef MOUSE_G6
+#undef MOUSE_G9
 #undef DIRECTION
 #undef WORKSPACE
 #undef MOD

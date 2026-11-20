@@ -64,18 +64,18 @@ struct tw_switch {
 /* --- Keyboard --------------------------------------------------------------- */
 
 /*
- * Runs a binding. One that moves the focus, or moves or resizes the focused
- * window, takes the cursor to the middle of where that window comes to rest,
+ * Runs a binding, of a key or of the mouse. One that moves the focus, or
+ * moves or resizes the focused window, takes the cursor to the middle of where that window comes to rest,
  * or of the output when it has none, unless the cursor is in it already.
  * Otherwise the next touch of the mouse would hand the focus to whatever the
  * cursor was left over (focus_follow()). A binding that changes neither (a
  * program started, a window asked to close) leaves the cursor alone.
  */
-static void binding_run(struct tw_server *server, const struct tw_binding *binding) {
+static void binding_run(struct tw_server *server, tw_action action, const union tw_arg *arg) {
 	struct tw_window *before_window = NULL, *window = NULL;
 	struct wlr_box before = {0}, box;
 	bool had = strip_focus_box(server, &before_window, &before);
-	binding->action(server, &binding->arg);
+	action(server, arg);
 	struct wlr_seat *seat = server->seat;
 	/* Not while the mouse is busy: a button held, a window carried, a
 	 * pointer lock that a key left in place (a column narrowed under a
@@ -89,6 +89,22 @@ static void binding_run(struct tw_server *server, const struct tw_binding *bindi
 	}
 	wlr_cursor_warp(server->cursor, NULL, box.x + box.width / 2.0, box.y + box.height / 2.0);
 	pointer_refocus(server);
+}
+
+/*
+ * Whether a binding's modifiers are the ones held, TW_MOD standing for what
+ * Mod is. Mod+Alt+L when Mod is Alt would be Alt+L, which is Mod+L's: such a
+ * binding does not exist while nested.
+ */
+static bool binding_mods_match(struct tw_server *server, uint32_t binding_mods, uint32_t held) {
+	uint32_t want = binding_mods & ~TW_MOD;
+	if (binding_mods & TW_MOD) {
+		if (want & server->mod) {
+			return false;
+		}
+		want |= server->mod;
+	}
+	return want == held;
 }
 
 static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
@@ -125,17 +141,8 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 	for (int i = 0; i < nsyms; i++) {
 		for (size_t j = 0; j < LENGTH(bindings); j++) {
 			const struct tw_binding *binding = &bindings[j];
-			uint32_t want = binding->mods & ~TW_MOD;
-			if (binding->mods & TW_MOD) {
-				/* Mod+Alt+L when Mod is Alt would be Alt+L, which is
-				 * Mod+L's: such a binding does not exist while nested. */
-				if (want & server->mod) {
-					continue;
-				}
-				want |= server->mod;
-			}
-			if (want == mods && binding->sym == syms[i]) {
-				binding_run(server, binding);
+			if (binding->sym == syms[i] && binding_mods_match(server, binding->mods, mods)) {
+				binding_run(server, binding->action, &binding->arg);
 				return true;
 			}
 		}
@@ -484,7 +491,8 @@ static void focus_follow(struct tw_server *server, struct tw_window *under,
 }
 
 /*
- * The pointer moved: it goes to whatever is under it now. But a held button
+ * The pointer moved: it goes to whatever is under it now, and a strip held
+ * with the mouse (move_begin()) follows it. But a held button
  * keeps it on the surface the press went to, wherever the pointer goes, as
  * long as that surface is drawn: wlroots forgets the buttons of a surface the
  * pointer leaves, so the release would reach nobody, and a selection or a
@@ -494,6 +502,9 @@ static void focus_follow(struct tw_server *server, struct tw_window *under,
  */
 static void pointer_update(struct tw_server *server, uint32_t time_msec,
 		double from_x, double from_y) {
+	if (server->moving_strip && !server->locked) {
+		strip_swipe_update(server, server->cursor->x - from_x, time_msec);
+	}
 	struct wlr_seat *seat = server->seat;
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
@@ -706,40 +717,83 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
 	pointer_update(server, event->time_msec, from_x, from_y);
 }
 
-/* Mod held on the keyboard last used, with no other modifier a binding
- * would count. */
-static bool mod_held(struct tw_server *server) {
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-	return keyboard != NULL &&
-		(wlr_keyboard_get_modifiers(keyboard) & BINDING_MODS) == server->mod;
+/* A mouse button's bit in server->buttons_taken; 0 for one beyond them. */
+static uint32_t button_bit(uint32_t button) {
+	return button >= BTN_MOUSE && button < BTN_MOUSE + 32 ? 1u << (button - BTN_MOUSE) : 0;
 }
 
 /*
- * Mod and the left button pick up the window under the pointer, to be let go
- * on another monitor or beside another column (strip_drop()). The button is
- * tw's: the window's client hears neither its press nor its release. Not
- * while locked, nor during a drag and drop or with another button held,
- * whose release a client is waiting for. Until the button is let go, the
- * pointer is over no window and shows a grabbing hand; nothing moves on
- * screen before then.
+ * The modifiers a mouse binding counts: those held on the keyboard last
+ * used, and Mod while mod_button is held, so that the mouse alone does what
+ * Mod and the mouse do.
  */
-static bool move_begin(struct tw_server *server) {
-	struct wlr_seat *seat = server->seat;
-	if (server->locked || seat->drag != NULL || seat->pointer_state.button_count > 0 ||
-			!mod_held(server)) {
-		return false;
+static uint32_t pointer_mods(struct tw_server *server) {
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	uint32_t mods = keyboard != NULL ? wlr_keyboard_get_modifiers(keyboard) & BINDING_MODS : 0;
+	if (server->buttons_taken & button_bit(mod_button)) {
+		mods |= server->mod;
 	}
+	return mods;
+}
+
+/*
+ * A press focuses the window under the pointer. One on another screen
+ * outside any window (on its empty part, its wallpaper, a notification)
+ * moves the focus there, so that the next window opens on it.
+ */
+static void click_focus(struct tw_server *server) {
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
 	struct tw_window *window = window_at(server,
 		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
-	if (window == NULL) {
+	if (window != NULL) {
+		window_focus(server, window);
+		strip_arrange(server);
+	} else if (!server->locked) {
+		struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
+		if (output != NULL) {
+			strip_focus_output(server, output);
+		}
+	}
+}
+
+/*
+ * Mod and the left button pick up the window under the pointer, to be let go
+ * on another monitor or beside another column (strip_drop()). Mod and the
+ * middle button take hold of the strip under the pointer, which follows the
+ * mouse (pointer_update()) and settles on a column edge when the button is
+ * let go, as after a swipe. The button is tw's: the client under the
+ * pointer hears neither its press nor its release. Not while locked, nor
+ * during a drag and drop or with another button held, whose release a
+ * client is waiting for. Until the button is let go, the pointer is over no
+ * window and shows a grabbing hand; a carried window does not move on
+ * screen before then.
+ */
+static bool move_begin(struct tw_server *server, uint32_t button, uint32_t time_msec) {
+	struct wlr_seat *seat = server->seat;
+	if ((button != BTN_LEFT && button != BTN_MIDDLE) || server->locked || server->moving ||
+			seat->drag != NULL || seat->pointer_state.button_count > 0 ||
+			pointer_mods(server) != server->mod) {
 		return false;
 	}
+	if (button == BTN_LEFT) {
+		double sx, sy;
+		struct wlr_surface *surface = NULL;
+		struct tw_window *window = window_at(server,
+			server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+		if (window == NULL) {
+			return false;
+		}
+		server->moved = window;
+		window_focus(server, window);
+		strip_arrange(server);
+	} else {
+		click_focus(server);
+		strip_swipe_begin(server, time_msec);
+		server->moving_strip = true;
+	}
 	server->moving = true;
-	server->moved = window;
-	window_focus(server, window);
-	strip_arrange(server);
+	server->moving_button = button;
 	/* Leaving the window sets the default cursor (handle_pointer_focus_change()),
 	 * and lets go of a pointer lock the window held. */
 	wlr_seat_pointer_notify_clear_focus(seat);
@@ -747,13 +801,18 @@ static bool move_begin(struct tw_server *server) {
 	return true;
 }
 
-/* The left button is let go: the window goes where the pointer is, unless it
- * closed meanwhile or the session was locked. */
-static void move_end(struct tw_server *server) {
+/* The button is let go: a carried window goes where the pointer is, unless
+ * it closed meanwhile or the session was locked; the strip settles, or
+ * glides back to where it was taken if the session was locked. */
+static void move_end(struct tw_server *server, uint32_t time_msec) {
 	struct tw_window *window = server->moved;
-	server->moving = false;
+	bool strip = server->moving_strip;
+	server->moving = server->moving_strip = false;
+	server->moving_button = 0;
 	server->moved = NULL;
-	if (window != NULL && !server->locked) {
+	if (strip) {
+		strip_swipe_end(server, server->locked, time_msec);
+	} else if (window != NULL && !server->locked) {
 		strip_drop(server, window, server->cursor->x, server->cursor->y);
 	}
 	/* Over nothing the hand would stay; a window sets its own cursor. */
@@ -761,21 +820,58 @@ static void move_end(struct tw_server *server) {
 	pointer_refocus(server);
 }
 
+/*
+ * The buttons that are tw's: mod_button, Mod with the left or middle button,
+ * and button_bindings, which run on what is under the pointer, as a click
+ * would focus it. True if the event is one; the client under the pointer
+ * then hears of neither the press nor its release. mod_button is tw's even
+ * while locked, like Mod's key it has no use for the lock screen; nothing
+ * else is then.
+ */
+static bool button_take(struct tw_server *server, const struct wlr_pointer_button_event *event) {
+	uint32_t bit = button_bit(event->button);
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		bool taken = (server->buttons_taken & bit) != 0;
+		server->buttons_taken &= ~bit;
+		return taken;
+	}
+	if (bit != 0 && event->button == mod_button) {
+		server->buttons_taken |= bit;
+		return true;
+	}
+	if (move_begin(server, event->button, event->time_msec)) {
+		return true;
+	}
+	if (bit == 0 || server->locked || server->moving) {
+		return false;
+	}
+	uint32_t mods = pointer_mods(server);
+	for (size_t i = 0; i < LENGTH(button_bindings); i++) {
+		const struct tw_button_binding *binding = &button_bindings[i];
+		if (binding->button == event->button &&
+				binding_mods_match(server, binding->mods, mods)) {
+			server->buttons_taken |= bit;
+			click_focus(server);
+			binding_run(server, binding->action, &binding->arg);
+			return true;
+		}
+	}
+	return false;
+}
+
 static void handle_cursor_button(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
 
 	idle_activity(server);
-	if (event->button == BTN_LEFT) {
-		if (server->moving) {
-			if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
-				move_end(server);
-			}
-			return;
+	if (server->moving && event->button == server->moving_button) {
+		if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+			move_end(server, event->time_msec);
 		}
-		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && move_begin(server)) {
-			return;
-		}
+		return;
+	}
+	if (button_take(server, event)) {
+		return;
 	}
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
 
@@ -787,29 +883,64 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 		}
 		return;
 	}
+	click_focus(server);
+}
 
-	double sx, sy;
-	struct wlr_surface *surface = NULL;
-	struct tw_window *window = window_at(server,
-		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
-	if (window != NULL) {
-		window_focus(server, window);
-		strip_arrange(server);
-	} else if (!server->locked) {
-		/* A click on another screen outside any window (on its empty
-		 * part, its wallpaper, a notification) moves the focus there,
-		 * so that the next window opens on it. */
-		struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
-		if (output != NULL) {
-			strip_focus_output(server, output);
+/*
+ * The wheel with Mod (scroll_bindings): true if the event is tw's. A wheel
+ * that reports parts of a notch (a high-resolution one) runs the binding
+ * once they add up to one; turning back starts again from nothing. A
+ * binding that ran less than its cooldown ago swallows the notch, so a
+ * wheel spinning freely does not race through the workspaces. Scrolling on
+ * a touchpad has no notches and is never tw's.
+ */
+static bool scroll_take(struct tw_server *server, const struct wlr_pointer_axis_event *event) {
+	if (server->locked || server->moving || event->delta_discrete == 0 ||
+			(event->source != WL_POINTER_AXIS_SOURCE_WHEEL &&
+			event->source != WL_POINTER_AXIS_SOURCE_WHEEL_TILT)) {
+		return false;
+	}
+	bool horizontal = event->orientation == WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+	bool back = event->delta_discrete < 0;
+	enum tw_scroll direction = horizontal ?
+		(back ? TW_SCROLL_LEFT : TW_SCROLL_RIGHT) : (back ? TW_SCROLL_UP : TW_SCROLL_DOWN);
+	uint32_t mods = pointer_mods(server);
+	const struct tw_scroll_binding *binding = NULL;
+	for (size_t i = 0; i < LENGTH(scroll_bindings) && binding == NULL; i++) {
+		if (scroll_bindings[i].direction == direction &&
+				binding_mods_match(server, scroll_bindings[i].mods, mods)) {
+			binding = &scroll_bindings[i];
 		}
 	}
+	int32_t *sum = &server->scroll_sum[horizontal];
+	if (binding == NULL) {
+		*sum = 0;
+		return false;
+	}
+	if ((*sum < 0) != back) {
+		*sum = 0;
+	}
+	*sum += event->delta_discrete;
+	int32_t step = back ? -WLR_POINTER_AXIS_DISCRETE_STEP : WLR_POINTER_AXIS_DISCRETE_STEP;
+	for (; back ? *sum <= step : *sum >= step; *sum -= step) {
+		if (binding == server->scroll_last && binding->cooldown_ms > 0 &&
+				event->time_msec - server->scroll_last_msec < (uint32_t)binding->cooldown_ms) {
+			continue;
+		}
+		server->scroll_last = binding;
+		server->scroll_last_msec = event->time_msec;
+		binding_run(server, binding->action, &binding->arg);
+	}
+	return true;
 }
 
 static void handle_cursor_axis(struct wl_listener *listener, void *data) {
 	struct tw_server *server = wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
 	idle_activity(server);
+	if (scroll_take(server, event)) {
+		return;
+	}
 	wlr_seat_pointer_notify_axis(server->seat, event->time_msec, event->orientation,
 		event->delta, event->delta_discrete, event->source, event->relative_direction);
 }

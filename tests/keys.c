@@ -14,6 +14,10 @@
  *   rel:DX,DY      move the mouse by DX,DY
  *   click          press and release the left button
  *   down, up       press the left button, let it go: a drag in between
+ *   click:B, down:B, up:B  the same with button B, an evdev code (274 is
+ *                  the middle button, 275 and 276 the thumb buttons)
+ *   wheel:N        turn the wheel N notches, down (N < 0: up), in one event
+ *   tilt:N         tilt the wheel N notches right (N < 0: left)
  *   pause:MS       wait, holding what is held, as a hand does; the button
  *                  is let go before this program exits
  *   hold:MODS      hold modifiers down (hold:super, hold:super+ctrl) through
@@ -22,6 +26,7 @@
  *
  * Each action has been handled by tw by the time the next one starts, and
  * all of them by the time this program exits; it fails if tw goes away.
+ * Events carry the time they were sent, in milliseconds, as a device's do.
  */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -30,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -43,6 +49,17 @@ static struct wl_seat *seat;
 static struct zwp_virtual_keyboard_manager_v1 *manager;
 static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 static struct zwlr_virtual_pointer_v1 *pointer; /* made with the first mouse action */
+
+/* The time of an event: the monotonic clock in milliseconds, as libinput's,
+ * and later than the last one. */
+static uint32_t event_time(void) {
+	static uint32_t last;
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	uint32_t ms = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+	last = ms > last ? ms : last + 1;
+	return last;
+}
 
 /* Waits until tw has handled everything sent so far. */
 static void sync_display(struct wl_display *display) {
@@ -66,13 +83,20 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 }
 
 /* Carries out a mouse action; false if `action` is not one. */
-static bool mouse_action(struct wl_display *display, const char *action, uint32_t *time) {
-	int x, y, width, height;
+static bool mouse_action(struct wl_display *display, const char *action) {
+	int x, y, width, height, notches;
+	unsigned button = BTN_LEFT;
+	char name[8] = "";
 	bool move = sscanf(action, "move:%d,%d:%d,%d", &x, &y, &width, &height) == 4;
 	bool rel = !move && sscanf(action, "rel:%d,%d", &x, &y) == 2;
-	bool click = strcmp(action, "click") == 0;
-	bool down = strcmp(action, "down") == 0, up = strcmp(action, "up") == 0;
-	if (!move && !rel && !click && !down && !up) {
+	bool wheel = sscanf(action, "wheel:%d", &notches) == 1;
+	bool tilt = sscanf(action, "tilt:%d", &notches) == 1;
+	if (sscanf(action, "%7[a-z]:%u", name, &button) != 2) {
+		snprintf(name, sizeof(name), "%s", action);
+	}
+	bool click = strcmp(name, "click") == 0;
+	bool down = strcmp(name, "down") == 0, up = strcmp(name, "up") == 0;
+	if (!move && !rel && !wheel && !tilt && !click && !down && !up) {
 		return false;
 	}
 	if (pointer_manager == NULL) {
@@ -83,21 +107,27 @@ static bool mouse_action(struct wl_display *display, const char *action, uint32_
 		pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(pointer_manager, seat);
 	}
 	if (move) {
-		zwlr_virtual_pointer_v1_motion_absolute(pointer, (*time)++, (uint32_t)x, (uint32_t)y,
+		zwlr_virtual_pointer_v1_motion_absolute(pointer, event_time(), (uint32_t)x, (uint32_t)y,
 			(uint32_t)width, (uint32_t)height);
 	} else if (rel) {
-		zwlr_virtual_pointer_v1_motion(pointer, (*time)++,
+		zwlr_virtual_pointer_v1_motion(pointer, event_time(),
 			wl_fixed_from_int(x), wl_fixed_from_int(y));
+	} else if (wheel || tilt) {
+		/* What libinput makes of a wheel: 15 pixels a notch. */
+		zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
+		zwlr_virtual_pointer_v1_axis_discrete(pointer, event_time(),
+			tilt ? WL_POINTER_AXIS_HORIZONTAL_SCROLL : WL_POINTER_AXIS_VERTICAL_SCROLL,
+			wl_fixed_from_int(15 * notches), notches);
 	} else {
 		if (click || down) {
-			zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+			zwlr_virtual_pointer_v1_button(pointer, event_time(), button,
 				WL_POINTER_BUTTON_STATE_PRESSED);
 		}
 		if (click) {
 			zwlr_virtual_pointer_v1_frame(pointer);
 		}
 		if (click || up) {
-			zwlr_virtual_pointer_v1_button(pointer, (*time)++, BTN_LEFT,
+			zwlr_virtual_pointer_v1_button(pointer, event_time(), button,
 				WL_POINTER_BUTTON_STATE_RELEASED);
 		}
 	}
@@ -183,9 +213,8 @@ int main(int argc, char *argv[]) {
 	free(keymap_string);
 	sync_display(display);
 
-	uint32_t time = 1;
 	for (int i = 1; i < argc; i++) {
-		if (mouse_action(display, argv[i], &time)) {
+		if (mouse_action(display, argv[i])) {
 			continue;
 		}
 		int ms;
@@ -233,8 +262,8 @@ int main(int argc, char *argv[]) {
 
 		/* Wayland key codes are XKB key codes minus 8. */
 		zwp_virtual_keyboard_v1_modifiers(keyboard, mods, 0, 0, 0);
-		zwp_virtual_keyboard_v1_key(keyboard, time++, code - 8, WL_KEYBOARD_KEY_STATE_PRESSED);
-		zwp_virtual_keyboard_v1_key(keyboard, time++, code - 8, WL_KEYBOARD_KEY_STATE_RELEASED);
+		zwp_virtual_keyboard_v1_key(keyboard, event_time(), code - 8, WL_KEYBOARD_KEY_STATE_PRESSED);
+		zwp_virtual_keyboard_v1_key(keyboard, event_time(), code - 8, WL_KEYBOARD_KEY_STATE_RELEASED);
 		zwp_virtual_keyboard_v1_modifiers(keyboard, 0, 0, 0, 0);
 		sync_display(display);
 		free(combo);
