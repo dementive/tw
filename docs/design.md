@@ -1398,7 +1398,9 @@ with a boot-keyboard interface (HID class 03, subclass 01, protocol 01) in
 udev's `ID_USB_INTERFACES`. It sleeps two seconds after the last key (the
 kernel's default delay), and the next key wakes it and is not lost. A
 keyboard or mouse plugged in is left alone: such devices are not all able to
-wake by themselves.
+wake by themselves, and the two the owner uses (a Corsair K70 and a
+Logitech G502) wake but lose the key or movement that woke them
+([g615lm.md](g615lm.md#battery)).
 
 What it breaks: on both ASUS laptops the keyboard's light is set through
 the kernel (`asus::kbd_backlight`), whose `hid-asus` driver sends the level

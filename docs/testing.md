@@ -307,7 +307,8 @@ NVIDIA GPU off, two sleeps by `rtcwake -m freeze` came back, one by the
 clock after 2 minutes and one by a key after 12 s, with the screen, the
 USB root disk and Wi-Fi ([g533zw.md](g533zw.md#sleep)). Not seen yet: tw's
 own idle suspend, the lid, and a wake-up told from the clocks. The G615LM
-has not been suspended yet ([g615lm.md](g615lm.md#sleep)).
+slept by `systemctl suspend` and woke by a key, with the NVIDIA GPU awake
+for a monitor ([g615lm.md](g615lm.md#sleep)).
 
 The real runs found faults the made-up machines had not, and each is in a
 test now: the GPU switched off at the first login before the login screen

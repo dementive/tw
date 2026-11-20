@@ -61,8 +61,9 @@ static const struct tw_machine machines[] = {
 			 * NVIDIA GPU; not tried. */
 			{"eDP-2",   1.25f,  AUTO, AUTO},
 		},
-		/* Not suspended by hand yet. */
-		.suspend_after_seconds = 0,
+		/* Seen to sleep and wake by a key on 2026-11-20, the NVIDIA GPU
+		 * awake for a monitor. See docs/g615lm.md. */
+		.suspend_after_seconds = 1800,
 		.battery_suspend_percent = 0,
 	},
 	{
