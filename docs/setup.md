@@ -345,7 +345,26 @@ Press a key or the power button. If the machine comes back with its screen
 and its network, give its entry in `src/machines.h` a time and a charge
 (`suspend_after_seconds = 900`, `battery_suspend_percent = 5`), build and
 install. A long job run as `systemd-inhibit --what=sleep <command>` holds
-the idle suspend off.
+the idle suspend off; a refused attempt is tried again one period later, so
+the machine sleeps up to one period after the job ends. Closing the lid
+suspends at once whatever holds it off (systemd's default), unless a monitor
+is plugged in; tw locks the session as the lid closes.
+
+Claude Code holds nothing off by itself on Linux (it does on macOS), so a
+long run left alone would be suspended in the middle. Three more hooks in
+`~/.claude/settings.json` hold a sleep inhibitor from the prompt to the end
+of the answer; it also goes when that Claude Code exits, however it exits:
+
+```json
+"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "f=\"$XDG_RUNTIME_DIR/claude-awake.$PPID\"; [ -e \"$f\" ] || setsid -f sh -c 'echo $$ >\"$1\"; exec systemd-inhibit --what=sleep --who=\"Claude Code\" --why=\"Working\" waitpid \"$2\"' - \"$f\" \"$PPID\" </dev/null >/dev/null 2>&1; true"}]}],
+"SessionEnd": [{"hooks": [{"type": "command", "command": "f=\"$XDG_RUNTIME_DIR/claude-awake.$PPID\"; [ -e \"$f\" ] && kill -- -\"$(cat \"$f\")\" 2>/dev/null; rm -f \"$f\"; true"}]}]
+```
+
+and the `SessionEnd` command once more as a second hook under `Stop`. An
+answer stopped with Esc runs no `Stop` hook, so the inhibitor then stays
+until the next answer ends or Claude Code exits. `systemd-inhibit --list`
+shows it. Costs: two sleeping processes per working session, no wakeups
+(`waitpid` waits on a pidfd).
 
 If it does not come back, leave both at 0 and take sleep away from the two
 things outside tw that still lead there: closing the lid (systemd does
