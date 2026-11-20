@@ -58,6 +58,7 @@ static struct wp_viewport *viewport;
 static struct wp_fractional_scale_v1 *fractional;
 static struct wl_buffer *buffer;
 static bool configured, dirty, running;
+static bool closed; /* the compositor closed the box; acted on after the dispatch */
 static uint32_t scale = 120; /* of the screen the box is on, in 120ths */
 static uint32_t last_serial; /* of the last key or click */
 static int timer_fd = -1, repeat_fd = -1;
@@ -144,13 +145,15 @@ static void box_close(void) {
 	configured = false;
 }
 
+/*
+ * The screen it was on went away. Acted on once every event read with this
+ * one has been handled: events about the box's surface come in the same
+ * batch (the keyboard and the pointer leaving it), and libwayland (1.26)
+ * loses a reference to a surface destroyed while an event naming it waits
+ * in the queue, so that the surface is never freed.
+ */
 static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
-	/* The screen it was on went away. */
-	if (app->closed != NULL) {
-		app->closed();
-	} else {
-		running = false;
-	}
+	closed = true;
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_listener = {
@@ -529,6 +532,14 @@ void box_run(void) {
 		}
 		if (fds[0].revents != 0 && wl_display_dispatch(display) < 0) {
 			break;
+		}
+		if (closed) {
+			closed = false;
+			if (app->closed != NULL) {
+				app->closed();
+			} else {
+				running = false;
+			}
 		}
 		uint64_t fired;
 		if ((fds[1].revents & POLLIN) != 0 &&
