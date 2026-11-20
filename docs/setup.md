@@ -146,7 +146,7 @@ without the hardware it is about.
 | `tw-gpu` | keeps a laptop's NVIDIA GPU off until a program needs it | below |
 | `tw-bluetooth` | keeps Bluetooth off until asked for | below |
 | Thunderbolt rule | lets a dock in without boltd | below |
-| `tw-power` | power-saver profile on battery, balanced on mains | `tw-power` says which is set |
+| `tw-power` | power-saver profile on battery, balanced on mains; plugged-in keyboards and mice asleep while the screen is off | `tw-power` says which profile is set |
 | `tw-notify` | shows notifications, and runs only while one shows | `notify-send Hello there` |
 | Keyboard rule | lets a laptop's built-in USB keyboard sleep two seconds after the last key | nothing to do |
 | Power key | a short press does nothing; hold it for five seconds, or type `systemctl poweroff`, to power off | a short press leaves everything running |
@@ -312,6 +312,13 @@ tw sets a profile only on a machine with a battery: as it starts, and as
 the power cable goes in or out. `tw-power performance` (or `balanced`,
 `saver`) sets one by hand, on any machine, until the cable next moves or
 tw next starts.
+
+As the screen goes off, `tw-power away` lets a USB keyboard or mouse that
+is plugged in sleep, and `tw-power back` wakes it as the screen comes on.
+While the screen is off, wake it with a key twice, or a click and a move:
+some (a Corsair K70, a Logitech G502) lose the input that wakes them. An
+install over an earlier tw needs its polkit rule, which lets the two run
+without a password; nothing else is to be done.
 
 `tw-notify`'s entry is in `/usr/local`, which D-Bus reads before `/usr`, so
 it is the one used from the next login even while another service is still

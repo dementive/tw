@@ -37,6 +37,23 @@ struct wlr_xdg_popup;
 struct wlr_xdg_toplevel;
 struct wlr_xdg_toplevel_decoration_v1;
 
+/*
+ * Two commands for a state that comes and goes, such as the power cable or
+ * the screen: commands[1] for when it holds, commands[0] for when it does
+ * not (main.c). One runs at a time, as a child tw watches through a pidfd:
+ * two started at once would race, and the one that lost could be the one
+ * for the state that holds. When one exits and the state has changed since,
+ * the command for the state now runs.
+ */
+struct tw_runner {
+	struct tw_server *server;
+	bool (*state)(const struct tw_server *server);
+	const char *commands[2];
+	pid_t pid;
+	struct wl_event_source *exit; /* while a command runs */
+	bool ran;                     /* the state the running command is for */
+};
+
 /* One scrolling strip, one of a monitor's nine (tw_desk). It is on screen
  * while that monitor's output shows it. */
 struct tw_workspace {
@@ -389,6 +406,7 @@ struct tw_server {
 	int64_t woken_ms; /* when a notification last turned the screen on */
 	int64_t lit_check_ms; /* when input last looked for an output left dark */
 	bool blanked; /* outputs are powered off */
+	struct tw_runner screen_commands; /* screen_off_command, screen_on_command */
 	bool idle_inhibited; /* a visible surface asked to keep the screen on */
 
 	/* lock.c */
@@ -514,6 +532,11 @@ bool program_installed(const char *command);
 /* spawn(), unless the command is "" or its program is not installed, which
  * is logged. True if it was started. For the commands in config.h. */
 bool spawn_installed(const char *cmd);
+/* Runs the runner's command for its state now, unless one is running (that
+ * one's exit runs the next) or the command is "" or not installed. */
+void runner_run(struct tw_runner *runner);
+/* Stops watching a command still running; it finishes on its own. */
+void runner_finish(struct tw_runner *runner);
 void action_spawn(struct tw_server *server, const union tw_arg *arg);
 void action_quit(struct tw_server *server, const union tw_arg *arg);
 

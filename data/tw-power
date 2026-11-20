@@ -6,15 +6,19 @@
 #   tw-power balanced      what tw sets on mains
 #   tw-power performance   everything the machine has, fans included
 #   tw-power               say which is set
+#   tw-power away          let the keyboards and mice plugged in sleep
+#   tw-power back          wake those that away let sleep
 #
 # tw sets saver or balanced whenever the power cable goes in or out
 # (battery_command and mains_command in config.h), so a profile set by hand
-# lasts until the cable next moves. Setting one takes root, so that part is
-# done by the system unit tw-power@.service, which a polkit rule lets you
-# start.
+# lasts until the cable next moves. It runs away as the screen goes off and
+# back as it comes on (screen_off_command and screen_on_command). Each takes
+# root, so that part is done by the system unit tw-power@.service, which a
+# polkit rule lets you start.
 set -u
 
-sys=${TW_SYS:-/sys} # the tests point this at a made-up machine
+sys=${TW_SYS:-/sys} # the tests point these at a made-up machine
+run=${TW_RUN:-/run}
 
 usage() {
 	sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
@@ -22,9 +26,17 @@ usage() {
 }
 
 case ${1:-status} in
-saver | balanced | performance)
+back | saver | balanced | performance | away)
+	# The root helper lists what away let sleep; with no list, nothing is
+	# asleep and no unit need start.
+	[ "$1" != back ] || [ -e "$run/tw-power-away" ] || exit 0
+	case $1 in
+	away) what="let the keyboards and mice sleep" ;;
+	back) what="wake the keyboards and mice" ;;
+	*) what="set the profile" ;;
+	esac
 	if ! systemctl start "tw-power@$1.service"; then
-		echo "tw-power: could not set the profile. Why: journalctl -b -u tw-power@$1.service" >&2
+		echo "tw-power: could not $what. Why: journalctl -b -u tw-power@$1.service" >&2
 		exit 1
 	fi
 	;;

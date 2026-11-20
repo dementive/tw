@@ -124,7 +124,7 @@ supply ADP0 type=Mains online=0
 fake_program tw-power "exit 1"
 start_tw -d
 wait_until "tw to say the command failed" \
-	grep -q 'the power profile command for battery failed' "$run_dir/tw.log"
+	grep -q 'failed: tw-power saver' "$run_dir/tw.log"
 stop_tw
 
 # One still running as tw stops is left to finish, and tw stops cleanly.

@@ -974,6 +974,25 @@ env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN=
 [ "$status" = 5 ] || fail "tw-session exited with $status, not with tw's status"
 [ "$(cat "$tmp/took-back-at-exit" 2>/dev/null)" = "--user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP NO_AT_BRIDGE GTK_A11Y DISPLAY" ] ||
 	fail "tw-session ended by a signal did not take back the session: $(cat "$tmp/took-back-at-exit" 2>/dev/null)"
+# A tw that ended so with the screen off left the keyboards and mice let
+# sleep (tw-power away lists them): tw-session wakes them. With no list it
+# runs nothing, as in every session above.
+mkdir -p "$tmp/away-run"
+: >"$tmp/away-run/tw-power-away"
+cat >"$tmp/exit-bin/tw-power" <<EOF
+#!/bin/sh
+echo "\$*" >>'$tmp/woke'
+EOF
+chmod +x "$tmp/exit-bin/tw-power"
+env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/away-run" \
+	sh "$tmp/signal/tw-session" >/dev/null 2>&1 || true
+[ "$(cat "$tmp/woke" 2>/dev/null)" = back ] ||
+	fail "tw-session did not wake the keyboards and mice a tw ended by a signal let sleep: $(cat "$tmp/woke" 2>/dev/null)"
+rm -f "$tmp/woke" "$tmp/away-run/tw-power-away"
+env -i PATH="$tmp/exit-bin:$PATH" HOME="$tmp/home" TW_SYS="$tmp/nothing" TW_RUN="$tmp/away-run" \
+	sh "$tmp/signal/tw-session" >/dev/null 2>&1 || true
+[ ! -e "$tmp/woke" ] || fail "tw-session ran tw-power back with nothing asleep"
+rm "$tmp/exit-bin/tw-power"
 
 # The NVIDIA GPU switched off and every GPU asked for, as the session runs:
 # tw-gpu brings it back before tw starts, and leaves it on since tw opens it.

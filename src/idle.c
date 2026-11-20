@@ -15,6 +15,10 @@
  * suspend is still to come. While inhibited the timer fires at most once
  * more and is not set again until the inhibitor lets go, and while the user
  * is on another VT it is not set at all.
+ *
+ * As the screen goes off and comes back on, a command runs
+ * (screen_off_command, screen_on_command): tw-power lets the keyboards and
+ * mice plugged in sleep meanwhile. One process each time.
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -114,12 +118,17 @@ static void outputs_power(struct tw_server *server, bool on) {
 	}
 }
 
+static bool screen_off(const struct tw_server *server) {
+	return server->blanked;
+}
+
 static void set_blanked(struct tw_server *server, bool blanked) {
 	if (server->blanked == blanked) {
 		return;
 	}
 	server->blanked = blanked;
 	outputs_power(server, !blanked);
+	runner_run(&server->screen_commands);
 
 	/* Suspends every window while the screen is off, resumes them after. */
 	strip_arrange(server);
@@ -330,6 +339,15 @@ void idle_init(struct tw_server *server) {
 		wlr_log(WLR_INFO, "not locking when idle: not installed: %s", locker);
 		server->lock_after_ms = 0;
 	}
+	/* Only a tw that runs the machine: one inside another session or on the
+	 * headless backend would put the real machine's keyboards to sleep. The
+	 * tests say otherwise by pointing TW_SYS at a made-up machine. */
+	bool machine = server->session != NULL || getenv("TW_SYS") != NULL;
+	server->screen_commands = (struct tw_runner){
+		.server = server,
+		.state = screen_off,
+		.commands = {machine ? screen_on_command : "", machine ? screen_off_command : ""},
+	};
 	server->idle_timer = wl_event_loop_add_timer(server->loop, handle_idle_timer, server);
 	if (server->idle_timer == NULL) {
 		wlr_log(WLR_ERROR, "cannot time idleness: the screen will not blank, "
@@ -352,6 +370,7 @@ void idle_init(struct tw_server *server) {
 }
 
 void idle_finish(struct tw_server *server) {
+	runner_finish(&server->screen_commands);
 	wl_list_remove(&server->new_idle_inhibitor.link);
 	if (server->session != NULL) {
 		wl_list_remove(&server->session_active.link);

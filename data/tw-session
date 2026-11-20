@@ -253,4 +253,10 @@ status=$?
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl --user unset-environment $service_env DISPLAY 2>/dev/null
 fi
+# A tw that ended while the screen was off, by a crash or a signal, left the
+# keyboards and mice let sleep (tw-power away), and they may lose keys as they
+# wake: wake them for good.
+if [ -e "$run/tw-power-away" ] && command -v tw-power >/dev/null 2>&1; then
+	tw-power back 2>/dev/null
+fi
 exit $status

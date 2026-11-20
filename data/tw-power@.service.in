@@ -1,11 +1,12 @@
 # tw-power@saver.service, tw-power@balanced.service and
-# tw-power@performance.service set the machine's power profile. Started by
-# tw-power; tw-power.rules lets the person at the computer do that without a
-# password.
+# tw-power@performance.service set the machine's power profile;
+# tw-power@away.service lets the keyboards and mice plugged in sleep, and
+# tw-power@back.service wakes them. Started by tw-power; tw-power.rules lets
+# the person at the computer do that without a password.
 [Unit]
-Description=Power profile: %i (tw-power)
-# Started at every move of the power cable, and a loose one moves often:
-# never refused for starting too often.
+Description=tw-power %i
+# Started at every move of the power cable, and a loose one moves often, and
+# each time the screen goes off or on: never refused for starting too often.
 StartLimitIntervalSec=0
 
 [Service]

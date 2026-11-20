@@ -76,7 +76,7 @@ expect_settings() { # <description> <settings>
 
 # tw-power as tw or the person at the computer runs it; what it prints is kept.
 power() {
-	PATH="$bin:$PATH" TW_SYS="$sys" "$data/tw-power" "$@" >"$tmp/out" 2>&1
+	PATH="$bin:$PATH" TW_SYS="$sys" TW_RUN="$tmp" "$data/tw-power" "$@" >"$tmp/out" 2>&1
 }
 
 # --- The three profiles -------------------------------------------------------
@@ -216,9 +216,76 @@ TW_SYS="$sys" TW_RUN="$tmp" "$data/tw-power-root" frugal 2>/dev/null || status=$
 [ "$status" = 2 ] || fail "the helper exits with $status on an unknown word"
 expect_settings "an unknown profile" "balanced balance_performance, 6,"
 
+# --- Keyboards and mice, while the screen is off -------------------------------
+usb=$sys/bus/usb/devices
+# device <name> <removable> <bmAttributes> <control> <interfaces...>: a USB
+# device as the kernel lists it, each interface as class, subclass and
+# protocol in one (030101 is a boot keyboard).
+device() {
+	name=$1 removable=$2 attributes=$3 control=$4
+	shift 4
+	mkdir -p "$usb/$name/power"
+	echo "$removable" >"$usb/$name/removable"
+	echo "$attributes" >"$usb/$name/bmAttributes"
+	echo "$control" >"$usb/$name/power/control"
+	n=0
+	for interface in "$@"; do
+		mkdir -p "$usb/$name/$name:1.$n"
+		echo "$interface" | cut -c1-2 >"$usb/$name/$name:1.$n/bInterfaceClass"
+		echo "$interface" | cut -c3-4 >"$usb/$name/$name:1.$n/bInterfaceSubClass"
+		echo "$interface" | cut -c5-6 >"$usb/$name/$name:1.$n/bInterfaceProtocol"
+		n=$((n + 1))
+	done
+}
+control() { cat "$usb/$1/power/control"; } # <name>
+desk() { # the G615LM's devices on a desk: what may sleep and what may not
+	machine
+	rm -f "$tmp/tw-power-away"
+	device 3-7 removable a0 on 030101 030000 030000 # a K70: keyboard
+	device 3-6 removable a0 on 030102 030000        # a G502: mouse
+	device 3-4 fixed a0 auto 030101 030102           # the laptop's own keyboard
+	device 3-5 fixed 80 on 0e0100 0e0200            # its webcam
+	device 2-1 removable 80 on 080662               # the USB system disk
+	device 3-9 removable 80 on 030101               # a keyboard that cannot wake the machine
+	device 3-8 removable a0 on 030000 010100        # a headset's volume buttons
+	device 3-10 removable a0 auto 030102            # a mouse somebody let sleep by hand
+}
+desk
+power away || fail "away failed"
+[ "$(control 3-7) $(control 3-6)" = "auto auto" ] || fail "away did not let the keyboard and mouse sleep"
+[ "$(control 3-4) $(control 3-5) $(control 2-1) $(control 3-9) $(control 3-8)" = "auto on on on on" ] ||
+	fail "away touched a device it should leave alone"
+[ ! -s "$tmp/out" ] || fail "away printed something"
+power back || fail "back failed"
+[ "$(control 3-7) $(control 3-6)" = "on on" ] || fail "back did not wake the keyboard and mouse"
+[ "$(control 3-10)" = auto ] || fail "back woke a mouse that away had not let sleep"
+[ ! -e "$tmp/tw-power-away" ] || fail "back left the list of what away let sleep"
+# With nothing asleep, back starts no unit, as at each screen-on after it.
+: >"$log"
+power back || fail "back failed with nothing asleep"
+! grep -q 'start tw-power@' "$log" || fail "back started its unit with nothing asleep"
+# With nothing to let sleep, away leaves no list, so back starts nothing.
+machine
+rm -f "$tmp/tw-power-away"
+device 3-4 fixed a0 auto 030101
+power away || fail "away failed with nothing plugged in"
+[ ! -e "$tmp/tw-power-away" ] || fail "away left a list with nothing let sleep"
+# A device plugged out while asleep is gone at back; the rest still wake.
+desk
+power away
+rm -rf "${usb:?}/3-6"
+power back || fail "back failed with a device gone"
+[ "$(control 3-7)" = on ] || fail "back stopped at a device that is gone"
+# Refused: says so.
+desk
+: >"$tmp/denied"
+power away && fail "away reported success although the unit was refused"
+said 'could not let the keyboards and mice sleep' || fail "a refused away does not say so"
+rm "$tmp/denied"
+
 # --- The files that go with them ----------------------------------------------
 # These name each other, and nothing else checks that they agree.
-for word in saver balanced performance; do
+for word in saver balanced performance away back; do
 	grep -q "\"tw-power@$word.service\"" "$data/tw-power.rules" ||
 		fail "the polkit rule does not allow the unit for '$word'"
 	grep -q "^$word)" "$data/tw-power-root" || fail "the helper does not know '$word'"
@@ -228,5 +295,8 @@ grep -q 'systemctl start "tw-power@$1.service"' "$data/tw-power" ||
 grep -q '^static const char battery_command\[\] = "tw-power saver";$' "$data/../src/config.h" &&
 	grep -q '^static const char mains_command\[\] = "tw-power balanced";$' "$data/../src/config.h" ||
 	fail "config.h no longer has tw set its profiles with tw-power"
+grep -q '^static const char screen_off_command\[\] = "tw-power away";$' "$data/../src/config.h" &&
+	grep -q '^static const char screen_on_command\[\] = "tw-power back";$' "$data/../src/config.h" ||
+	fail "config.h no longer has tw run tw-power away and back with the screen"
 
-echo "ok: the three profiles, machines that lack a setting, nothing written twice, one at a time, refusals"
+echo "ok: the three profiles, machines that lack a setting, nothing written twice, one at a time, refusals, keyboards and mice asleep and awake"

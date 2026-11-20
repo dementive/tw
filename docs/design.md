@@ -457,7 +457,7 @@ its first frame on.
 **Idle** (`idle.c`). Three steps, each after its own time without input:
 the outputs go off (`blank_after_seconds`, 120), the session locks
 (`lock_after_seconds`, 900) and the machine is suspended (the machine's
-`suspend_after_seconds`: 1800 on the G533ZW, 0 on the G615LM). Blanking is only
+`suspend_after_seconds`: 1800 on both laptops). Blanking is only
 that: nothing is locked, programs go on working, and any input brings the
 screen back. The screen is 2.4 W of an idle laptop's 6.4
 ([g533zw.md](g533zw.md#the-screen-and-what-a-frame-costs)), so it goes off
@@ -483,6 +483,35 @@ dark screen. The client under the pointer gets it back as the outputs come
 on. Input and an
 inhibitor letting go restart the clock the same way (`idle_clock_restart()`),
 failed suspend attempts included.
+
+**Keyboards and mice asleep while the screen is off.** As the screen goes
+off tw runs `screen_off_command` (`tw-power away`), and as it comes back
+on `screen_on_command` (`tw-power back`). `away` lets a USB keyboard or
+mouse that is plugged in sleep, as the laptop's own keyboard always may
+([The built-in keyboard](#the-built-in-keyboard)): awake, one polled every
+millisecond keeps the processor out of its deepest sleep, and a Corsair K70
+and a Logitech G502 cost the G615LM 1.6 W at idle that way
+([g615lm.md](g615lm.md#battery)). Only while the screen is off, because
+those two do not wake cleanly: the K70 disconnects itself as it wakes and
+loses what is typed in the next 0.6 s, and the G502 wakes on a click and
+not on a move. While nobody is looking, that is only the key that would
+have turned the screen on, and a monitor takes as long to come out of
+standby. So the first key on such a keyboard is lost and the second turns
+the screen on, and a mouse needs a click and then a move. The laptop's own
+keyboard and touchpad work as before. `back` wakes them all as the screen
+comes on, by input or by a notification, so they are awake before they are
+reached for.
+
+Which devices, and the root helper behind it, are under
+[Power profiles](#power-profiles-tw-power). The two commands run through
+the same runner as the power profile's (`runner_run()` in `main.c`): one at
+a time, and a screen that comes back on while `away` still runs gets `back`
+after it. Each costs a process as the screen goes off or on, and `away`
+starts a unit then; `back` starts one only if `away` let something sleep. A
+tw that ends with the screen off, by a crash or a signal, leaves them
+asleep; `tw-session` runs `tw-power back` after it if so. Only a tw that
+runs the machine runs either command: one inside another session would put
+the real machine's keyboards to sleep.
 
 While the user is on another VT, tw gets no input and wlroots has taken its
 outputs away, so the clock stops (`session->events.active`): nothing blanks,
@@ -1374,6 +1403,20 @@ and out starts them many times. A
 machine that lacks one of the settings is not given it, and a setting that
 already reads as wanted is not written.
 
+`tw-power away` and `tw-power back` go through the same helper and lock,
+for the keyboards and mice while the screen is off
+([Screen off and lock](#screen-off-and-lock)). `away` lets sleep
+(`power/control` `auto`) each USB device that the firmware does not call
+built in (`removable` is not `fixed`: the laptop's own keyboard is
+`tw-keyboard.rules`' and always may), that can wake the machine (bit 5 of
+`bmAttributes`), that is kept awake now (`power/control` `on`), and that
+has a boot keyboard or boot mouse interface (HID class 03, subclass 01,
+protocol 01 or 02). It lists each in `/run/tw-power-away`, and `back`
+wakes only those, and only when the list is there; `tw-power back` starts
+no unit without it. So a device somebody let sleep by hand stays so, a
+headset's volume buttons are left alone, and a device plugged in while the
+screen is off is awake already.
+
 ## Thunderbolt
 
 Thunderbolt devices are let in by a udev rule (`tw-thunderbolt.rules`, the
@@ -1397,10 +1440,10 @@ for a keyboard that is built in: one on a port the firmware calls `fixed`,
 with a boot-keyboard interface (HID class 03, subclass 01, protocol 01) in
 udev's `ID_USB_INTERFACES`. It sleeps two seconds after the last key (the
 kernel's default delay), and the next key wakes it and is not lost. A
-keyboard or mouse plugged in is left alone: such devices are not all able to
-wake by themselves, and the two the owner uses (a Corsair K70 and a
-Logitech G502) wake but lose the key or movement that woke them
-([g615lm.md](g615lm.md#battery)).
+keyboard or mouse plugged in is left awake while the screen is on: the two
+the owner uses (a Corsair K70 and a Logitech G502) lose input as they wake
+([g615lm.md](g615lm.md#battery)). tw lets them sleep while the screen is
+off instead ([Screen off and lock](#screen-off-and-lock)).
 
 What it breaks: on both ASUS laptops the keyboard's light is set through
 the kernel (`asus::kbd_backlight`), whose `hid-asus` driver sends the level

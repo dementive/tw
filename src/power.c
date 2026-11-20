@@ -12,15 +12,12 @@
  * looks at the supplies again and acts if the answer changed.
  */
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <libudev.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
 
@@ -32,10 +29,7 @@ struct tw_power {
 	struct udev_monitor *monitor;
 	struct wl_event_source *source;
 	struct tw_battery battery;
-	/* The power profile command while it runs, and the state it is for. */
-	pid_t profile_pid;
-	struct wl_event_source *profile_exit;
-	bool profile_on_battery;
+	struct tw_runner profile; /* mains_command, battery_command */
 	int64_t asleep_ms; /* how long the machine had slept at the last look */
 	char dir[];        /* where the kernel lists the power supplies */
 };
@@ -105,76 +99,15 @@ static struct tw_supplies supplies_read(const char *dir) {
 	return now;
 }
 
-static void profile_run(struct tw_server *server);
-
-static int handle_profile_exit(int fd, uint32_t mask, void *data) {
-	struct tw_server *server = data;
-	struct tw_power *power = server->power;
-	int status = 0;
-	while (waitpid(power->profile_pid, &status, 0) < 0 && errno == EINTR) {
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		wlr_log(WLR_ERROR, "the power profile command for %s failed",
-			power->profile_on_battery ? "battery" : "mains");
-	}
-	wl_event_source_remove(power->profile_exit);
-	power->profile_exit = NULL;
-	/* The cable moved while it ran: what holds now is what is set last. */
-	if (power->profile_on_battery != server->on_battery) {
-		profile_run(server);
-	}
-	return 0;
-}
-
-/*
- * Runs the power profile command for server->on_battery. One at a time: a
- * cable that moves twice at once (a loose plug, a USB-C charger agreeing on
- * its power) would otherwise start two that race, and the one that lost could
- * be the one that holds. So while one runs, the next waits for it and is the
- * one for the state at that moment. tw learns of its exit through a pidfd,
- * which exists only while the command runs.
- */
-static void profile_run(struct tw_server *server) {
-	struct tw_power *power = server->power;
-	if (power->profile_exit != NULL) {
-		return; /* handle_profile_exit() runs the next one */
-	}
-	const char *cmd = server->on_battery ? battery_command : mains_command;
-	if (cmd[0] == '\0') {
-		return;
-	}
-	if (!program_installed(cmd)) {
-		wlr_log(WLR_INFO, "not installed: %s", cmd);
-		return;
-	}
-	pid_t pid = fork();
-	if (pid < 0) {
-		wlr_log_errno(WLR_ERROR, "fork failed");
-		return;
-	}
-	if (pid == 0) {
-		child_reset();
-		setsid();
-		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-		_exit(127);
-	}
-	struct wl_event_source *source = child_watch(server, pid,
-		handle_profile_exit, server);
-	if (source == NULL) {
-		/* It was stopped: the command runs unordered instead. */
-		spawn(cmd);
-		return;
-	}
-	power->profile_pid = pid;
-	power->profile_exit = source;
-	power->profile_on_battery = server->on_battery;
+static bool on_battery(const struct tw_server *server) {
+	return server->on_battery;
 }
 
 /* Brings the outputs and the machine in line with server->on_battery. */
 static void apply(struct tw_server *server) {
 	wlr_log(WLR_INFO, "running on %s", server->on_battery ? "battery" : "mains");
 	outputs_update_mode(server);
-	profile_run(server);
+	runner_run(&server->power->profile);
 }
 
 static int handle_change(int fd, uint32_t mask, void *data) {
@@ -237,6 +170,11 @@ void power_init(struct tw_server *server) {
 		return;
 	}
 	strcpy(power->dir, dir);
+	power->profile = (struct tw_runner){
+		.server = server,
+		.state = on_battery,
+		.commands = {mains_command, battery_command},
+	};
 	server->power = power;
 
 	/* What the kernel announces is about the real machine, not a made-up
@@ -276,10 +214,7 @@ void power_finish(struct tw_server *server) {
 	if (power->source != NULL) {
 		wl_event_source_remove(power->source);
 	}
-	/* A profile command still running finishes on its own; init reaps it. */
-	if (power->profile_exit != NULL) {
-		wl_event_source_remove(power->profile_exit);
-	}
+	runner_finish(&power->profile);
 	if (power->monitor != NULL) {
 		udev_monitor_unref(power->monitor);
 	}

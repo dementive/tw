@@ -97,6 +97,20 @@ static const int swipe_workspace_distance = 60;
 static const int blank_after_seconds = 120;
 
 /*
+ * Run as the screen goes off, and as it comes back on; "" runs nothing.
+ * `tw-power away` lets the keyboards and mice plugged into the machine sleep
+ * until then, and `tw-power back` wakes them (docs/design.md, "Screen off
+ * and lock"). Awake, a keyboard or mouse polled every millisecond keeps the
+ * processor out of its deepest sleep: a Corsair K70 and a Logitech G502
+ * cost the G615LM 1.6 W at idle (docs/g615lm.md). Only while the screen is
+ * off, because such a keyboard can lose what is typed as it wakes (the K70
+ * loses 0.6 s), and such a mouse can wake on a click only: what turns the
+ * screen back on is the second key, or a click and then a move.
+ */
+static const char screen_off_command[] = "tw-power away";
+static const char screen_on_command[] = "tw-power back";
+
+/*
  * Lock the session after this many seconds without input, and before the
  * machine is suspended; 0 does neither. The screen is long off by then. A
  * visible window that inhibits idling holds it off too. tw locks at once and

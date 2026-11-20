@@ -1,7 +1,7 @@
 #!/bin/sh
-# Sets the machine's power profile. Run as root by tw-power@saver.service,
-# tw-power@balanced.service and tw-power@performance.service, which tw-power
-# starts; the only input is the word from the unit's name.
+# Sets the machine's power profile, or lets the keyboards and mice plugged in
+# sleep and wakes them. Run as root by tw-power@<word>.service, which
+# tw-power starts; the only input is the word from the unit's name.
 #
 # A profile is three settings, the same three power-profiles-daemon writes,
 # so that no daemon has to stay around to write them (and the CPU governor,
@@ -31,8 +31,9 @@ performance)
 	preference=performance
 	bias=0
 	;;
+away | back) ;;
 *)
-	echo "usage: tw-power-root saver|balanced|performance" >&2
+	echo "usage: tw-power-root saver|balanced|performance|away|back" >&2
 	exit 2
 	;;
 esac
@@ -63,6 +64,58 @@ offered() {
 	esac
 	return 1
 }
+
+# away: a keyboard or mouse plugged in may sleep, as the laptop's own keyboard
+# always may (tw-keyboard.rules), while the screen is off. Awake, it is polled
+# every millisecond or so, and that alone keeps the processor out of its
+# deepest sleep. Not while the screen is on: such a keyboard may lose what is
+# typed as it wakes, and such a mouse may wake on a click only. So tw runs
+# this as the screen goes off, and back as it comes on.
+#
+# Which: a USB device the firmware does not call built in (removable is not
+# "fixed"), able to wake the machine (bit 5 of bmAttributes; the kernel lets
+# no other input device sleep anyway), kept awake now (power/control "on"),
+# with a boot keyboard or boot mouse interface (HID class 03, subclass 01,
+# protocol 01 or 02). Each one let sleep is listed in $list, so that back
+# wakes only those, and only when there is a list.
+list=${TW_RUN:-/run}/tw-power-away
+inputs() {
+	for dev in "$sys"/bus/usb/devices/*; do
+		[ -e "$dev/bmAttributes" ] && [ -e "$dev/power/control" ] || continue
+		[ "$(cat "$dev/removable" 2>/dev/null)" != fixed ] || continue
+		[ "$(cat "$dev/power/control")" = on ] || continue
+		[ $((0x$(cat "$dev/bmAttributes") & 0x20)) -ne 0 ] || continue
+		for interface in "$dev/${dev##*/}":*; do
+			[ "$(cat "$interface/bInterfaceClass" 2>/dev/null)" = 03 ] &&
+				[ "$(cat "$interface/bInterfaceSubClass" 2>/dev/null)" = 01 ] || continue
+			case $(cat "$interface/bInterfaceProtocol" 2>/dev/null) in
+			01 | 02)
+				echo "$dev"
+				break
+				;;
+			esac
+		done
+	done
+}
+case $1 in
+away)
+	for dev in $(inputs); do
+		put "$dev/power/control" auto
+		[ "$(cat "$dev/power/control")" = auto ] && echo "$dev" >>"$list"
+	done
+	exit "$failed"
+	;;
+back)
+	if [ -e "$list" ]; then
+		while read -r dev; do
+			# Gone since, or plugged out and in: then it is awake already.
+			[ -e "$dev/power/control" ] && put "$dev/power/control" on
+		done <"$list"
+		rm -f "$list"
+	fi
+	exit "$failed"
+	;;
+esac
 
 for name in $platform; do
 	if offered "$sys/firmware/acpi/platform_profile_choices" "$name"; then

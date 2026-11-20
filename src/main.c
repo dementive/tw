@@ -169,6 +169,67 @@ bool spawn_installed(const char *cmd) {
 	return true;
 }
 
+static int handle_runner_exit(int fd, uint32_t mask, void *data) {
+	struct tw_runner *runner = data;
+	int status = 0;
+	while (waitpid(runner->pid, &status, 0) < 0 && errno == EINTR) {
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		wlr_log(WLR_ERROR, "failed: %s", runner->commands[runner->ran]);
+	}
+	wl_event_source_remove(runner->exit);
+	runner->exit = NULL;
+	/* The state changed while it ran: what holds now is what is set last. */
+	if (runner->state(runner->server) != runner->ran) {
+		runner_run(runner);
+	}
+	return 0;
+}
+
+void runner_run(struct tw_runner *runner) {
+	if (runner->exit != NULL) {
+		return; /* handle_runner_exit() runs the next one */
+	}
+	bool state = runner->state(runner->server);
+	const char *cmd = runner->commands[state];
+	if (cmd[0] == '\0') {
+		return;
+	}
+	if (!program_installed(cmd)) {
+		wlr_log(WLR_INFO, "not installed: %s", cmd);
+		return;
+	}
+	pid_t pid = fork();
+	if (pid < 0) {
+		wlr_log_errno(WLR_ERROR, "fork failed");
+		return;
+	}
+	if (pid == 0) {
+		child_reset();
+		setsid();
+		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+		_exit(127);
+	}
+	struct wl_event_source *source = child_watch(runner->server, pid,
+		handle_runner_exit, runner);
+	if (source == NULL) {
+		/* It was stopped: the command runs unordered instead. */
+		spawn(cmd);
+		return;
+	}
+	runner->pid = pid;
+	runner->exit = source;
+	runner->ran = state;
+}
+
+void runner_finish(struct tw_runner *runner) {
+	/* A command still running finishes on its own; init reaps it. */
+	if (runner->exit != NULL) {
+		wl_event_source_remove(runner->exit);
+		runner->exit = NULL;
+	}
+}
+
 void action_spawn(struct tw_server *server, const union tw_arg *arg) {
 	spawn(arg->s);
 }

@@ -241,4 +241,25 @@ sleep 2.5
 	fail "after the inhibitor went, the next attempt was not a period away"
 
 stop_tw
-echo "ok: blanking, inhibitors, a notification waking the screen, manual power-off, abandoned lock without a locker, lock on idle after blanking and despite a notification, locker restart, suspend, the clock after an inhibitor"
+
+# As the screen goes off, tw runs tw-power away, and back as it comes on: the
+# keyboards and mice plugged in sleep only meanwhile. One at a time and in
+# order: a screen that comes back on while away still runs gets back after
+# it, not beside it. Nothing runs as tw starts.
+inputs_log=$run_dir/inputs.log
+fake_program tw-power "echo \"start \$*\" >>'$inputs_log'
+[ \"\$*\" = away ] && /bin/sleep 1
+echo \"end \$*\" >>'$inputs_log'"
+start_tw -b 2
+start_client h
+expect_state h "$on" "the window to start visible"
+[ ! -e "$inputs_log" ] || fail "tw ran tw-power as it started: $(cat "$inputs_log")"
+expect_state h "suspended=1" "the screen to turn off after two seconds without input"
+wait_until "tw-power away to run as the screen goes off" grep -q '^start away$' "$inputs_log"
+press x
+expect_state h "$on" "a key press to turn the screen back on"
+wait_until "tw-power back to run as the screen comes on" grep -q '^end back$' "$inputs_log"
+[ "$(cat "$inputs_log" | tr '\n' ,)" = "start away,end away,start back,end back," ] ||
+	fail "away and back did not run one after the other: $(cat "$inputs_log" | tr '\n' ,)"
+stop_tw
+echo "ok: blanking, inhibitors, a notification waking the screen, manual power-off, abandoned lock without a locker, lock on idle after blanking and despite a notification, locker restart, suspend, the clock after an inhibitor, keyboards and mice let sleep with the screen"
