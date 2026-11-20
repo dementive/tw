@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include "draw.h"
@@ -61,5 +62,16 @@ void box_quit(void);
 void box_token(void (*done)(const char *token));
 /* Lets go of the box and the connection. */
 void box_disconnect(void);
+/* Calls `ready` whenever `fd` can be read, while the box runs; NULL stops
+ * watching it. A few at most. */
+void box_watch(int fd, void (*ready)(void));
+/*
+ * One box of this name at a time: the key that opened it closes it again.
+ * True if this program is the one; false if another was open, which is
+ * ended. The first holds a lock on $XDG_RUNTIME_DIR/<name>.pid until it exits.
+ */
+bool box_only_one(const char *name, bool verbose);
+/* The compositor's process, or 0. */
+pid_t box_compositor_pid(void);
 
 #endif

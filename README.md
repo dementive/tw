@@ -40,6 +40,7 @@ keys do the same.
 | --- | --- |
 | Mod+T | terminal |
 | Mod+Space, Mod+D | launcher |
+| Mod+Escape | Wi-Fi, Bluetooth, volume, brightness, battery, power mode, lock, log out, restart, power off |
 | Mod+Q | close the window |
 | Mod+J / Mod+L | focus the column on the left / right; past the end of the strip, the monitor on that side |
 | Mod+I / Mod+K | focus the window above / below in the column |
@@ -74,6 +75,7 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | Screens (scale, position) and whether the machine may sleep | [src/machines.h](src/machines.h), an entry per machine; tw picks the one named after the machine's board as it starts |
 | The launcher: size, font, colours, the terminal for terminal programs | [apps/launch/config.h](apps/launch/config.h) |
 | The monitors box: size, font, colours, the scales offered, how long a change waits to be kept | [apps/monitors/config.h](apps/monitors/config.h) |
+| The control box (Mod+Escape): size, colours, the clock, the steps, the commands it runs | [apps/control/config.h](apps/control/config.h) |
 | Notifications: font, size, colours, how long they stay | [apps/notify/config.h](apps/notify/config.h) |
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |

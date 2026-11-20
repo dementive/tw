@@ -7,8 +7,8 @@ tw's business and is in [system.md](system.md).
 
 1. [Install](#1-install)
 2. [What comes with tw](#2-what-comes-with-tw): the NVIDIA GPU, Bluetooth,
-   Thunderbolt, power profiles, notifications, the launcher, the screens,
-   sharing a window
+   Thunderbolt, power profiles, notifications, the launcher, Mod+Escape,
+   the screens, sharing a window
 3. [Sleep](#3-sleep)
 4. [After a system update, and when something is wrong](#4-after-a-system-update-and-when-something-is-wrong)
 
@@ -331,6 +331,18 @@ sudo pacman -Rns fuzzel
 ```
 
 Its look is in `apps/launch/config.h`.
+
+### Wi-Fi, Bluetooth, sound and the session: Mod+Escape
+
+Mod+Escape opens `tw-control` (also "Control" in the launcher): the time,
+then a row each for Wi-Fi, Bluetooth, volume, the sound output, the
+microphone, brightness, the keyboard light, the battery, the power mode,
+the monitors, and the session. Up and Down pick a row, Left and Right
+change it, Return opens or does it; Escape, or Mod+Escape again, closes it.
+Return on Wi-Fi lists the networks in range (Return connects, and asks for
+the password on the last line if iwd has none); Return on Bluetooth
+switches it on, or lists the devices (Return pairs and connects).
+Logging out, restarting and powering off ask for Return twice.
 
 ### Setting the screens
 

@@ -51,6 +51,7 @@ fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart
 
 # Stand-ins for the launcher and the terminal, to see their keys start them.
 fake_program tw-launch "echo launched >>'$run_dir/launched.log'"
+fake_program tw-control "echo control >>'$run_dir/launched.log'"
 launched() { [ -e "$run_dir/launched.log" ] && [ "$(grep -c . "$run_dir/launched.log")" = "$1" ]; }
 fake_program foot "[ ! -e /proc/\$\$/fd/9 ] || echo 'fd 9' >>'$run_dir/leaked.log'
 case \$1 in
@@ -80,6 +81,8 @@ press super+space
 wait_until "Mod+Space to start the launcher" launched 1
 press super+d
 wait_until "Mod+D to start the launcher" launched 2
+press super+Escape
+wait_until "Mod+Escape to start tw-control" grep -qx control "$run_dir/launched.log"
 press super+t
 wait_until "Mod+T to open a terminal through foot's server" grep -qx 'client -E -N' "$run_dir/terminal.log"
 ! grep -qx opened "$run_dir/terminal.log" || fail "Mod+T started a foot of its own while the server answered"

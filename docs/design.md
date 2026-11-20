@@ -12,6 +12,7 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [On battery](#on-battery)
 - [The launcher: tw-launch](#the-launcher-tw-launch)
 - [Setting the screens: tw-monitors](#setting-the-screens-tw-monitors)
+- [What a bar would show: tw-control](#what-a-bar-would-show-tw-control)
 - [Notifications: tw-notify](#notifications-tw-notify)
 - [The terminal](#the-terminal)
 - [The session script](#the-session-script)
@@ -856,6 +857,49 @@ that block anew and leaves the others; the file is replaced whole (a new
 file renamed over it). A desktop entry, `Monitors`, lets the launcher
 start the box.
 
+## What a bar would show: tw-control
+
+`tw-control` (`apps/control/`) is what a bar and its menus give on other
+desktops, in one box on Mod+Escape: the time and date, Wi-Fi, Bluetooth,
+volume, the output sound plays through, the microphone, the screen's and
+the keyboard's light, the battery, the power mode, the monitors box, and
+locking, logging out, suspending, restarting and powering off. Like the
+launcher it runs only while it is open and the key closes it again
+(`box_only_one()` in `box.c`). A row is left out when there is nothing
+behind it: no battery, no keyboard light, one sound output.
+
+**Where each thing comes from.** Most rows read a short command each time
+something changes: `wpctl` for sound (the outputs from `wpctl status`),
+`brightnessctl -m` for light, `tw-power` for the power mode (which runs as
+a job beside the box, since it waits for a system unit), and the battery
+from `/sys/class/power_supply` (time left from energy and power, or charge
+and current). Changing a row runs the command that tw's own keys run.
+Bluetooth goes on and off through `tw-bluetooth`, also as a job, and BlueZ
+is not asked anything while no adapter is in `/sys/class/bluetooth`: with
+the driver unloaded, a call would only start the Bluetooth service.
+
+**Wi-Fi and Bluetooth devices** come from iwd and BlueZ over the system bus,
+through `apps/common/dbus.c`: one connection, calls matched to their
+replies, and the signals both send when anything changes. Each change asks
+again for all of it (`GetManagedObjects`, and iwd's `GetOrderedNetworks`
+for the networks in range, strongest first), one question at a time with
+one more if more changed meanwhile, so a burst of signals while BlueZ looks
+for devices costs one answer at a time. Opening the Wi-Fi list asks iwd to
+scan and registers an agent, which is how iwd asks for a network's
+password: the password is typed on the box's last line, shown as dots, and
+handed back in answer; it is cleared once answered. Opening the Bluetooth
+list registers an agent for pairing without a PIN (`NoInputNoOutput`) and
+looks for devices until the list is closed; a device found is paired,
+trusted and connected by one Return. Both agents and the looking go with
+the connection when the box closes.
+
+**The session.** Lock runs the locker (`swaylock -f`, which returns once
+the session is locked); suspend does that first; restart and power off go
+through `systemctl`. Logging out stops tw as Mod+Shift+E does, by SIGTERM
+to the compositor, whose process the Wayland socket names
+(`box_compositor_pid()`). Logging out, restarting and powering off ask for
+Return a second time.
+
 ## Notifications: tw-notify
 
 `tw-notify` shows notifications. It is a program of its own in
@@ -892,7 +936,7 @@ under [The strip](#the-strip)). A tag longer than 63 bytes counts as none,
 since two cut to the same length could replace each other.
 
 **It speaks D-Bus by itself.** The messages are read and written by
-`bus.c`, with no D-Bus library: the login line, `Hello`,
+`apps/common/bus.c`, with no D-Bus library: the login line, `Hello`,
 `RequestName`, the four methods of `org.freedesktop.Notifications`, `Ping`
 (with or without its interface named), an empty `GetAll`, `Introspect`, and
 the signals. Everything read off the socket is checked against the bytes

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Control
+GenericName=Wi-Fi, Bluetooth, sound, battery, power
+Comment=What a bar would show: Wi-Fi, Bluetooth, volume, brightness, battery, power mode, log out
+Keywords=wifi;wlan;network;bluetooth;volume;sound;brightness;battery;power;logout;shutdown;restart;suspend;lock;
+Exec=tw-control
+Terminal=false
+OnlyShowIn=tw;

@@ -1,5 +1,5 @@
 /*
- * Unit tests for the D-Bus message code of tw-notify (notify/bus.c). The
+ * Unit tests for the D-Bus message code of tw's apps (apps/common/bus.c). The
  * messages come off a socket, so most of this is about ones that are cut
  * short or wrong: none may be read past its end. The copies handed to the
  * parser are exactly as long as the message, so that in the sanitizer build
@@ -406,5 +406,22 @@ int main(void) {
 		printf("ok: write and read back, layout, replies, truncation, byte order, damage, "
 			"strict Notify bodies, nesting, variants\n");
 	}
+	/* What tw-control reads of iwd's and BlueZ's answers: a string, a
+	 * variant's type and a signed 16-bit number (a signal's strength), each
+	 * where it is aligned to, and nothing past the end. */
+	uint8_t values[] = {
+		3, 0, 0, 0, 'a', 'b', 'c', 0, /* "abc" */
+		1, 'n', 0, 0, 0xec, 0xfe,      /* "n", a byte to align, then -276 */
+	};
+	struct bus_reader reader_values = {values, sizeof(values), 0, false};
+	CHECK(strcmp(bus_read_string(&reader_values), "abc") == 0);
+	CHECK(strcmp(bus_read_signature(&reader_values), "n") == 0);
+	CHECK(bus_read_i16(&reader_values) == -276);
+	CHECK(!reader_values.failed);
+	CHECK(bus_read_i16(&reader_values) == 0 && reader_values.failed);
+	uint8_t unterminated[] = {3, 0, 0, 0, 'a', 'b', 'c', 'd'};
+	struct bus_reader reader_bad = {unterminated, sizeof(unterminated), 0, false};
+	CHECK(strcmp(bus_read_string(&reader_bad), "") == 0 && reader_bad.failed);
+
 	return failures != 0;
 }

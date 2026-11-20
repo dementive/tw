@@ -1,12 +1,16 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 #include <wayland-client.h>
@@ -438,6 +442,68 @@ bool box_roundtrip(void) {
 	return wl_display_roundtrip(display) >= 0;
 }
 
+static struct {
+	int fd;
+	void (*ready)(void);
+} watched[4];
+
+void box_watch(int fd, void (*ready)(void)) {
+	for (size_t i = 0; i < LENGTH(watched); i++) {
+		if (watched[i].ready != NULL && watched[i].fd == fd) {
+			watched[i].ready = ready;
+			return;
+		}
+	}
+	for (size_t i = 0; ready != NULL && i < LENGTH(watched); i++) {
+		if (watched[i].ready == NULL) {
+			watched[i].fd = fd;
+			watched[i].ready = ready;
+			return;
+		}
+	}
+}
+
+bool box_only_one(const char *name, bool say_more) {
+	verbose = say_more;
+	const char *runtime = getenv("XDG_RUNTIME_DIR");
+	char path[4096];
+	if (runtime == NULL || snprintf(path, sizeof(path), "%s/%s.pid", runtime, name) >=
+			(int)sizeof(path)) {
+		return true;
+	}
+	int lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (lock < 0) {
+		return true;
+	}
+	if (flock(lock, LOCK_EX | LOCK_NB) != 0) {
+		char text[32] = "";
+		ssize_t length = read(lock, text, sizeof(text) - 1);
+		long pid = length > 0 ? strtol(text, NULL, 10) : 0;
+		if (pid > 0) {
+			kill((pid_t)pid, SIGTERM);
+			say("closed the one that was open");
+		}
+		close(lock);
+		return false;
+	}
+	char text[32];
+	int length = snprintf(text, sizeof(text), "%d\n", (int)getpid());
+	if (ftruncate(lock, 0) != 0 || write(lock, text, (size_t)length) != length) {
+		say("could not write %s", path);
+	}
+	return true; /* the lock stays open, and held, until the exit */
+}
+
+pid_t box_compositor_pid(void) {
+	struct ucred peer;
+	socklen_t size = sizeof(peer);
+	if (display == NULL || getsockopt(wl_display_get_fd(display), SOL_SOCKET, SO_PEERCRED,
+			&peer, &size) != 0) {
+		return 0;
+	}
+	return peer.pid;
+}
+
 void box_run(void) {
 	running = true;
 	while (running) {
@@ -447,11 +513,14 @@ void box_run(void) {
 		if (wl_display_flush(display) < 0 && errno != EAGAIN) {
 			break;
 		}
-		struct pollfd fds[3] = {
+		struct pollfd fds[3 + LENGTH(watched)] = {
 			{wl_display_get_fd(display), POLLIN, 0},
 			{repeat_fd, POLLIN, 0},
 			{timer_fd, POLLIN, 0},
 		};
+		for (size_t i = 0; i < LENGTH(watched); i++) {
+			fds[3 + i] = (struct pollfd){watched[i].ready != NULL ? watched[i].fd : -1, POLLIN, 0};
+		}
 		if (poll(fds, LENGTH(fds), -1) < 0) {
 			if (errno == EINTR) {
 				continue;
@@ -471,6 +540,11 @@ void box_run(void) {
 		if ((fds[2].revents & POLLIN) != 0 &&
 				read(timer_fd, &fired, sizeof(fired)) == sizeof(fired) && app->timer != NULL) {
 			app->timer();
+		}
+		for (size_t i = 0; i < LENGTH(watched); i++) {
+			if (fds[3 + i].revents != 0 && watched[i].ready != NULL && running) {
+				watched[i].ready();
+			}
 		}
 	}
 }

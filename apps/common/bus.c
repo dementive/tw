@@ -24,7 +24,7 @@ static size_t round_up(size_t value, size_t alignment) {
 
 /* --- Reading ---------------------------------------------------------------- */
 
-static void bus_read_align(struct bus_reader *reader, size_t alignment) {
+void bus_read_align(struct bus_reader *reader, size_t alignment) {
 	size_t pos = round_up(reader->pos, alignment);
 	if (pos > reader->size) {
 		reader->failed = true;
@@ -45,7 +45,7 @@ static const uint8_t *take(struct bus_reader *reader, size_t alignment, size_t s
 	return bytes;
 }
 
-static uint8_t bus_read_byte(struct bus_reader *reader) {
+uint8_t bus_read_byte(struct bus_reader *reader) {
 	const uint8_t *bytes = take(reader, 1, 1);
 	return bytes != NULL ? bytes[0] : 0;
 }
@@ -53,6 +53,11 @@ static uint8_t bus_read_byte(struct bus_reader *reader) {
 uint32_t bus_read_u32(struct bus_reader *reader) {
 	const uint8_t *bytes = take(reader, 4, 4);
 	return bytes != NULL ? le32(bytes) : 0;
+}
+
+int16_t bus_read_i16(struct bus_reader *reader) {
+	const uint8_t *bytes = take(reader, 2, 2);
+	return bytes != NULL ? (int16_t)(uint16_t)(bytes[0] | bytes[1] << 8) : 0;
 }
 
 /* `length` bytes of text and the NUL after them, with no NUL among them. */
@@ -69,11 +74,11 @@ static const char *text(struct bus_reader *reader, size_t length) {
 	return (const char *)bytes;
 }
 
-static const char *bus_read_string(struct bus_reader *reader) {
+const char *bus_read_string(struct bus_reader *reader) {
 	return text(reader, bus_read_u32(reader));
 }
 
-static const char *bus_read_signature(struct bus_reader *reader) {
+const char *bus_read_signature(struct bus_reader *reader) {
 	return text(reader, bus_read_byte(reader));
 }
 
@@ -349,7 +354,7 @@ void bus_write_string(struct bus_writer *writer, const char *string) {
 	bus_write_bytes(writer, string, length + 1);
 }
 
-static void write_signature(struct bus_writer *writer, const char *signature) {
+void bus_write_signature(struct bus_writer *writer, const char *signature) {
 	uint8_t length = (uint8_t)strlen(signature);
 	bus_write_bytes(writer, &length, 1);
 	bus_write_bytes(writer, signature, (size_t)length + 1);
@@ -375,9 +380,9 @@ static void field(struct bus_writer *writer, uint8_t code, const char *type, con
 	}
 	bus_write_align(writer, 8);
 	bus_write_bytes(writer, &code, 1);
-	write_signature(writer, type);
+	bus_write_signature(writer, type);
 	if (type[0] == 'g') {
-		write_signature(writer, value);
+		bus_write_signature(writer, value);
 	} else {
 		bus_write_string(writer, value);
 	}

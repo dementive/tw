@@ -176,6 +176,9 @@ static const char battery_warn_command[] =
  * its windows with it), a foot of its own. */
 static const char terminal[] = "footclient -E -N || foot";
 static const char launcher[] = "tw-launch";
+/* Wi-Fi, Bluetooth, sound, light, the battery, the power mode and the
+ * session in one box (apps/control); the same key closes it. */
+static const char control[] = "tw-control";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";
@@ -330,6 +333,7 @@ static const struct tw_binding bindings[] = {
 	{MOD,           XKB_KEY_t,          action_spawn,                       {.s = terminal}},
 	{MOD,           XKB_KEY_d,          action_spawn,                       {.s = launcher}},
 	{MOD,           XKB_KEY_space,      action_spawn,                       {.s = launcher}},
+	{MOD,           XKB_KEY_Escape,     action_spawn,                       {.s = control}},
 	{MOD,           XKB_KEY_q,          action_close,                       {0}},
 	{MOD | SHIFT,   XKB_KEY_e,          action_quit,                        {0}},
 

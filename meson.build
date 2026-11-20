@@ -298,6 +298,7 @@ app_protocols = [
 # window to share for xdg-desktop-portal-wlr.
 tw_launch = disabler()
 tw_monitors = disabler()
+tw_control = disabler()
 if apps_draw
 	tw_launch = executable(
 		'tw-launch',
@@ -323,6 +324,21 @@ if apps_draw
 		dependencies: [wayland_client, xkbcommon, fontconfig, freetype, libm],
 		install: true,
 	)
+	# tw-control: Wi-Fi, Bluetooth, sound, light, battery, power mode and the
+	# session in one box (Mod+Escape). Speaks D-Bus to iwd and BlueZ itself.
+	tw_control = executable(
+		'tw-control',
+		'apps/control/control.c',
+		'apps/common/box.c',
+		'apps/common/bus.c',
+		'apps/common/dbus.c',
+		'apps/common/draw.c',
+		app_protocols,
+		include_directories: 'apps/common',
+		dependencies: [wayland_client, xkbcommon, fontconfig, freetype],
+		install: true,
+	)
+	install_data('data/tw-control.desktop', install_dir: datadir / 'applications')
 	# So that the launcher offers it, as "Monitors"; only in a tw session.
 	install_data('data/tw-monitors.desktop', install_dir: datadir / 'applications')
 	# The screen-sharing portal picks a screen or a window through it. The
@@ -336,13 +352,13 @@ if apps_draw
 endif
 
 # tw-notify shows notifications and is gone again when none is left. It
-# speaks D-Bus by itself (apps/notify/bus.c).
+# speaks D-Bus by itself (apps/common/bus.c).
 tw_notify = disabler()
 if build_notify
 	tw_notify = executable(
 		'tw-notify',
 		'apps/notify/notify.c',
-		'apps/notify/bus.c',
+		'apps/common/bus.c',
 		'apps/common/draw.c',
 		app_protocols,
 		include_directories: 'apps/common',
@@ -389,6 +405,8 @@ if not apps_draw
 		prefix / bindir / 'tw-launch',
 		prefix / bindir / 'tw-monitors',
 		prefix / datadir / 'applications/tw-monitors.desktop',
+		prefix / bindir / 'tw-control',
+		prefix / datadir / 'applications/tw-control.desktop',
 	]
 endif
 if not build_notify
@@ -414,8 +432,8 @@ test('layout', executable(
 test('bus', executable(
 	'bus-test',
 	'tests/bus_test.c',
-	'apps/notify/bus.c',
-	include_directories: 'apps/notify',
+	'apps/common/bus.c',
+	include_directories: 'apps/common',
 ))
 
 # A minimal client that reports the state the compositor gives it, and a tool
@@ -507,6 +525,8 @@ headless_tests = {
 	'launch': [tw, test_client, test_keys, tw_launch],
 	# setting the screens from a program, and tw-monitors
 	'monitors': [tw, test_client, test_keys, tw_monitors],
+	# tw-control against stand-ins for what it runs
+	'control': [tw, test_client, test_keys, tw_control],
 }
 foreach name, args : headless_tests
 	test(

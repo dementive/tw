@@ -31,7 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
@@ -838,41 +837,6 @@ static void scroll(int x, int y, int steps) {
 
 /* --- Main -------------------------------------------------------------------- */
 
-/*
- * One launcher at a time: the key that opened it closes it again. The first
- * holds a lock on a file in the runtime directory with its pid in it; a
- * second finds it held, ends the first and leaves.
- */
-static bool only_one(void) {
-	const char *runtime = getenv("XDG_RUNTIME_DIR");
-	char path[4096];
-	if (runtime == NULL || snprintf(path, sizeof(path), "%s/tw-launch.pid", runtime) >=
-			(int)sizeof(path)) {
-		return true;
-	}
-	int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-	if (fd < 0) {
-		return true;
-	}
-	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-		char text[32] = "";
-		ssize_t length = read(fd, text, sizeof(text) - 1);
-		long pid = length > 0 ? strtol(text, NULL, 10) : 0;
-		if (pid > 0) {
-			kill((pid_t)pid, SIGTERM);
-			say("closed the one that was open");
-		}
-		close(fd);
-		return false;
-	}
-	char text[32];
-	int length = snprintf(text, sizeof(text), "%d\n", (int)getpid());
-	if (ftruncate(fd, 0) != 0 || write(fd, text, (size_t)length) != length) {
-		say("could not write %s", path);
-	}
-	return true; /* fd stays open, and the lock with it, until the exit */
-}
-
 static void entries_free(void) {
 	for (size_t i = 0; i < entry_count; i++) {
 		struct entry *entry = &entries[i];
@@ -910,7 +874,7 @@ int main(int argc, char *argv[]) {
 	if (dmenu) {
 		lines_read();
 	} else {
-		if (!only_one()) {
+		if (!box_only_one("tw-launch", verbose)) {
 			return 0;
 		}
 		entries_read();

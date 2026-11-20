@@ -1,15 +1,14 @@
 /*
  * D-Bus messages as they travel on the socket: taking one apart and putting
- * one together. Just what a notification service needs, with no library: a
- * program that is started for one notification and gone after it should not
- * have to load one.
+ * one together, with no library: tw's apps run for moments and should not
+ * have to load one. What tw-notify and tw-control need, no more.
  *
  * Pure functions on bytes, unit tested (tests/bus_test.c). Nothing here
  * trusts what it reads: every length is checked against the bytes that are
  * really there.
  */
-#ifndef TW_NOTIFY_BUS_H
-#define TW_NOTIFY_BUS_H
+#ifndef TW_BUS_H
+#define TW_BUS_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -49,7 +48,13 @@ long bus_message_size(const uint8_t *data, size_t size);
  */
 bool bus_message_parse(const uint8_t *data, size_t size, struct bus_message *message);
 
+void bus_read_align(struct bus_reader *reader, size_t alignment);
+uint8_t bus_read_byte(struct bus_reader *reader);
+int16_t bus_read_i16(struct bus_reader *reader);
 uint32_t bus_read_u32(struct bus_reader *reader);
+/* A string or an object path, and a signature. "" if it is not there. */
+const char *bus_read_string(struct bus_reader *reader);
+const char *bus_read_signature(struct bus_reader *reader);
 /* Enters an array whose elements have this alignment, and returns the
  * position at which it ends. */
 size_t bus_read_array(struct bus_reader *reader, size_t alignment);
@@ -91,6 +96,8 @@ void bus_write_begin(struct bus_writer *writer, uint8_t *data, size_t capacity,
 	const struct bus_header *header);
 void bus_write_u32(struct bus_writer *writer, uint32_t value);
 void bus_write_string(struct bus_writer *writer, const char *string);
+/* A signature, as a variant's type is written. */
+void bus_write_signature(struct bus_writer *writer, const char *signature);
 void bus_write_align(struct bus_writer *writer, size_t alignment);
 void bus_write_bytes(struct bus_writer *writer, const void *bytes, size_t size);
 /* An array: begin returns a mark to hand to end, which fills in the length.
