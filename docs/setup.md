@@ -336,7 +336,7 @@ Its look is in `apps/launch/config.h`.
 
 Mod+Escape opens `tw-control` (also "Control" in the launcher): the time,
 then a row each for Wi-Fi, Bluetooth, volume, the sound output, the
-microphone, brightness, the keyboard light, the battery, the power mode,
+microphone, brightness, the battery, the power mode,
 the monitors, and the session. Up and Down pick a row, Left and Right
 change it, Return opens or does it; Escape, or Mod+Escape again, closes it.
 Return on Wi-Fi lists the networks in range (Return connects, and asks for

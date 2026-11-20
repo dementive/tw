@@ -861,12 +861,13 @@ start the box.
 
 `tw-control` (`apps/control/`) is what a bar and its menus give on other
 desktops, in one box on Mod+Escape: the time and date, Wi-Fi, Bluetooth,
-volume, the output sound plays through, the microphone, the screen's and
-the keyboard's light, the battery, the power mode, the monitors box, and
+volume, the output sound plays through, the microphone, the screen's
+brightness, the battery, the power mode, the monitors box, and
 locking, logging out, suspending, restarting and powering off. Like the
 launcher it runs only while it is open and the key closes it again
 (`box_only_one()` in `box.c`). A row is left out when there is nothing
-behind it: no battery, no keyboard light, one sound output.
+behind it: no battery, one sound output. It has no keyboard light: see
+[The built-in keyboard](#the-built-in-keyboard).
 
 **Where each thing comes from.** Most rows read a short command each time
 something changes: `wpctl` for sound (the outputs from `wpctl status`),
@@ -1366,6 +1367,17 @@ udev's `ID_USB_INTERFACES`. It sleeps two seconds after the last key (the
 kernel's default delay), and the next key wakes it and is not lost. A
 keyboard or mouse plugged in is left alone: such devices are not all able to
 wake by themselves.
+
+What it breaks: on both ASUS laptops the keyboard's light is set through
+the kernel (`asus::kbd_backlight`), whose `hid-asus` driver sends the level
+to the keyboard without waking it first. While the keyboard sleeps the
+send is refused (`Asus failed to set keyboard backlight: -113` in the
+kernel log, -113 being what the USB core says of a suspended device), so
+`brightnessctl` changes the number and not the light. It sleeps whenever
+the typing is on another keyboard. The keyboard's own Fn keys work, since
+it handles them itself, awake from the key press; `tw-control` has no
+keyboard-light row for that reason. Waking the device before the send is
+the driver's to do.
 
 The rule applies as the keyboard appears, which is at boot; after an
 install, `echo auto | sudo tee /sys/bus/usb/devices/<keyboard>/power/control`

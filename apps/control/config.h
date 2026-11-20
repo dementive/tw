@@ -37,14 +37,15 @@ static const char clock_format[] = "%A %e %B   %H:%M";
 
 /*
  * What each part runs. Volume and the microphone go through WirePlumber,
- * brightness and the keyboard light through brightnessctl, as tw's own keys
- * do (src/config.h); Wi-Fi and Bluetooth devices are iwd's and BlueZ's,
- * asked over the system bus.
+ * brightness through brightnessctl, as tw's own keys do (src/config.h);
+ * Wi-Fi and Bluetooth devices are iwd's and BlueZ's, asked over the system
+ * bus. There is no keyboard light: on ASUS laptops the kernel cannot set it
+ * while the built-in keyboard sleeps (docs/design.md, "The built-in
+ * keyboard"), and its own Fn keys do it.
  */
 #define SPEAKERS "@DEFAULT_AUDIO_SINK@"
 #define MICROPHONE "@DEFAULT_AUDIO_SOURCE@"
 static const char screen_light[] = "--class=backlight";
-static const char keyboard_light[] = "--device='*::kbd_backlight'";
 /* Bluetooth on and off, and the power profiles, through tw's commands. */
 static const char bluetooth_command[] = "tw-bluetooth";
 static const char profile_command[] = "tw-power";

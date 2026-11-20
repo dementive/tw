@@ -1,7 +1,7 @@
 /*
  * tw-control: what a bar and its menus would give, in one box. The time,
- * Wi-Fi, Bluetooth, volume and where it plays, the microphone, brightness
- * and the keyboard light, the battery and the power mode, the monitors, and
+ * Wi-Fi, Bluetooth, volume and where it plays, the microphone, brightness,
+ * the battery and the power mode, the monitors, and
  * locking, logging out, suspending, restarting and powering off.
  *
  * tw starts it for Mod+Escape; it is gone again on Escape, and the same key
@@ -228,11 +228,6 @@ static struct {
 	int percent;
 } screen;
 
-static struct {
-	bool there;
-	int level, most;
-} keyboard;
-
 /* "Volume: 0.40 [MUTED]" */
 static bool volume_parse(const char *text, int *percent, bool *muted) {
 	double value;
@@ -340,10 +335,6 @@ static void light_read(void) {
 	snprintf(command, sizeof(command), "brightnessctl -m %s info 2>/dev/null", screen_light);
 	screen.there = command_read(command, text, sizeof(text)) &&
 		light_parse(text, &now, &screen.percent, &most);
-	int percent;
-	snprintf(command, sizeof(command), "brightnessctl -m %s info 2>/dev/null", keyboard_light);
-	keyboard.there = command_read(command, text, sizeof(text)) &&
-		light_parse(text, &keyboard.level, &percent, &keyboard.most) && keyboard.most > 0;
 }
 
 /* --- Battery and power mode -------------------------------------------------- */
@@ -1069,11 +1060,11 @@ static size_t cursor, first; /* the row picked on this page, the one at the top 
 
 enum item {
 	ITEM_WIFI, ITEM_BLUETOOTH, ITEM_VOLUME, ITEM_OUTPUT, ITEM_MIC, ITEM_BRIGHTNESS,
-	ITEM_KEYBOARD, ITEM_BATTERY, ITEM_PROFILE, ITEM_MONITORS, ITEM_SESSION, ITEMS
+	ITEM_BATTERY, ITEM_PROFILE, ITEM_MONITORS, ITEM_SESSION, ITEMS
 };
 static const char *const item_names[ITEMS] = {
 	"Wi-Fi", "Bluetooth", "Volume", "Output", "Microphone", "Brightness",
-	"Keyboard light", "Battery", "Power mode", "Monitors", "Session",
+	"Battery", "Power mode", "Monitors", "Session",
 };
 
 enum session { SESSION_LOCK, SESSION_LOG_OUT, SESSION_SUSPEND, SESSION_RESTART, SESSION_POWER_OFF };
@@ -1093,8 +1084,6 @@ static bool item_shown(enum item item) {
 		return sound.mic_there;
 	case ITEM_BRIGHTNESS:
 		return screen.there;
-	case ITEM_KEYBOARD:
-		return keyboard.there;
 	case ITEM_BATTERY:
 		return battery[0] != '\0';
 	case ITEM_PROFILE:
@@ -1195,11 +1184,6 @@ static void item_line(enum item item, struct line *line) {
 	case ITEM_BRIGHTNESS:
 		line->changes = true;
 		snprintf(line->value, sizeof(line->value), "%d%%", screen.percent);
-		break;
-	case ITEM_KEYBOARD:
-		line->changes = true;
-		snprintf(line->value, sizeof(line->value), keyboard.level == 0 ? "off" : "%d of %d",
-			keyboard.level, keyboard.most);
 		break;
 	case ITEM_BATTERY:
 		copy(line->value, sizeof(line->value), battery);
@@ -1434,10 +1418,6 @@ static void item_change(enum item item, int by) {
 			snprintf(command, sizeof(command), "%d%%%c", brightness_step, by > 0 ? '+' : '-');
 		}
 		command_run("brightnessctl -q %s set %s", screen_light, command);
-		light_read();
-		break;
-	case ITEM_KEYBOARD:
-		command_run("brightnessctl -q %s set 1%c", keyboard_light, by > 0 ? '+' : '-');
 		light_read();
 		break;
 	case ITEM_PROFILE:

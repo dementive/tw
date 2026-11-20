@@ -26,7 +26,6 @@ echo 0 >"$state/muted"
 echo 0 >"$state/mic"
 echo 48 >"$state/output"
 echo 500 >"$state/light"
-echo 1 >"$state/keys"
 echo balanced >"$state/profile"
 
 # stand_in <name> <script>: a program for tw-control's PATH, with $state,
@@ -78,11 +77,8 @@ status)
 esac
 EOF
 stand_in brightnessctl <<'EOF'
-read light <"$state/light"; read keys <"$state/keys"
+read light <"$state/light"
 case "$*" in
-*kbd_backlight*info) echo "asus::kbd_backlight,leds,$keys,$((keys * 33))%,3" ;;
-*kbd_backlight*set\ 1+) [ $keys -lt 3 ] && echo $((keys + 1)) >"$state/keys" ;;
-*kbd_backlight*set\ 1-) [ $keys -gt 0 ] && echo $((keys - 1)) >"$state/keys" ;;
 *info) echo "intel_backlight,backlight,$light,$((light / 10))%,1000" ;;
 *set\ 5%+) echo $((light + 50)) >"$state/light" ;;
 *set\ 5%-) echo $((light - 50)) >"$state/light" ;;
@@ -120,7 +116,7 @@ start_tw
 # --- What it shows ---------------------------------------------------------------
 control a
 for line in "Wi-Fi: not available" "Bluetooth: off" "Volume: 40%" "Output: Speakers" \
-		"Microphone: on" "Brightness: 50%" "Keyboard light: 1 of 3" \
+		"Microphone: on" "Brightness: 50%" \
 		"Battery: 74%, 4 h 0 min left" "Power mode: balanced" "Monitors: open" "Session: Lock"; do
 	row a "$line" || fail "no row '$line': $(grep '^row' "$run_dir/a.log")"
 done
@@ -137,14 +133,12 @@ press Down Return
 expect_row a "Microphone: muted"
 press Down Left
 expect_row a "Brightness: 45%"
-press Down Right
-expect_row a "Keyboard light: 2 of 3"
 # Past the battery to the power mode, which tw-power changes.
 press Down Down Right
 expect_row a "Power mode: performance"
 wait_until "tw-power to be run" was_run "tw-power performance"
 # Bluetooth: Right switches it on through tw-bluetooth.
-press Up Up Up Up Up Up Up Right
+press Up Up Up Up Up Up Right
 wait_until "tw-bluetooth to be run" was_run "tw-bluetooth on"
 
 # --- The session -------------------------------------------------------------------
@@ -171,7 +165,7 @@ wait_until "the box to go" gone "$box"
 
 # Monitors opens tw-monitors.
 control c
-for n in 1 2 3 4 5 6 7 8 9; do press Down; done
+for n in 1 2 3 4 5 6 7 8; do press Down; done
 press Return
 wait_until "tw-monitors to be run" was_run "tw-monitors"
 # Gone before the next starts, or the next would take itself for the key
