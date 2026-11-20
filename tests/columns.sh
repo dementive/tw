@@ -181,17 +181,18 @@ first_after_unmap | grep -q 'configure 0x0 activated=0 suspended=0 fullscreen=0 
 expect_state remap "configure 0x0 $on fullscreen=0 tiled=0" "the window to come back as a dialog"
 
 # --- A dialog that maps again is drawn in front ---------------------------------
-# A large dialog, then a small one inside it. Clicking the large one brings
-# it to the front; the small one, losing the keyboard, takes its window down
-# and puts it up again, and is then in front, where the pointer reaches it.
+# A large dialog, then a small one inside it. Moving the pointer from the
+# small one onto the large one focuses that and brings it to the front; the
+# small one, losing the keyboard, takes its window down and puts it up
+# again, and is then in front, where the pointer reaches it.
 press super+7
 start_client back --fixed 800x600
 expect_state back "configure 0x0 $on" "the large dialog to float"
 start_client inner --remap-on-leave
 expect_state inner "configure 0x0 $on" "the small dialog to float"
+pointer_to 640 360
 pointer_to 300 100
-click
-expect_line back "keyboard enter" "a click on the large dialog to focus it"
+expect_line back "keyboard enter" "the pointer moved onto the large dialog to focus it"
 expect_line inner unmapped "the small dialog to take itself down"
 # Mapped again, it takes the focus as any new window does.
 inner_back() { sed -n '/^unmapped$/,$p' "$run_dir/inner.log" | grep -q '^keyboard enter'; }
@@ -210,9 +211,9 @@ start_client front --fixed 800x600
 expect_state front "configure 0x0 $on" "the dialog to float"
 start_client late --game-late
 expect_state late "configure 0x0 $on" "the game to float"
+pointer_to 640 360
 pointer_to 300 100
-click
-expect_state front "$on" "a click on the dialog to focus it"
+expect_state front "$on" "the pointer moved onto the dialog to focus it"
 expect_line late "ask fullscreen" "the game to ask for fullscreen without the focus"
 expect_state late "fullscreen=1" "the unfocused game to go fullscreen"
 press super+q

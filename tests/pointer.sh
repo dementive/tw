@@ -1,6 +1,6 @@
 #!/bin/sh
-# The mouse, driven through the virtual-pointer protocol: pointer focus, click
-# to focus, pointer lock with raw movement (what games and 3D editors use for
+# The mouse, driven through the virtual-pointer protocol: pointer focus, focus
+# following the mouse and the cursor following the focus, pointer lock with raw movement (what games and 3D editors use for
 # mouse-look), confinement, and no pointer input to windows while locked.
 # $3 = tw-test-keys.
 #
@@ -23,27 +23,30 @@ start_client game --lock-pointer
 expect_state game "$on" "the second window to be focused"
 
 # --- Pointer focus and click to focus ------------------------------------------
+# The cursor starts at 100,100, so the first window opened under it. Moving
+# within it does not take the focus from the newer window: only moving onto
+# another window does. A click does.
 pointer_to 100 100
 expect_line a "pointer enter 100 100" "the pointer to enter the window under it"
 pointer_by 5 3
 expect_line a "pointer motion 105 103" "movement to be reported in window coordinates"
-last_line_matches a configure "activated=0" || fail "pointing at a window focused it"
+last_line_matches a configure "activated=0" ||
+	fail "moving within the window the pointer rested on as it opened focused it"
 click
 expect_state a "$on" "a click to focus the window under the pointer"
 expect_line a "button 272 pressed" "the click to reach the window too"
 press x
 wait_until "keys to follow the click" grep -q '^key ' "$run_dir/a.log"
 
-# --- Pointer lock --------------------------------------------------------------
-# The game asks for the lock as soon as the pointer enters it, but gets it only
-# once it also has the keyboard.
-pointer_to 800 100
+# --- The cursor follows the focus ----------------------------------------------
+# A key that moves the focus takes the cursor to the middle of the window it
+# focuses. The game asks for the lock as soon as the pointer enters it, and
+# gets it with the keyboard.
+press super+l
+expect_state game "$on" "Mod+L to focus the game"
 expect_line a "pointer leave" "the pointer to leave the first window"
-expect_line game "pointer enter 160 100" "the pointer to enter the game"
-click
+expect_line game "pointer enter 320 360" "the cursor to go to the middle of the window Mod+L focused"
 expect_line game "pointer locked" "the focused window under the pointer to get its lock"
-[ "$(line_of game "pointer locked")" -gt "$(line_of game "button 272 pressed")" ] ||
-	fail "a window without the keyboard locked the pointer"
 
 # Locked: the mouse arrives as raw movement and the cursor stays put, however
 # far the mouse goes.
@@ -64,14 +67,34 @@ fi
 if while_locked | grep -q '^pointer leave'; then
 	fail "the cursor left the game while the pointer was locked"
 fi
-expect_state a "$on" "Mod+J to focus the first window"
 pointer_by 4 0
-expect_line game "pointer motion 164 100" "the cursor to move again once unlocked"
+expect_line a "pointer motion 324 360" "the cursor to move again once unlocked"
 
-# Back in the game the lock returns. When the game lets go of it itself, the
-# cursor reappears where the game said.
-click
+# The cursor went to the middle of the first window, which Mod+J focused.
+# Moved back onto the game, the focus goes with it, and the lock returns.
+expect_state a "$on" "Mod+J to focus the first window"
+expect_line a "pointer enter 320 360" "the cursor to go to the middle of the window Mod+J focused"
+pointer_to 800 100
+expect_state game "$on" "the pointer moved onto the game to focus it"
 wait_until "the lock to return with the focus" has game '^pointer locked' 2
+
+# A window that takes the focus from under a resting pointer leaves it there,
+# and the window under it gets the focus back only once the pointer leaves
+# it and returns: moving within it does not. Without the keyboard, the game
+# has no lock.
+start_client dialog --fixed
+expect_state dialog "$on" "the dialog to take the focus"
+expect_line game "pointer unlocked" "the game to lose its lock with the keyboard"
+pointer_by 3 0
+expect_line game "pointer motion 163 100" "the pointer to move within the game"
+expect_state dialog "$on" "moving within the window under the pointer to leave the focus with the dialog"
+has game '^pointer locked' 2 || fail "a window without the keyboard locked the pointer"
+press super+q
+expect_line dialog closed "the dialog to close"
+wait_until "the lock to return as the focus does" has game '^pointer locked' 3
+
+# When the game lets go of the lock itself, the cursor reappears where the
+# game said.
 press x
 expect_line game "pointer released" "the game to let go of the pointer"
 pointer_by 1 0
@@ -99,9 +122,8 @@ expect_line box "pointer unconfined" "moving the focus away to end the confineme
 # wlroots could not keep a pointer in a region it is not in. The confinement
 # takes hold as the pointer moves into the region.
 pointer_to 900 300
-expect_line box "pointer motion 260 300" "the pointer to move outside the region"
-click
-expect_state box "$on" "a click to focus the confining window"
+expect_line box "pointer enter 260 300" "the pointer to move outside the region"
+expect_state box "$on" "the pointer moved onto the confining window to focus it"
 pointer_by 10 0
 expect_line box "pointer motion 270 300" "the pointer to move freely outside the region"
 has box '^pointer confined' 1 || fail "the confinement took hold with the pointer outside its region"
@@ -176,8 +198,10 @@ press Return
 expect_line locker2 unlocked "the lock screen to get the keyboard although a menu was open"
 
 # --- The strip glides under a resting pointer -----------------------------------
-# The pointer goes to whatever the glide brings under it, without moving: a
-# scroll right after Mod+End reaches the window now under it.
+# The pointer goes to whatever the glide brings under it, without moving.
+# Mod+End sends the cursor to where the last column comes to rest, the middle
+# of the right half; the column glides in under it, and the windows passing
+# by on the way get the pointer but not the focus.
 press super+End
 start_client p1
 start_client p2
@@ -186,11 +210,14 @@ press super+Home
 pointer_to 100 100
 wait_until "the pointer to rest on the first window" \
 	last_line_matches a pointer "pointer (enter|motion) 100 100"
+point=$(lines p2)
 press super+End
 wait_until "the window the strip glides under the pointer to get it" \
-	grep -q '^pointer enter' "$run_dir/p1.log"
-expect_line p1 "pointer motion 100 100" "the pointer to follow the glide to its end"
+	last_line_matches p2 pointer "pointer (enter|motion) 320 360"
+since p2 "$point" | grep -q '^pointer enter [0-9]* 360$' ||
+	fail "the last column did not get the pointer: $(since p2 "$point")"
 last_line_matches a pointer leave || fail "the first window kept the pointer after the glide"
+expect_state p2 "$on" "the windows the glide passed under the pointer to leave the focus alone"
 
 # --- Screens off: the pointer is over nothing ----------------------------------
 # A cursor a window chose does not stay on a dark screen (an animated "busy"
@@ -198,15 +225,18 @@ last_line_matches a pointer leave || fail "the first window kept the pointer aft
 # screens go off, and gets it back where it was as they come on.
 press super+shift+p
 wait_until "the window under the pointer to lose it as the screens go off" \
-	last_line_matches p1 pointer "pointer leave"
+	last_line_matches p2 pointer "pointer leave"
 press x
 wait_until "the window under the pointer to get it back as the screens come on" \
-	last_line_matches p1 pointer "pointer enter 100 100"
+	last_line_matches p2 pointer "pointer enter 320 360"
 
 # --- A held button stays with its window -----------------------------------------
 # Dragged past the window's edge (a selection, a scrollbar), the pointer stays
 # with the window the press went to, in its coordinates, so that the release
-# reaches it. Let go, the pointer goes to what it is over.
+# reaches it, and the focus stays where it was. Let go, the pointer goes to
+# what it is over.
+pointer_to 100 100
+expect_state p1 "$on" "the pointer moved onto the left column to focus it"
 point=$(lines p1)
 press down "move:900,100:$screen_size" up
 wait_until "the window the button was let go over to get the pointer" \
@@ -214,6 +244,7 @@ wait_until "the window the button was let go over to get the pointer" \
 held=$(since p1 "$point" | grep -E '^(pointer|button)' | tr '\n' ';')
 [ "$held" = 'button 272 pressed;pointer motion 900 100;button 272 released;pointer leave;' ] ||
 	fail "a held button did not keep the pointer on its window: $held"
+last_line_matches p1 configure "$on" || fail "a held button let the focus follow the pointer"
 
 # --- Drag and drop ---------------------------------------------------------------
 # Text dragged from one window to the one beside it arrives there. The two
@@ -258,4 +289,4 @@ pointer_to 150 61
 expect_line barmenu "pointer enter menu 50 31" "the bar's menu to be over the window, not under it"
 
 stop_tw
-echo "ok: pointer focus, click to focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off, a held button, a bar's menu"
+echo "ok: pointer focus, click to focus, focus following the mouse, the cursor following the focus, lock, raw movement, cursor hint, confinement, locked session, a glide under the pointer, screens off, a held button, a bar's menu"

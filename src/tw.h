@@ -274,6 +274,10 @@ struct tw_server {
 	 * is that window, NULL once it has gone (strip_remove()). */
 	bool moving;
 	struct tw_window *moved;
+	/* The window under the pointer when it last moved or was given to what
+	 * is under it, NULL over none or once that window has gone
+	 * (strip_remove()). Focus follows the mouse only onto another one. */
+	struct tw_window *hovered;
 	uint32_t mod; /* what TW_MOD resolves to */
 	struct wl_listener new_input;
 	struct wl_listener new_virtual_keyboard;
@@ -554,6 +558,12 @@ bool strip_animate(struct tw_output *output);
 struct tw_window *workspace_fullscreen(const struct tw_workspace *workspace);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
+/*
+ * Where the focus comes to rest once the view has glided there: the active
+ * window and its box, or with none (NULL) the usable area of the focused
+ * output. False if no output shows the active workspace.
+ */
+bool strip_focus_box(struct tw_server *server, struct tw_window **window, struct wlr_box *box);
 /* Puts a window moved with the mouse where it was let go, at lx,ly: beside
  * the column there, or onto that monitor's workspace. */
 void strip_drop(struct tw_server *server, struct tw_window *window, double lx, double ly);

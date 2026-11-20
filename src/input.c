@@ -63,6 +63,34 @@ struct tw_switch {
 
 /* --- Keyboard --------------------------------------------------------------- */
 
+/*
+ * Runs a binding. One that moves the focus, or moves or resizes the focused
+ * window, takes the cursor to the middle of where that window comes to rest,
+ * or of the output when it has none, unless the cursor is in it already.
+ * Otherwise the next touch of the mouse would hand the focus to whatever the
+ * cursor was left over (focus_follow()). A binding that changes neither (a
+ * program started, a window asked to close) leaves the cursor alone.
+ */
+static void binding_run(struct tw_server *server, const struct tw_binding *binding) {
+	struct tw_window *before_window = NULL, *window = NULL;
+	struct wlr_box before = {0}, box;
+	bool had = strip_focus_box(server, &before_window, &before);
+	binding->action(server, &binding->arg);
+	struct wlr_seat *seat = server->seat;
+	/* Not while the mouse is busy: a button held, a window carried, a
+	 * pointer lock that a key left in place (a column narrowed under a
+	 * game). */
+	if (!cursor_follows_focus || server->locked || server->moving ||
+			server->active_constraint != NULL || seat->pointer_state.button_count > 0 ||
+			!strip_focus_box(server, &window, &box) ||
+			(had && window == before_window && wlr_box_equal(&before, &box)) ||
+			wlr_box_contains_point(&box, server->cursor->x, server->cursor->y)) {
+		return;
+	}
+	wlr_cursor_warp(server->cursor, NULL, box.x + box.width / 2.0, box.y + box.height / 2.0);
+	pointer_refocus(server);
+}
+
 static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 	struct tw_server *server = keyboard->server;
 	struct wlr_keyboard *wlr_keyboard = keyboard->wlr_keyboard;
@@ -107,7 +135,7 @@ static bool run_bindings(struct tw_keyboard *keyboard, xkb_keycode_t keycode) {
 				want |= server->mod;
 			}
 			if (want == mods && binding->sym == syms[i]) {
-				binding->action(server, &binding->arg);
+				binding_run(server, binding);
 				return true;
 			}
 		}
@@ -422,6 +450,40 @@ static void surface_origin_find(struct wlr_scene_buffer *buffer, int lx, int ly,
 }
 
 /*
+ * Focus follows the mouse: the pointer moved from (from_x, from_y) onto
+ * another window gives it the focus, and onto another output, over no
+ * window, gives that output the focus. Only moving onto it counts: the
+ * window a glide brings under a resting pointer, or the one under it when a
+ * key, a new window or a request took the focus elsewhere, gets the focus
+ * only once the pointer leaves it and comes back. Not while a button is held
+ * (a selection dragged over a neighbour), a window is carried, or a menu or
+ * a drag holds the pointer: focusing would close the menu.
+ */
+static void focus_follow(struct tw_server *server, struct tw_window *under,
+		double from_x, double from_y) {
+	struct wlr_seat *seat = server->seat;
+	struct tw_window *hovered = server->hovered;
+	server->hovered = under;
+	if (!focus_follows_mouse || server->locked || server->moving ||
+			seat->pointer_state.button_count > 0 ||
+			seat->pointer_state.grab != seat->pointer_state.default_grab) {
+		return;
+	}
+	if (under != NULL) {
+		if (under != hovered && under != server->focused) {
+			window_focus(server, under);
+			strip_arrange(server);
+		}
+		return;
+	}
+	struct tw_output *output = output_at(server, server->cursor->x, server->cursor->y);
+	if (output != NULL && output != output_at(server, from_x, from_y) &&
+			output != output_focused(server)) {
+		strip_focus_output(server, output);
+	}
+}
+
+/*
  * The pointer moved: it goes to whatever is under it now. But a held button
  * keeps it on the surface the press went to, wherever the pointer goes, as
  * long as that surface is drawn: wlroots forgets the buttons of a surface the
@@ -430,11 +492,13 @@ static void surface_origin_find(struct wlr_scene_buffer *buffer, int lx, int ly,
  * A grab has its own rules (a drag, or an open menu, which a press-drag-
  * release must reach), and a lock takes the pointer away.
  */
-static void pointer_update(struct tw_server *server, uint32_t time_msec) {
+static void pointer_update(struct tw_server *server, uint32_t time_msec,
+		double from_x, double from_y) {
 	struct wlr_seat *seat = server->seat;
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
-	window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	struct tw_window *under =
+		window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 	struct wlr_surface *held = seat->pointer_state.focused_surface;
 	if (held != NULL && surface != held && seat->pointer_state.button_count > 0 &&
 			seat->pointer_state.grab == seat->pointer_state.default_grab &&
@@ -448,6 +512,7 @@ static void pointer_update(struct tw_server *server, uint32_t time_msec) {
 		}
 	}
 	pointer_enter(server, time_msec, surface, sx, sy);
+	focus_follow(server, under, from_x, from_y);
 }
 
 void pointer_refocus(struct tw_server *server) {
@@ -465,9 +530,12 @@ void pointer_refocus(struct tw_server *server) {
 	 * a client chose would stay on the dark screen, and an animated one
 	 * ("busy") wakes tw at every image. The client gets the pointer back,
 	 * and sets its cursor again, as the screens come on. */
+	struct tw_window *window = NULL;
 	if (!server->blanked) {
-		window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+		window = window_at(server, server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 	}
+	/* Come under the pointer without its moving: not one to follow. */
+	server->hovered = window;
 	/* Over nothing, as before: no cursor to set. That keeps the cursor
 	 * theme unloaded until the pointer first moves. (A drag keeps the
 	 * seat's own pointer focus empty, so it is not "as before".) */
@@ -619,8 +687,9 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
 			dy = cy - sy;
 		}
 	}
+	double from_x = server->cursor->x, from_y = server->cursor->y;
 	wlr_cursor_move(server->cursor, &event->pointer->base, dx, dy);
-	pointer_update(server, event->time_msec);
+	pointer_update(server, event->time_msec, from_x, from_y);
 }
 
 static void handle_cursor_motion_absolute(struct wl_listener *listener, void *data) {
@@ -632,8 +701,9 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
 	if (server->active_constraint != NULL) {
 		return; /* a position cannot be confined or turned into movement */
 	}
+	double from_x = server->cursor->x, from_y = server->cursor->y;
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
-	pointer_update(server, event->time_msec);
+	pointer_update(server, event->time_msec, from_x, from_y);
 }
 
 /* Mod held on the keyboard last used, with no other modifier a binding

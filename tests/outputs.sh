@@ -96,25 +96,29 @@ point=$(lines a)
 press super+Page_Up
 
 # --- The mouse across monitors --------------------------------------------------
+# The focus follows the pointer onto a window on the other monitor.
 pointer_to 100 100
-click
-expect_state c "$on" "a click on a window on the other monitor to focus it"
+expect_state c "$on" "the pointer moved onto a window on the other monitor to focus it"
 expect_state a "$visible" "the window that lost the focus to stay visible"
 only_states_since a "$point" "$visible" ||
 	fail "Mod+Page_Up took the workspace away from the other monitor"
 only_states_since c "$c_point" "$on" ||
 	fail "switching workspaces on one monitor disturbed the other"
 
-# A click on an empty monitor moves the focus there.
+# A key that moves the focus to the other monitor takes the cursor along, to
+# the middle of the window it focuses there. Moved onto an empty monitor, the
+# pointer takes the focus there.
 press super+shift+l super+4
 expect_state a "$hidden" "Mod+4 to show an empty workspace on the second monitor"
 press super+shift+j
 expect_state c "$on" "the focus to be back on the first monitor"
+c_size=$(current_size c)
+expect_line c "pointer enter $((${c_size%x*} / 2)) $((${c_size#*x} / 2))" \
+	"Mod+Shift+J to take the cursor to the middle of the window it focused"
 pointer_to 2000 300
-click
-expect_state c "$visible" "a click on the empty monitor to take the focus from the first"
+expect_state c "$visible" "the pointer moved onto the empty monitor to take the focus from the first"
 start_client e
-expect_line e "output enter $right" "a window opened after that click to appear on the clicked monitor"
+expect_line e "output enter $right" "a window opened after that to appear on the monitor the pointer is on"
 
 # A launcher that names no monitor appears on the focused one.
 start_client launcher --layer

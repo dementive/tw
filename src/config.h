@@ -58,6 +58,15 @@ static const bool touchpad_natural_scroll = true;
 static const bool touchpad_disable_while_typing = true;
 
 /*
+ * The pointer moved onto another window, or onto another monitor, gives that
+ * window or monitor the focus. A key that moves the focus (or the focused
+ * window) takes the cursor to the middle of where that window comes to rest,
+ * unless it is in it already.
+ */
+static const bool focus_follows_mouse = true;
+static const bool cursor_follows_focus = true;
+
+/*
  * A swipe with this many fingers belongs to tw: sideways drags the strip,
  * up or down by at least swipe_workspace_distance pixels switches workspace.
  * Swipes with other finger counts, pinches and holds go to the application.

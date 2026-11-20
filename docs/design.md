@@ -263,6 +263,34 @@ selection or a scrollbar dragged past a window's edge would never hear the
 release. When the last button comes up, the pointer goes to what it is
 over.
 
+**Focus follows the mouse, the cursor follows the focus**
+(`focus_follows_mouse` and `cursor_follows_focus` in `config.h`). The
+pointer moved onto another window gives it the focus (`focus_follow()` in
+`input.c`), as a click does; moved onto another output, over no window
+there, it gives that output the focus, so the next window opens on it. Only
+movement onto a window counts, as in sway: `server->hovered` is the window
+under the pointer when it last moved or was last given to what is under it
+(`pointer_refocus()`), and the focus follows only onto a window other than
+that one. So a window that comes under a resting pointer (a glide, a window
+closing) does not take the focus, and neither does the window under the
+pointer after a key, a new window or a request moved the focus away: moving
+within it leaves the focus where it went. Not while a button is held, a
+window is carried, or a grab (a menu, a drag) has the pointer: focusing
+would close the menu.
+
+The other half keeps the two from fighting. A binding that changes which
+window has the focus, or where the focused window ends up (moved, resized,
+another workspace or monitor), takes the cursor to the middle of where that
+window comes to rest once the view has glided (`strip_focus_box()`), or to
+the middle of the focused output when it shows no window; it does that only
+if the cursor is not already inside, so a wide window does not make the
+cursor jump. `binding_run()` compares the focus box before and after the
+binding, so a binding that changes neither (a program started, Mod+Q, which
+only asks the window to close) leaves the cursor alone. The cursor stays
+put while a button is held, a window is carried or a pointer lock is in
+force. Each warp costs one hit test and the enter and leave events of the
+windows it crosses; nothing runs while the pointer rests.
+
 A window can ask for the focus (xdg-activation). It gets it, and its
 workspace is shown, only if its token was made from an input event and
 names the surface that event went to; wlroots checks that the surface had

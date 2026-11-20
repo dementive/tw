@@ -711,6 +711,9 @@ void strip_remove(struct tw_window *window) {
 	if (server->moved == window) {
 		server->moved = NULL; /* the mouse lets go of nothing */
 	}
+	if (server->hovered == window) {
+		server->hovered = NULL;
+	}
 	if (server->focused == window) {
 		/* Cleared without telling the client: unmapped, it is sent nothing
 		 * (wlroots would drop it), and initial_commit() tells it it is not
@@ -1001,6 +1004,28 @@ static void workspace_show(struct tw_server *server, size_t index) {
 
 void strip_focus_output(struct tw_server *server, struct tw_output *output) {
 	workspace_show(server, output->workspace);
+}
+
+bool strip_focus_box(struct tw_server *server, struct tw_window **window, struct wlr_box *box) {
+	struct tw_workspace *workspace = active_workspace(server);
+	struct wlr_box area, full;
+	if (!workspace_boxes(server, workspace, &area, &full)) {
+		return false;
+	}
+	*window = workspace->focused;
+	if (*window == NULL) {
+		*box = area;
+		return true;
+	}
+	/* Placed where the view is drawn now; a tiled window ends up as far
+	 * along as the view still has to glide. */
+	int x, y;
+	wlr_scene_node_coords(&(*window)->scene_tree->node, &x, &y);
+	if (!(*window)->floating) {
+		x += (int)lround(workspace->view_pos) - workspace->view_x;
+	}
+	*box = (struct wlr_box){x, y, (*window)->width, (*window)->height};
+	return true;
 }
 
 /* Sends the focused column (or the focused dialog) to another workspace and
