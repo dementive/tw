@@ -206,8 +206,7 @@ machines. What they have decided, so that it is not put to them again:
   was taken out. Measuring and migration scripts are not kept in the tree
   once their job is done.
 - On their laptop: sleep after 30 idle minutes (not while Claude Code
-  works) and on lid close, once it has been seen to wake; until then off.
-  Huge pages stay on, and the list of
+  works) and on lid close. Huge pages stay on, and the list of
   kernel settings they took and declined is closed. See
   [docs/g533zw.md](docs/g533zw.md#decisions).
 

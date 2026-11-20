@@ -235,10 +235,12 @@ seen; the figures that go with these are in [g533zw.md](g533zw.md) and
 | Bluetooth | a boot with the blacklist: no adapter, no module, no `bluetoothd`, the USB device asleep; `off` in 0.13 s with the service's restarts refused; `on` in 1.25 s with the service, the radio, the timer and WirePlumber all following; a program calling the service while off refused; on the G615LM (BE200, `8087:0036`), the sleep rule after a boot: the adapter asleep with `control` at `auto` and no driver | going off by itself; a device connecting, and a connection ending and starting the timer over (no device is paired on that machine); an adapter not on USB; a Wi-Fi and Bluetooth chip that does not call itself Bluetooth as a whole device (both laptops' adapters do, so the rule's match by interface is not what was tested) |
 | Thunderbolt | udev accepts the rule; nothing more | any device at all; whether a dock's USB ports and display outputs work before it is approved |
 
-Nothing that needs a suspend can be seen on the G533ZW: it did not wake
-from one, and sleep stays off there ([g533zw.md](g533zw.md#decisions)).
-Those items wait for another machine; the G615LM has not been suspended
-yet ([g615lm.md](g615lm.md#sleep)).
+Suspend on the G533ZW: under firmware 328, inside a tw session with the
+NVIDIA GPU off, two sleeps by `rtcwake -m freeze` came back, one by the
+clock after 2 minutes and one by a key after 12 s, with the screen, the
+USB root disk and Wi-Fi ([g533zw.md](g533zw.md#sleep)). Not seen yet: tw's
+own idle suspend, the lid, and a wake-up told from the clocks. The G615LM
+has not been suspended yet ([g615lm.md](g615lm.md#sleep)).
 
 The real runs found faults the made-up machines had not, and each is in a
 test now: the GPU switched off at the first login before the login screen

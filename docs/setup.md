@@ -331,9 +331,9 @@ Each sends a notification only while every screen is off (no connector's
 ## 3. Sleep
 
 tw can suspend the machine after a time without input and when the battery
-runs low. Both are off in every entry of `src/machines.h`, and stay off until the
-machine has been seen to wake: one laptop did not, and had to be switched
-off and on again ([g533zw.md](g533zw.md#sleep)).
+runs low. Both are off in a new entry of `src/machines.h`, and stay off
+until the machine has been seen to wake: the G533ZW once did not, and had
+to be switched off and on again ([g533zw.md](g533zw.md#sleep)).
 
 Try it by hand first, with nothing unsaved open:
 

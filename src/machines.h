@@ -42,11 +42,10 @@ static const struct tw_machine machines[] = {
 			/* name     scale   x     y */
 			{"eDP-1",   1.25f,  AUTO, AUTO}, /* the laptop's own screen */
 		},
-		/* It does not wake from a suspend. The one time tw's idle timer
-		 * sent it to sleep (2026-11-15, after 900 seconds) it had to be
-		 * switched off and on again, and sleep has been left off since
-		 * rather than looked into. See docs/g533zw.md. */
-		.suspend_after_seconds = 0,
+		/* Seen to sleep and wake by a key on 2026-11-19, under firmware
+		 * 328. The one sleep before that (2026-11-15) did not come back.
+		 * See docs/g533zw.md. */
+		.suspend_after_seconds = 1800,
 		.battery_suspend_percent = 0,
 	},
 	{
