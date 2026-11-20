@@ -606,8 +606,9 @@ could be the one for the state that went. When it exits and the state has
 changed since, tw runs the command for the state now.
 
 **A low battery.** There is no bar, so nothing shows the charge. With each
-announcement on battery `handle_change()` reads it (the fullest battery's
-`capacity`) and asks `tw_battery_look()` what is due:
+announcement `handle_change()` reads the supplies (the fullest battery's
+`capacity` among them) and asks `tw_power_look()` in `layout.c` what is
+due: going on battery or off it, and on battery,
 `battery_warn_command` once at `battery_warn_percent`, and a suspend
 (`suspend_now()`: lock, then `suspend_command`) when the charge has fallen
 to `battery_suspend_percent` and again for each percent below that, so that

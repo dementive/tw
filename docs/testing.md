@@ -28,7 +28,7 @@ tests run each script against a made-up machine: a directory standing in for
 
 | Test | What it covers |
 | --- | --- |
-| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, the low-battery and lid decisions, which connector is the laptop's own |
+| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, what the power supplies call for (the cable moving, a low battery, a wake-up), the lid decisions, which connector is the laptop's own |
 | `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end; big-endian ones passed over by their length; what a broken header still says; `Notify` bodies read to the byte by the same `bus_notify_read()` tw-notify uses |
 | `smoke` | everything a client can observe: no file tw was handed open reaching a program it starts; sizes, focus, every key binding (the level keys with stand-ins for `wpctl`, `brightnessctl` and `notify-send`), workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held; windows offered fullscreen and nothing else; focus requests with a made-up token or one naming no surface refused |
 | `columns` | windows sharing a column, floating dialogs; a dialog that maps again drawn in front; a game that goes fullscreen without the focus leaving it where it was, and getting it when the dialog in front closes; a game of a fixed size going fullscreen in the strip and floating again after, and one that asks to start fullscreen and changes its mind before its first frame; a tiled window's menu drawn above a dialog; a hidden window that unmaps and maps again as a dialog told it is neither suspended nor tiled from its first configure; a dialog's client-drawn shadow not cropped (the pointer reaches it) |
@@ -178,13 +178,14 @@ must be empty.
   exceptions for a program holding the pointer and for the lock screen are
   not tested; those for a window keeping the screen on and a fullscreen one
   are.
-- **A power supply changing.** Only the kernel can announce one, so
-  `handle_change()` in `power.c` is untested (with it, that a mouse's
-  battery announcing itself is passed over, and that a profile command
-  started while another runs waits for it and is the one for the state at
-  that moment), and with it everything about a low battery but the
-  decision (`tw_battery_look()`). `tests/power.sh` covers what tw does with
-  the state it finds as it starts.
+- **A power supply changing.** Only the kernel can announce one, so the
+  part of `handle_change()` in `power.c` around the decision is untested:
+  that a mouse's battery announcing itself is passed over, that a wake-up
+  is told from the clocks, and that a profile command started while
+  another runs waits for it and is the one for the state at that moment.
+  The decision itself (`tw_power_look()`: going on battery and off it, the
+  warning, suspending) is unit tested, and `tests/power.sh` covers what tw
+  does with the state it finds as it starts.
 - **Losing the seat.** The headless backend has no session, so tw
   exiting when seatd or logind goes away (`handle_session_destroy()` in
   `main.c`) is untested; it rests on reading wlroots'

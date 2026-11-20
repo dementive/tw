@@ -78,18 +78,29 @@ bool tw_refresh_saves(int candidate, int current, int floor_hz) {
 	return whole_hz(candidate) < whole_hz(current) && whole_hz(candidate) >= floor_hz;
 }
 
-int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
-		int warn_at, int suspend_at) {
+int tw_power_look(bool *on_battery, struct tw_battery *battery,
+		struct tw_supplies now, bool woke, int warn_at, int suspend_at) {
 	int due = 0;
-	if (fresh) {
-		battery->low_mark = charge;
+	if ((now.battery && !now.mains) != *on_battery) {
+		*on_battery = !*on_battery;
+		*battery = (struct tw_battery){.fresh = true};
+		due |= TW_BATTERY_SWITCH;
 	}
-	if (warn_at > 0 && charge <= warn_at && !battery->warned) {
+	battery->fresh = battery->fresh || woke;
+	/* Freshness waits for a charge to be read. */
+	if (!*on_battery || now.charge < 0) {
+		return due;
+	}
+	if (battery->fresh) {
+		battery->fresh = false;
+		battery->low_mark = now.charge;
+	}
+	if (warn_at > 0 && now.charge <= warn_at && !battery->warned) {
 		battery->warned = true;
 		due |= TW_BATTERY_WARN;
 	}
-	if (suspend_at > 0 && charge <= suspend_at && charge < battery->low_mark) {
-		battery->low_mark = charge;
+	if (suspend_at > 0 && now.charge <= suspend_at && now.charge < battery->low_mark) {
+		battery->low_mark = now.charge;
 		due |= TW_BATTERY_SUSPEND;
 	}
 	return due;

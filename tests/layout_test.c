@@ -16,6 +16,16 @@ static int failures;
 		} \
 	} while (0)
 
+/* A reading on a machine that runs on battery and stays so; `woke` makes it
+ * the first after somebody arrived, as a wake-up does. */
+static int battery_at(struct tw_battery *battery, int charge, bool woke,
+		int warn_at, int suspend_at) {
+	bool on_battery = true;
+	return tw_power_look(&on_battery, battery,
+		(struct tw_supplies){.battery = true, .charge = charge}, woke,
+		warn_at, suspend_at);
+}
+
 int main(void) {
 	const int view = 1280, gap = 8;
 	const struct tw_fraction third = {1, 3}, half = {1, 2}, full = {1, 1};
@@ -169,42 +179,86 @@ int main(void) {
 	/* A battery running down from 12%, warning at 10 and suspending at 5.
 	 * The first reading is where it starts from. */
 	struct tw_battery battery = {0};
-	CHECK(tw_battery_look(&battery, 12, true, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 11, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 12, true, 10, 5) == 0);
+	CHECK(battery_at(&battery, 11, false, 10, 5) == 0);
 	/* One warning, however long the charge stays low. */
-	CHECK(tw_battery_look(&battery, 10, false, 10, 5) == TW_BATTERY_WARN);
-	CHECK(tw_battery_look(&battery, 10, false, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 6, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 10, false, 10, 5) == TW_BATTERY_WARN);
+	CHECK(battery_at(&battery, 10, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 6, false, 10, 5) == 0);
 	/* Suspended on reaching 5%, and not again while it stays there. */
-	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == TW_BATTERY_SUSPEND);
-	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 5, false, 10, 5) == TW_BATTERY_SUSPEND);
+	CHECK(battery_at(&battery, 5, false, 10, 5) == 0);
 	/* Woken at 5% and left unplugged: nothing at once, and nothing for a
 	 * reading that wobbles up and back, but again at the next percent lost. */
-	CHECK(tw_battery_look(&battery, 5, true, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 6, false, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 5, false, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 4, false, 10, 5) == TW_BATTERY_SUSPEND);
+	CHECK(battery_at(&battery, 5, true, 10, 5) == 0);
+	CHECK(battery_at(&battery, 6, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 5, false, 10, 5) == 0);
+	CHECK(battery_at(&battery, 4, false, 10, 5) == TW_BATTERY_SUSPEND);
 	/* Having slept down to 2%, it is not suspended the moment it wakes. */
-	CHECK(tw_battery_look(&battery, 2, true, 10, 5) == 0);
-	CHECK(tw_battery_look(&battery, 1, false, 10, 5) == TW_BATTERY_SUSPEND);
+	CHECK(battery_at(&battery, 2, true, 10, 5) == 0);
+	CHECK(battery_at(&battery, 1, false, 10, 5) == TW_BATTERY_SUSPEND);
 
 	/* The cable pulled at 4%: warned at once, suspended only after a fall. */
 	struct tw_battery pulled = {0};
-	CHECK(tw_battery_look(&pulled, 4, true, 10, 5) == TW_BATTERY_WARN);
-	CHECK(tw_battery_look(&pulled, 4, false, 10, 5) == 0);
-	CHECK(tw_battery_look(&pulled, 3, false, 10, 5) == TW_BATTERY_SUSPEND);
+	CHECK(battery_at(&pulled, 4, true, 10, 5) == TW_BATTERY_WARN);
+	CHECK(battery_at(&pulled, 4, false, 10, 5) == 0);
+	CHECK(battery_at(&pulled, 3, false, 10, 5) == TW_BATTERY_SUSPEND);
 	/* A reading that skips the thresholds asks for both at once. */
 	struct tw_battery skipped = {0};
-	CHECK(tw_battery_look(&skipped, 40, true, 10, 5) == 0);
-	CHECK(tw_battery_look(&skipped, 3, false, 10, 5) == (TW_BATTERY_WARN | TW_BATTERY_SUSPEND));
+	CHECK(battery_at(&skipped, 40, true, 10, 5) == 0);
+	CHECK(battery_at(&skipped, 3, false, 10, 5) == (TW_BATTERY_WARN | TW_BATTERY_SUSPEND));
 	/* A threshold of 0 turns its half off, down to an empty battery. */
 	struct tw_battery off = {0};
-	CHECK(tw_battery_look(&off, 40, true, 0, 0) == 0);
-	CHECK(tw_battery_look(&off, 0, false, 0, 0) == 0);
-	CHECK(tw_battery_look(&off, 0, false, 10, 0) == TW_BATTERY_WARN);
+	CHECK(battery_at(&off, 40, true, 0, 0) == 0);
+	CHECK(battery_at(&off, 0, false, 0, 0) == 0);
+	CHECK(battery_at(&off, 0, false, 10, 0) == TW_BATTERY_WARN);
 	struct tw_battery quiet = {0};
-	CHECK(tw_battery_look(&quiet, 40, true, 0, 5) == 0);
-	CHECK(tw_battery_look(&quiet, 5, false, 0, 5) == TW_BATTERY_SUSPEND);
+	CHECK(battery_at(&quiet, 40, true, 0, 5) == 0);
+	CHECK(battery_at(&quiet, 5, false, 0, 5) == TW_BATTERY_SUSPEND);
+
+	/* The cable moving. On mains a low battery calls for nothing. */
+	bool on_battery = false;
+	struct tw_battery machine = {.fresh = true};
+	struct tw_supplies plugged = {.battery = true, .mains = true, .charge = 3};
+	struct tw_supplies pulled_at = {.battery = true, .charge = 3};
+	CHECK(tw_power_look(&on_battery, &machine, plugged, false, 10, 5) == 0);
+	CHECK(!on_battery);
+	CHECK(tw_power_look(&on_battery, &machine, plugged, true, 10, 5) == 0);
+	/* Pulled at 3%: on battery and warned, suspended only after a fall. */
+	CHECK(tw_power_look(&on_battery, &machine, pulled_at, false, 10, 5) ==
+		(TW_BATTERY_SWITCH | TW_BATTERY_WARN));
+	CHECK(on_battery);
+	CHECK(tw_power_look(&on_battery, &machine, pulled_at, false, 10, 5) == 0);
+	pulled_at.charge = 2;
+	CHECK(tw_power_look(&on_battery, &machine, pulled_at, false, 10, 5) == TW_BATTERY_SUSPEND);
+	/* Back on mains, and pulled again: a new warning, and a fresh start. */
+	plugged.charge = 2;
+	CHECK(tw_power_look(&on_battery, &machine, plugged, false, 10, 5) == TW_BATTERY_SWITCH);
+	CHECK(!on_battery);
+	CHECK(tw_power_look(&on_battery, &machine, pulled_at, false, 10, 5) ==
+		(TW_BATTERY_SWITCH | TW_BATTERY_WARN));
+	pulled_at.charge = 1;
+	CHECK(tw_power_look(&on_battery, &machine, pulled_at, false, 10, 5) == TW_BATTERY_SUSPEND);
+	/* A charger that comes and goes without the battery saying anything:
+	 * the switch is due at once, the start waits for a charge to read. */
+	struct tw_supplies silent = {.battery = true, .charge = -1};
+	on_battery = false;
+	machine = (struct tw_battery){0};
+	CHECK(tw_power_look(&on_battery, &machine, silent, false, 10, 5) == TW_BATTERY_SWITCH);
+	CHECK(tw_power_look(&on_battery, &machine, silent, false, 10, 5) == 0);
+	silent.charge = 3;
+	CHECK(tw_power_look(&on_battery, &machine, silent, false, 10, 5) == TW_BATTERY_WARN);
+	silent.charge = 2;
+	CHECK(tw_power_look(&on_battery, &machine, silent, false, 10, 5) == TW_BATTERY_SUSPEND);
+	/* A wake-up seen before the charge is read is still a fresh start. */
+	silent.charge = -1;
+	CHECK(tw_power_look(&on_battery, &machine, silent, true, 10, 5) == 0);
+	silent.charge = 1;
+	CHECK(tw_power_look(&on_battery, &machine, silent, false, 10, 5) == 0);
+	/* The battery gone, on battery: that is mains now. */
+	struct tw_supplies none = {.charge = -1};
+	CHECK(tw_power_look(&on_battery, &machine, none, false, 10, 5) == TW_BATTERY_SWITCH);
+	CHECK(!on_battery);
 
 	/* A laptop's own screen, by its connector's name. */
 	CHECK(tw_connector_builtin("eDP-1"));

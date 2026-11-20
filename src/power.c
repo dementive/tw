@@ -36,9 +36,6 @@ struct tw_power {
 	pid_t profile_pid;
 	struct wl_event_source *profile_exit;
 	bool profile_on_battery;
-	/* The next reading of the charge is the first since the cable was
-	 * pulled, tw started or the machine woke (see tw_battery_look()). */
-	bool fresh;
 	int64_t asleep_ms; /* how long the machine had slept at the last look */
 	char dir[];        /* where the kernel lists the power supplies */
 };
@@ -71,15 +68,14 @@ static void attribute(const char *dir, const char *supply, const char *name,
  * and is online (any value but 0) means mains, be it the charger or a USB-C
  * port.
  *
- * `charge` is how full the fullest battery is, in percent: with two, the
- * machine runs on until both are empty. -1 if none says.
+ * The charge is the fullest battery's: with two, the machine runs on until
+ * both are empty.
  */
-static void supplies_read(const char *dir, bool *battery, bool *mains, int *charge) {
-	*battery = *mains = false;
-	*charge = -1;
+static struct tw_supplies supplies_read(const char *dir) {
+	struct tw_supplies now = {.charge = -1};
 	DIR *supplies = opendir(dir);
 	if (supplies == NULL) {
-		return;
+		return now;
 	}
 	struct dirent *entry;
 	while ((entry = readdir(supplies)) != NULL) {
@@ -93,19 +89,20 @@ static void supplies_read(const char *dir, bool *battery, bool *mains, int *char
 		}
 		attribute(dir, entry->d_name, "type", type, sizeof(type));
 		if (strcmp(type, "Battery") == 0) {
-			*battery = true;
+			now.battery = true;
 			attribute(dir, entry->d_name, "capacity", value, sizeof(value));
-			if (value[0] >= '0' && value[0] <= '9' && atoi(value) > *charge) {
-				*charge = atoi(value);
+			if (value[0] >= '0' && value[0] <= '9' && atoi(value) > now.charge) {
+				now.charge = atoi(value);
 			}
 		} else if (type[0] != '\0') {
 			attribute(dir, entry->d_name, "online", value, sizeof(value));
 			/* Any value but 0 is online: a USB-C port reads 2 while
 			 * it charges at a programmable voltage (PPS). */
-			*mains = *mains || atoi(value) != 0;
+			now.mains = now.mains || atoi(value) != 0;
 		}
 	}
 	closedir(supplies);
+	return now;
 }
 
 static void profile_run(struct tw_server *server);
@@ -197,36 +194,24 @@ static int handle_change(int fd, uint32_t mask, void *data) {
 		return 0;
 	}
 
-	bool battery, mains;
-	int charge;
-	supplies_read(power->dir, &battery, &mains, &charge);
+	struct tw_supplies now = supplies_read(power->dir);
 	wlr_log(WLR_DEBUG, "a power supply changed: battery %d, mains %d, charge %d",
-		battery, mains, charge);
-	if ((battery && !mains) != server->on_battery) {
-		server->on_battery = !server->on_battery;
-		power->battery = (struct tw_battery){0};
-		power->fresh = true;
+		now.battery, now.mains, now.charge);
+	int64_t asleep = asleep_ms();
+	bool woke = asleep - power->asleep_ms > 500;
+	power->asleep_ms = asleep;
+
+	int due = tw_power_look(&server->on_battery, &power->battery, now, woke,
+		battery_warn_percent, server->machine->battery_suspend_percent);
+	if (due & TW_BATTERY_SWITCH) {
 		apply(server);
 	}
-
-	int64_t asleep = asleep_ms();
-	if (asleep - power->asleep_ms > 500) {
-		power->fresh = true;
-	}
-	power->asleep_ms = asleep;
-	if (!server->on_battery || charge < 0) {
-		return 0;
-	}
-
-	int due = tw_battery_look(&power->battery, charge, power->fresh,
-		battery_warn_percent, server->machine->battery_suspend_percent);
-	power->fresh = false;
 	if (due & TW_BATTERY_WARN) {
-		wlr_log(WLR_INFO, "battery at %d%%, warning", charge);
+		wlr_log(WLR_INFO, "battery at %d%%, warning", now.charge);
 		spawn_installed(battery_warn_command);
 	}
 	if (due & TW_BATTERY_SUSPEND) {
-		wlr_log(WLR_INFO, "battery at %d%%, suspending", charge);
+		wlr_log(WLR_INFO, "battery at %d%%, suspending", now.charge);
 		suspend_now(server);
 	}
 	return 0;
@@ -243,10 +228,8 @@ void power_init(struct tw_server *server) {
 	char dir[PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/class/power_supply", sys != NULL ? sys : "/sys");
 
-	bool battery, mains;
-	int charge;
-	supplies_read(dir, &battery, &mains, &charge);
-	if (!battery) {
+	struct tw_supplies now = supplies_read(dir);
+	if (!now.battery) {
 		return;
 	}
 	struct tw_power *power = calloc(1, sizeof(*power) + strlen(dir) + 1);
@@ -279,8 +262,8 @@ void power_init(struct tw_server *server) {
 	 * left the machine saving power. The charge waits for the battery's next
 	 * announcement: a warning now would come before the session is up to
 	 * show it. */
-	server->on_battery = !mains;
-	power->fresh = true;
+	server->on_battery = !now.mains;
+	power->battery.fresh = true;
 	power->asleep_ms = asleep_ms();
 	apply(server);
 }

@@ -84,30 +84,41 @@ double tw_swipe_release(double speed, double dt);
  */
 bool tw_refresh_saves(int candidate, int current, int floor_hz);
 
+/* What the power supplies say at one look. */
+struct tw_supplies {
+	bool battery; /* the machine has a battery of its own */
+	bool mains;   /* something else supplies it: the charger, a USB-C port */
+	int charge;   /* how full the fullest battery is, in percent; -1 if none says */
+};
+
 /* What tw remembers about a battery that is running down. */
 struct tw_battery {
+	bool fresh;   /* somebody has just arrived; see tw_power_look() */
 	bool warned;  /* the warning has been given since the machine went on battery */
 	int low_mark; /* the machine is not suspended until the charge is below this */
 };
 
 #define TW_BATTERY_WARN 1
 #define TW_BATTERY_SUSPEND 2
+#define TW_BATTERY_SWITCH 4 /* the machine went on battery or came off it */
 
 /*
- * What a battery at `charge` percent calls for, as a set of the flags above.
- * Call with each reading while the machine runs on battery, starting from a
- * zeroed struct each time it goes on battery.
+ * What a look at the power supplies calls for, as a set of the flags above.
+ * Call with each look; `*on_battery` follows what the supplies say: on
+ * battery when the machine has one and nothing else supplies it. `woke`
+ * says the machine has slept since the last look. Start from a zeroed
+ * struct with `fresh` set and `*on_battery` as the machine was found.
  *
- * The warning is due once, at `warn_at` or below. Suspending is due when the
- * charge has fallen to `suspend_at` or below, and again for each percent it
- * falls further, so a machine that is woken and left unplugged goes back to
- * sleep before it runs out. `fresh` says that somebody has just arrived: the
- * cable was pulled, tw started, or the machine woke up. The charge found
- * then is where it starts from, however low, and only a fall from there
- * suspends. A threshold of 0 turns that part off.
+ * On battery, with a charge to read, the warning is due once, at `warn_at`
+ * or below. Suspending is due when the charge has fallen to `suspend_at` or
+ * below, and again for each percent it falls further, so a machine that is
+ * woken and left unplugged goes back to sleep before it runs out. The first
+ * charge read after somebody has arrived (the cable was pulled, tw started,
+ * the machine woke up) is where it starts from, however low, and only a fall
+ * from there suspends. A threshold of 0 turns that part off.
  */
-int tw_battery_look(struct tw_battery *battery, int charge, bool fresh,
-	int warn_at, int suspend_at);
+int tw_power_look(bool *on_battery, struct tw_battery *battery,
+	struct tw_supplies now, bool woke, int warn_at, int suspend_at);
 
 /* Whether an output with this connector name is a laptop's own screen
  * (eDP, LVDS or DSI): the one its lid covers. */
