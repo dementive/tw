@@ -443,6 +443,10 @@ int main(int argc, char *argv[]) {
 
 	setenv("WAYLAND_DISPLAY", socket, true);
 	x11_init(&server);
+	/* The outputs came up as the backend started: now what the monitors
+	 * tool saved for them can be put back. */
+	server.started = true;
+	outputs_restore(&server);
 	if (startup_cmd != NULL) {
 		spawn(startup_cmd);
 	}

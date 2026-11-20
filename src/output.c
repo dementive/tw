@@ -15,6 +15,7 @@
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_tearing_control_v1.h>
@@ -40,7 +41,7 @@
 struct tw_output *output_showing(struct tw_server *server, size_t workspace) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		if (output->workspace == workspace && !output->lid_off) {
+		if (output->workspace == workspace && output_in_use(output)) {
 			return output;
 		}
 	}
@@ -54,7 +55,7 @@ struct tw_output *output_focused(struct tw_server *server) {
 struct tw_output *output_oldest(struct tw_server *server, struct tw_output *except) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		if (output != except && !output->lid_off) {
+		if (output != except && output_in_use(output)) {
 			return output;
 		}
 	}
@@ -110,13 +111,19 @@ static const struct tw_output_rule *output_rule(struct tw_output *output) {
 	return &other;
 }
 
+/* Its scale: the monitors tool's choice, else machines.h's. */
+static float output_scale(struct tw_output *output) {
+	return output->chosen.scale > 0 ? output->chosen.scale : output_rule(output)->scale;
+}
+
 /*
- * The mode an output should be in now: its preferred one, or on battery the
- * slowest of that size that config.h allows. NULL for an output without
- * modes (a nested or headless one).
+ * The mode an output should be in now: the one the monitors tool chose, else
+ * its preferred one; on battery the slowest of that size that config.h
+ * allows. NULL for an output without modes (a nested or headless one).
  */
 static struct wlr_output_mode *output_mode(struct tw_output *output) {
-	struct wlr_output_mode *best = wlr_output_preferred_mode(output->wlr_output);
+	struct wlr_output_mode *best = output->chosen.mode != NULL ? output->chosen.mode :
+		wlr_output_preferred_mode(output->wlr_output);
 	if (best == NULL || !output->server->on_battery || battery_refresh_hz <= 0) {
 		return best;
 	}
@@ -157,7 +164,7 @@ void outputs_update_mode(struct tw_server *server) {
 	}
 }
 
-/* Commits power, the scale config.h gives the output and a mode (NULL keeps
+/* Commits power, the output's scale (output_scale()) and a mode (NULL keeps
  * the one it has), or with `test` only asks whether it would take them.
  * wlroots leaves out of the commit what would not change. */
 static bool output_try(struct tw_output *output, bool on,
@@ -166,7 +173,7 @@ static bool output_try(struct tw_output *output, bool on,
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, on);
-	wlr_output_state_set_scale(&state, output_rule(output)->scale);
+	wlr_output_state_set_scale(&state, output_scale(output));
 	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
 	}
@@ -425,7 +432,7 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
  */
 static void output_hand_over(struct tw_output *output) {
 	struct tw_server *server = output->server;
-	if (output->workspace != server->active || output->lid_off) {
+	if (output->workspace != server->active || !output_in_use(output)) {
 		return;
 	}
 	struct tw_output *heir = output_oldest(server, output);
@@ -461,6 +468,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	outputs_lid(server, server->lid.closed);
 	/* The lock may have been waiting for this one. */
 	lock_confirm(server);
+	outputs_restore(server);
 }
 
 /*
@@ -510,12 +518,15 @@ static void output_enter(struct tw_output *output) {
 			wlr_output->serial != NULL ? wlr_output->serial : "");
 	}
 	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
-		wlr_output->name, rule->scale, output->workspace + 1);
+		wlr_output->name, output_scale(output), output->workspace + 1);
 
-	/* Adding to the layout raises its change event, which arranges. */
-	struct wlr_output_layout_output *layout_output = rule->x == TW_AUTO || rule->y == TW_AUTO ?
+	/* Where the monitors tool put it, else where machines.h does. Adding to
+	 * the layout raises its change event, which arranges. */
+	int x = output->chosen.placed ? output->chosen.x : rule->x;
+	int y = output->chosen.placed ? output->chosen.y : rule->y;
+	struct wlr_output_layout_output *layout_output = x == TW_AUTO || y == TW_AUTO ?
 		wlr_output_layout_add_auto(server->output_layout, wlr_output) :
-		wlr_output_layout_add(server->output_layout, wlr_output, rule->x, rule->y);
+		wlr_output_layout_add(server->output_layout, wlr_output, x, y);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	if (layout_output == NULL || scene_output == NULL) {
 		/* Out of memory, or no sync timeline. The output stays dark; its
@@ -528,16 +539,16 @@ static void output_enter(struct tw_output *output) {
 }
 
 /*
- * Takes the laptop's own screen out of the layout and turns it off. Its
- * workspace goes as it does when an output is unplugged, and so do the
- * layer surfaces on it: with the output out of the layout its wl_output is
- * gone for clients too.
+ * Takes an output out of the layout and turns it off, setting `why` (lid_off
+ * or chosen.off). Its workspace goes as it does when an output is unplugged,
+ * and so do the layer surfaces on it: with the output out of the layout its
+ * wl_output is gone for clients too.
  */
-static void output_leave(struct tw_output *output) {
+static void output_leave(struct tw_output *output, bool *why) {
 	struct tw_server *server = output->server;
 	struct wlr_output *wlr_output = output->wlr_output;
 	output_hand_over(output);
-	output->lid_off = true;
+	*why = true;
 	output->animating = false;
 	layers_output_destroyed(server, wlr_output);
 	/* The scene would go on drawing on it where it was. */
@@ -557,9 +568,29 @@ static void output_leave(struct tw_output *output) {
  * that there is always a screen. The decision is tw_lid_look()'s.
  */
 void outputs_lid(struct tw_server *server, bool closed) {
-	int panels = 0, others = 0;
+	/* Never no screen at all: outputs turned off with the monitors tool come
+	 * back when they are all that is left. */
 	struct tw_output *output;
+	bool any = false;
 	wl_list_for_each(output, &server->outputs, link) {
+		any = any || !output->chosen.off;
+	}
+	wl_list_for_each(output, &server->outputs, link) {
+		if (!any && output->chosen.off) {
+			wlr_log(WLR_DEBUG, "output %s: back on, the last one left", output->wlr_output->name);
+			output->chosen.off = false;
+			if (!output->builtin) {
+				output_enter(output); /* the lid decides about the laptop's own */
+			}
+		}
+	}
+	/* One turned off counts for nothing here: behind a closed lid, the
+	 * laptop's own screen stays in use if all the others are off. */
+	int panels = 0, others = 0;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (output->chosen.off) {
+			continue;
+		}
 		if (output->builtin) {
 			panels++;
 		} else {
@@ -569,7 +600,7 @@ void outputs_lid(struct tw_server *server, bool closed) {
 	int due = tw_lid_look(&server->lid, closed, panels, others);
 	bool in_use = due & TW_LID_PANEL;
 	wl_list_for_each(output, &server->outputs, link) {
-		if (!output->builtin || output->lid_off != in_use) {
+		if (!output->builtin || output->chosen.off || output->lid_off != in_use) {
 			continue;
 		}
 		wlr_log(WLR_DEBUG, "output %s: %s", output->wlr_output->name,
@@ -577,7 +608,7 @@ void outputs_lid(struct tw_server *server, bool closed) {
 		if (in_use) {
 			output_enter(output);
 		} else {
-			output_leave(output);
+			output_leave(output, &output->lid_off);
 		}
 	}
 	/* The laptop's own screen is the only one and the lid is closed, so
@@ -635,6 +666,7 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
 		output_enter(output);
 	}
 	outputs_lid(server, server->lid.closed);
+	outputs_restore(server);
 }
 
 /*
@@ -789,12 +821,170 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data) {
 	}
 }
 
+/* --- The monitors tool ------------------------------------------------------ */
+
+/*
+ * A program may turn outputs on and off and set their mode, scale and place
+ * (wlr-output-management: tw-monitors, wlr-randr, kanshi). What it chooses
+ * is kept with the output (output->chosen) until the output is unplugged, so
+ * that tw's own commits (screen off and on, a mode for the battery, the lid)
+ * keep it. It is not saved: the program saves what it wants kept, and tw
+ * runs monitors_command, which puts it back, whenever the outputs change.
+ */
+
+/* Tells the programs listening how the outputs are now. */
+static void outputs_publish(struct tw_server *server) {
+	struct wlr_output_configuration_v1 *config = wlr_output_configuration_v1_create();
+	if (config == NULL) {
+		return;
+	}
+	struct tw_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		struct wlr_output_configuration_head_v1 *head =
+			wlr_output_configuration_head_v1_create(config, output->wlr_output);
+		if (head == NULL) {
+			wlr_output_configuration_v1_destroy(config);
+			return;
+		}
+		/* On while in use, also while the screens are off for idleness. */
+		head->state.enabled = output_in_use(output);
+		struct wlr_box box;
+		wlr_output_layout_get_box(server->output_layout, output->wlr_output, &box);
+		head->state.x = box.x;
+		head->state.y = box.y;
+	}
+	wlr_output_manager_v1_set_configuration(server->output_manager, config);
+}
+
+/*
+ * Whether tw can take a configuration, and with `apply` takes it. At least
+ * one output must stay on, out from behind a closed lid; only the modes an
+ * output offers are taken; the transform and the variable refresh rate stay
+ * tw's.
+ */
+static bool outputs_configure(struct tw_server *server,
+		struct wlr_output_configuration_v1 *config, bool apply) {
+	struct wlr_output_configuration_head_v1 *head;
+	bool any = false;
+	wl_list_for_each(head, &config->heads, link) {
+		struct wlr_output *wlr_output = head->state.output;
+		struct tw_output *output = wlr_output->data;
+		if (output == NULL) {
+			return false; /* not one tw uses: a headset */
+		}
+		if (!head->state.enabled) {
+			continue;
+		}
+		any = any || !output->lid_off;
+		if ((head->state.mode == NULL && !wl_list_empty(&wlr_output->modes)) ||
+				head->state.scale <= 0) {
+			return false;
+		}
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		wlr_output_state_set_enabled(&state, true);
+		if (head->state.mode != NULL) {
+			wlr_output_state_set_mode(&state, head->state.mode);
+		}
+		wlr_output_state_set_scale(&state, head->state.scale);
+		bool fits = wlr_output_test_state(wlr_output, &state);
+		wlr_output_state_finish(&state);
+		if (!fits) {
+			return false;
+		}
+	}
+	if (!any || !apply) {
+		return any;
+	}
+
+	/* Those going off first, so that a workspace on one finds an heir. */
+	wl_list_for_each(head, &config->heads, link) {
+		struct tw_output *output = head->state.output->data;
+		if (!head->state.enabled && !output->chosen.off) {
+			wlr_log(WLR_DEBUG, "output %s: turned off", head->state.output->name);
+			if (output_in_use(output)) {
+				output_leave(output, &output->chosen.off);
+			} else {
+				output->chosen.off = true;
+			}
+		}
+	}
+	bool done = true;
+	wl_list_for_each(head, &config->heads, link) {
+		struct tw_output *output = head->state.output->data;
+		struct wlr_output *wlr_output = head->state.output;
+		if (!head->state.enabled) {
+			continue;
+		}
+		bool was_off = output->chosen.off;
+		output->chosen.off = false;
+		output->chosen.mode = head->state.mode;
+		output->chosen.scale = head->state.scale;
+		output->chosen.placed = true;
+		output->chosen.x = head->state.x;
+		output->chosen.y = head->state.y;
+		if (output->lid_off) {
+			continue; /* the lid decides when it comes back */
+		}
+		if (was_off) {
+			output_enter(output);
+		} else {
+			if (!output_set_power(output, !server->blanked)) {
+				done = false;
+			}
+			wlr_output_layout_add(server->output_layout, wlr_output, head->state.x, head->state.y);
+		}
+		/* A screen that is off for idleness takes its mode when it comes on. */
+		done = done && (server->blanked || ((head->state.mode == NULL ||
+			wlr_output->current_mode == head->state.mode) &&
+			wlr_output->scale == head->state.scale));
+	}
+	outputs_lid(server, server->lid.closed);
+	return done;
+}
+
+static void output_config_answer(struct tw_server *server,
+		struct wlr_output_configuration_v1 *config, bool apply) {
+	if (outputs_configure(server, config, apply)) {
+		wlr_output_configuration_v1_send_succeeded(config);
+	} else {
+		wlr_output_configuration_v1_send_failed(config);
+	}
+	wlr_output_configuration_v1_destroy(config);
+	if (apply) {
+		outputs_publish(server);
+	}
+}
+
+static void handle_output_apply(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, output_apply);
+	output_config_answer(server, data, true);
+}
+
+static void handle_output_test(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, output_test);
+	output_config_answer(server, data, false);
+}
+
+static void monitors_restore(void *data) {
+	struct tw_server *server = data;
+	server->monitors_restore = NULL;
+	spawn_installed(monitors_command);
+}
+
+void outputs_restore(struct tw_server *server) {
+	if (server->started && server->monitors_restore == NULL && monitors_command[0] != '\0') {
+		server->monitors_restore = wl_event_loop_add_idle(server->loop, monitors_restore, server);
+	}
+}
+
 static void handle_layout_change(struct wl_listener *listener, void *data) {
 	/* Layer surfaces first: they decide how much of the output is left. */
 	struct tw_server *server = wl_container_of(listener, server, layout_change);
 	layers_arrange(server);
 	lock_arrange(server);
 	strip_arrange(server);
+	outputs_publish(server);
 }
 
 void output_init(struct tw_server *server) {
@@ -829,6 +1019,12 @@ void output_init(struct tw_server *server) {
 	server->renderer_lost.notify = handle_renderer_lost;
 	wl_signal_add(&server->renderer->events.lost, &server->renderer_lost);
 
+	server->output_manager = wlr_output_manager_v1_create(server->display);
+	server->output_apply.notify = handle_output_apply;
+	wl_signal_add(&server->output_manager->events.apply, &server->output_apply);
+	server->output_test.notify = handle_output_test;
+	wl_signal_add(&server->output_manager->events.test, &server->output_test);
+
 	server->tearing_control = wlr_tearing_control_manager_v1_create(server->display, 1);
 	server->content_type = wlr_content_type_manager_v1_create(server->display, 1);
 }
@@ -837,6 +1033,12 @@ void output_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_output.link);
 	wl_list_remove(&server->layout_change.link);
 	wl_list_remove(&server->renderer_lost.link);
+	wl_list_remove(&server->output_apply.link);
+	wl_list_remove(&server->output_test.link);
+	if (server->monitors_restore != NULL) {
+		wl_event_source_remove(server->monitors_restore);
+		server->monitors_restore = NULL;
+	}
 	if (server->renderer_restart != NULL) {
 		wl_event_source_remove(server->renderer_restart);
 		server->renderer_restart = NULL;

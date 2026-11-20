@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Monitors
+GenericName=Screen settings
+Comment=Turn screens on and off, and set their mode, scale and place
+Keywords=display;screen;resolution;refresh;scale;
+Exec=tw-monitors
+Terminal=false
+OnlyShowIn=tw;

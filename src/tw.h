@@ -77,6 +77,16 @@ struct tw_output {
 	 * is closed and another output is there. */
 	bool builtin;
 	bool lid_off;
+	/* What the monitors tool chose for it (output management, output.c),
+	 * kept until it is unplugged; until then machines.h decides. `off`:
+	 * turned off, out of use as behind a closed lid. */
+	struct {
+		bool off;
+		struct wlr_output_mode *mode; /* NULL: its preferred one */
+		float scale;                  /* 0: machines.h's */
+		bool placed;
+		int x, y;
+	} chosen;
 	/* The frame cap on battery (battery_idle_fps): when the last frame was
 	 * shown, and the timer that shows a held-back one when its turn comes.
 	 * frame_held while that timer is set. */
@@ -219,6 +229,13 @@ struct tw_server {
 	 * it shows (frame_capped()). */
 	struct wlr_tearing_control_manager_v1 *tearing_control;
 	struct wlr_content_type_manager_v1 *content_type;
+	/* The monitors tool's protocol (wlr-output-management), and the idle
+	 * callback that has it restore what it saved once the outputs changed. */
+	struct wlr_output_manager_v1 *output_manager;
+	struct wl_listener output_apply;
+	struct wl_listener output_test;
+	struct wl_event_source *monitors_restore;
+	bool started; /* the socket is up: programs can be started */
 	/* Idle: a new renderer takes over after a GPU reset. */
 	struct wl_event_source *renderer_restart;
 
@@ -350,6 +367,12 @@ struct tw_server {
 	int x11_idle_ms;    /* 0 never stops the X11 helper */
 };
 
+/* An output in use is in the layout and shows a workspace: one neither
+ * behind a closed lid nor turned off with the monitors tool. */
+static inline bool output_in_use(const struct tw_output *output) {
+	return !output->lid_off && !output->chosen.off;
+}
+
 /* Nothing is on screen while the outputs are off or the session is locked. */
 static inline bool screen_on(const struct tw_server *server) {
 	return !server->blanked && !server->locked;
@@ -432,6 +455,9 @@ struct tw_output *output_adjacent(struct tw_output *output, int direction);
 /* `area` is what windows may use on the output, `full` the whole of it.
  * False if the output is NULL or has no room. */
 bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box *full);
+/* Runs monitors_command (config.h), soon and once however many outputs come
+ * or go together. Call once programs can be started, and as outputs change. */
+void outputs_restore(struct tw_server *server);
 /* Puts every output that is on into that mode. Call when on_battery changed. */
 void outputs_update_mode(struct tw_server *server);
 /* Shows at once every frame the cap on battery is holding back. Call on

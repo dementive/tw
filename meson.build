@@ -122,6 +122,7 @@ protocols = {
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
 	'wlr-data-control-unstable-v1': 'protocols/wlr-data-control-unstable-v1.xml',
 	'wlr-virtual-pointer-unstable-v1': 'protocols/wlr-virtual-pointer-unstable-v1.xml',
+	'wlr-output-management-unstable-v1': 'protocols/wlr-output-management-unstable-v1.xml',
 }
 server_header = {}
 client_header = {}
@@ -296,16 +297,34 @@ app_protocols = [
 # tw-launch starts programs (Mod+D), and with --dmenu picks a screen or a
 # window to share for xdg-desktop-portal-wlr.
 tw_launch = disabler()
+tw_monitors = disabler()
 if apps_draw
 	tw_launch = executable(
 		'tw-launch',
 		'apps/launch/launch.c',
+		'apps/common/box.c',
 		'apps/common/draw.c',
 		app_protocols,
 		include_directories: 'apps/common',
 		dependencies: [wayland_client, xkbcommon, fontconfig, freetype],
 		install: true,
 	)
+	# tw-monitors turns screens on and off and sets their mode, scale and
+	# place; tw runs it with --apply to put back what it kept.
+	tw_monitors = executable(
+		'tw-monitors',
+		'apps/monitors/monitors.c',
+		'apps/common/box.c',
+		'apps/common/draw.c',
+		app_protocols,
+		client_header['wlr-output-management-unstable-v1'],
+		protocol_code['wlr-output-management-unstable-v1'],
+		include_directories: 'apps/common',
+		dependencies: [wayland_client, xkbcommon, fontconfig, freetype, libm],
+		install: true,
+	)
+	# So that the launcher offers it, as "Monitors"; only in a tw session.
+	install_data('data/tw-monitors.desktop', install_dir: datadir / 'applications')
 	# The screen-sharing portal picks a screen or a window through it. The
 	# portal reads its settings only from /etc/xdg and ~/.config, so this is
 	# the one file tw installs outside its prefix.
@@ -366,7 +385,11 @@ if not get_option('thunderbolt')
 	left_over += udev_rules_dir / '72-tw-thunderbolt.rules'
 endif
 if not apps_draw
-	left_over += prefix / bindir / 'tw-launch'
+	left_over += [
+		prefix / bindir / 'tw-launch',
+		prefix / bindir / 'tw-monitors',
+		prefix / datadir / 'applications/tw-monitors.desktop',
+	]
 endif
 if not build_notify
 	left_over += [
@@ -482,6 +505,8 @@ headless_tests = {
 	'notify': [tw, test_client, test_keys, tw_notify],
 	# tw-launch against made-up desktop entries
 	'launch': [tw, test_client, test_keys, tw_launch],
+	# setting the screens from a program, and tw-monitors
+	'monitors': [tw, test_client, test_keys, tw_monitors],
 }
 foreach name, args : headless_tests
 	test(

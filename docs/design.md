@@ -11,6 +11,7 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [Recording a window](#recording-a-window)
 - [On battery](#on-battery)
 - [The launcher: tw-launch](#the-launcher-tw-launch)
+- [Setting the screens: tw-monitors](#setting-the-screens-tw-monitors)
 - [Notifications: tw-notify](#notifications-tw-notify)
 - [The terminal](#the-terminal)
 - [The session script](#the-session-script)
@@ -90,6 +91,8 @@ two alike apart; `tw_output_named()` in `layout.c`): the same scale wherever
 it is plugged in, through a dock or not, without an entry per machine and
 connector. The machine's entry comes first. `tw -d` logs both names as an
 output appears. An output named nowhere is at scale 1, right of the others.
+What `tw-monitors` (or any program speaking wlr-output-management) sets
+comes before all of that: see [Setting the screens](#setting-the-screens-tw-monitors).
 
 **What a fullscreen window gets from the display.** With nothing else to
 draw, wlroots hands a fullscreen window's buffer to the display as it is
@@ -772,9 +775,59 @@ reads nothing else.
 
 **Drawing** is `tw-notify`'s (`apps/common/draw.c`): a picture in shared
 memory at the screen's own scale, text through fontconfig and FreeType. The
-box is the same size whatever matches, so it is configured once and never
-resized; each key draws one new picture. Keys repeat by a timer the
-compositor's repeat settings set, armed only while a key is held.
+box itself, its keys and its mouse are `apps/common/box.c`, which
+`tw-monitors` shows too. The box is the same size whatever matches, so it
+is configured once and never resized; each key draws one new picture. Keys
+repeat by a timer the compositor's repeat settings set, armed only while a
+key is held.
+
+## Setting the screens: tw-monitors
+
+**In tw** (`output.c`, "The monitors tool"): programs may set the outputs
+through wlr-output-management, which wlroots implements; tw publishes how
+the outputs are after every change of the layout (`outputs_publish()`) and
+takes or refuses what a program asks (`outputs_configure()`). It takes an
+output on or off, a mode the output offers, a scale and a place; the
+transform and the variable refresh rate stay tw's. It refuses anything
+that would leave no output on outside a closed lid, and a mode the output
+does not pass a test commit with. What it takes is kept with the output
+(`output->chosen`) until the output is unplugged, so that tw's own commits
+keep it: the screens coming back on after idleness, the slower mode on
+battery (which starts from the chosen mode, not the preferred one), the
+lid. An output turned off is out of use just as the laptop's own screen is
+behind a closed lid (`output_in_use()`): out of the layout, its workspace
+handed over, its layer surfaces closed (`output_leave()` takes the reason).
+It does not count for the lid either, and if it is all that is left, it
+comes back on (`outputs_lid()`): there is always a screen.
+
+tw saves none of it. As the session starts and whenever an output comes or
+goes, it runs `monitors_command` (`tw-monitors --apply`) once, on an idle
+callback, so that a dock bringing two monitors at once runs it once
+(`outputs_restore()`). That program is gone again a moment later; nothing
+of it runs in between.
+
+**The program** (`apps/monitors/`) shows the box: the screens drawn as they
+are placed, the picked one outlined, and a row each for which screen, on,
+mode, scale and place. A place is a side (right, left, below, above) of
+another screen that is on; a new mode or scale keeps the screen on the same
+side. Return sends the whole configuration; the screens then go back as
+they were unless Return keeps it within `keep_seconds` (10), since a mode a
+screen cannot show leaves nothing to read on it. A key that comes before
+tw has answered waits for the answer: a configuration sent before it would
+carry an old serial and be cancelled. If tw closes the box (its screen was
+turned off), it opens again on another.
+
+**What is kept** is `$XDG_CONFIG_HOME/tw-monitors`, written by the program,
+not read by tw: a block per set of screens plugged in together, a line per
+screen (name, on or off, mode, scale, place, between tabs). A screen goes by
+`<make> <model> <serial>`, as `monitors` in `machines.h` names it, so a
+monitor is known at any connector and through a dock; one without a make
+and model by its connector. `--apply` finds the block whose screens are
+exactly those plugged in and sends it if the screens differ from it; a mode
+the screen no longer offers keeps the one it has. Keeping a change writes
+that block anew and leaves the others; the file is replaced whole (a new
+file renamed over it). A desktop entry, `Monitors`, lets the launcher
+start the box.
 
 ## Notifications: tw-notify
 

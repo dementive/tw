@@ -7,8 +7,8 @@ tw's business and is in [system.md](system.md).
 
 1. [Install](#1-install)
 2. [What comes with tw](#2-what-comes-with-tw): the NVIDIA GPU, Bluetooth,
-   Thunderbolt, power profiles, notifications, the launcher, sharing a
-   window
+   Thunderbolt, power profiles, notifications, the launcher, the screens,
+   sharing a window
 3. [Sleep](#3-sleep)
 4. [After a system update, and when something is wrong](#4-after-a-system-update-and-when-something-is-wrong)
 
@@ -331,6 +331,18 @@ sudo pacman -Rns fuzzel
 ```
 
 Its look is in `apps/launch/config.h`.
+
+### Setting the screens
+
+"Monitors" in the launcher opens `tw-monitors`: the screens as they are
+placed, and rows for the picked one's on or off, resolution and refresh
+rate, scale and place. Up and Down pick a row, Left and Right change it,
+Tab picks the next screen; Return applies, and Return again keeps it.
+Anything not kept goes back by itself after 10 seconds, so a mode a
+monitor cannot show fixes itself. What you keep is put back each time the
+same monitors are plugged in together (the laptop alone, at the desk), from
+`~/.config/tw-monitors`. `src/machines.h` still decides for monitors you
+have never set this way.
 
 ### Sharing a window (OBS, browsers)
 

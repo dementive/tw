@@ -26,28 +26,19 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/input-event-codes.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/timerfd.h>
 #include <unistd.h>
-#include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "box.h"
 #include "config.h"
-#include "cursor-shape-v1-client-protocol.h"
 #include "draw.h"
-#include "fractional-scale-v1-client-protocol.h"
-#include "viewporter-client-protocol.h"
-#include "wlr-layer-shell-unstable-v1-client-protocol.h"
-#include "xdg-activation-v1-client-protocol.h"
 
 #define LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -646,17 +637,11 @@ static void entry_start(struct entry *entry, const char *token) {
 
 /* --- Drawing ----------------------------------------------------------------- */
 
-static uint32_t scale = 120; /* of the screen the box is on, in 120ths */
-static bool dirty;           /* the box does not show what it should */
-
-static int px(int logical) {
-	return (logical * (int)scale + 60) / 120;
-}
+static bool running = true;
+static int status = 1; /* 0 once something was picked */
 
 /* The box's size, in logical pixels: the line typed in and `rows` below it. */
-static int box_height(void) {
-	return 2 * border + 2 * padding + row_height * (1 + rows) + padding / 2;
-}
+enum { box_height = 2 * border + 2 * padding + row_height * (1 + rows) + padding / 2 };
 
 /* As much of `text` as fits from x up to `right`, with "…" if it is cut.
  * Returns where the pen ends. */
@@ -671,8 +656,9 @@ static int text_line(struct picture *picture, int x, int right, int baseline,
 	return text_draw(picture, x, baseline, text, length, cut, colour);
 }
 
-static void box_draw(struct picture *picture) {
-	int edge = px(border), inside = edge + px(padding), row = px(row_height);
+static void draw(struct picture *picture) {
+	font_size_set(box_px(font_size));
+	int edge = box_px(border), inside = edge + box_px(padding), row = box_px(row_height);
 	int right = picture->width - inside;
 	picture_fill(picture, 0, 0, picture->width, picture->height, colour_border);
 	picture_fill(picture, edge, edge, picture->width - 2 * edge, picture->height - 2 * edge,
@@ -683,15 +669,15 @@ static void box_draw(struct picture *picture) {
 	 * fits, then the cursor. */
 	int x = text_line(picture, inside, right, inside + lift, prompt_text, colour_prompt);
 	const char *shown = query;
-	int room = (right - x - px(2)) * 64;
+	int room = (right - x - box_px(2)) * 64;
 	while (*shown != '\0' && text_fit(shown, room, false) < strlen(shown)) {
 		text_character(&shown);
 	}
 	x = text_draw(picture, x, inside + lift, shown, strlen(shown), false, colour_text);
-	picture_fill(picture, x + px(1), inside + (row - font_line_height()) / 2, px(2) > 0 ? px(2) : 1,
-		font_line_height(), colour_text);
+	picture_fill(picture, x + box_px(1), inside + (row - font_line_height()) / 2,
+		box_px(2) > 0 ? box_px(2) : 1, font_line_height(), colour_text);
 
-	int top = inside + row + px(padding / 2);
+	int top = inside + row + box_px(padding / 2);
 	for (size_t i = first; i < match_count && i < first + rows; i++, top += row) {
 		const struct entry *entry = &entries[matches[i]];
 		bool picked = i == selected;
@@ -702,91 +688,13 @@ static void box_draw(struct picture *picture) {
 			picked ? colour_selected_text : colour_text);
 		/* Its kind, unless that is all its name says ("Bulk Rename"). */
 		if (entry->generic != NULL && strcasecmp(entry->generic, entry->name) != 0 &&
-				end + px(16) < right) {
-			text_line(picture, end + px(12), right, top + lift, entry->generic, colour_hint);
+				end + box_px(16) < right) {
+			text_line(picture, end + box_px(12), right, top + lift, entry->generic, colour_hint);
 		}
 	}
 }
 
-/* --- The box ----------------------------------------------------------------- */
-
-static struct wl_display *display;
-static struct wl_compositor *compositor;
-static struct wl_shm *shm;
-static struct wl_seat *seat;
-static struct wl_keyboard *keyboard;
-static struct wl_pointer *pointer;
-static struct zwlr_layer_shell_v1 *layer_shell;
-static struct wp_viewporter *viewporter;
-static struct wp_fractional_scale_manager_v1 *scale_manager;
-static struct xdg_activation_v1 *activation;
-static struct wp_cursor_shape_manager_v1 *cursor_shapes;
-
-static struct wl_registry *registry;
-static struct wl_surface *surface;
-static struct zwlr_layer_surface_v1 *layer_surface;
-static struct wp_viewport *viewport;
-static struct wp_fractional_scale_v1 *fractional;
-static struct wl_buffer *buffer;
-static bool configured;
-static bool running = true;
-static int status = 1; /* 0 once something was picked */
-
-static void box_redraw(void) {
-	dirty = false;
-	if (!configured) {
-		return;
-	}
-	struct picture picture;
-	if (!picture_open(&picture, px(box_width), px(box_height()))) {
-		die("no memory for the picture");
-	}
-	font_size_set(px(font_size));
-	box_draw(&picture);
-	struct wl_buffer *drawn = picture_close(&picture, shm);
-	wl_surface_attach(surface, drawn, 0, 0);
-	if (viewport != NULL) {
-		wp_viewport_set_destination(viewport, box_width, box_height());
-	}
-	wl_surface_damage_buffer(surface, 0, 0, INT32_MAX, INT32_MAX);
-	wl_surface_commit(surface);
-	if (buffer != NULL) {
-		wl_buffer_destroy(buffer);
-	}
-	buffer = drawn;
-	say("draw %dx%d", px(box_width), px(box_height()));
-}
-
-static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer, uint32_t serial,
-		uint32_t width, uint32_t height) {
-	zwlr_layer_surface_v1_ack_configure(layer, serial);
-	if (!configured) {
-		configured = true;
-		dirty = true;
-	}
-}
-
-static void layer_closed(void *data, struct zwlr_layer_surface_v1 *layer) {
-	/* The screen it was on went away. */
-	running = false;
-}
-
-static const struct zwlr_layer_surface_v1_listener layer_listener = {
-	.configure = layer_configure,
-	.closed = layer_closed,
-};
-
-static void scale_preferred(void *data, struct wp_fractional_scale_v1 *object,
-		uint32_t value) {
-	if (value != scale && value != 0) {
-		scale = value;
-		dirty = true;
-	}
-}
-
-static const struct wp_fractional_scale_v1_listener scale_listener = {
-	.preferred_scale = scale_preferred,
-};
+/* --- Picking ----------------------------------------------------------------- */
 
 /* What was picked is started (or with --dmenu printed) once the compositor
  * has made a token from the key or click that picked it. */
@@ -795,6 +703,7 @@ static struct entry *picking;
 static void finish(const char *token) {
 	running = false;
 	status = 0;
+	box_quit();
 	if (dmenu) {
 		puts(picking != NULL ? picking->name : query);
 		fflush(stdout);
@@ -803,18 +712,9 @@ static void finish(const char *token) {
 	}
 }
 
-static void token_done(void *data, struct xdg_activation_token_v1 *made, const char *token) {
-	xdg_activation_token_v1_destroy(made);
-	finish(token);
-}
-
-static const struct xdg_activation_token_v1_listener token_listener = {
-	.done = token_done,
-};
-
 /* Picks the selected match: Return, or a click. With --dmenu and nothing
  * matching, what is typed is the answer, as with dmenu. */
-static void pick(uint32_t serial) {
+static void pick(void) {
 	if (picking != NULL || !running) {
 		return;
 	}
@@ -822,25 +722,12 @@ static void pick(uint32_t serial) {
 		return;
 	}
 	picking = match_count > 0 ? &entries[matches[selected]] : NULL;
-	if (dmenu || activation == NULL) {
+	if (dmenu) {
 		finish(NULL);
-		return;
+	} else {
+		box_token(finish);
 	}
-	struct xdg_activation_token_v1 *token = xdg_activation_v1_get_activation_token(activation);
-	xdg_activation_token_v1_add_listener(token, &token_listener, NULL);
-	xdg_activation_token_v1_set_serial(token, serial, seat);
-	xdg_activation_token_v1_set_surface(token, surface);
-	xdg_activation_token_v1_commit(token);
 }
-
-/* --- Keys -------------------------------------------------------------------- */
-
-static struct xkb_context *xkb;
-static struct xkb_keymap *keymap;
-static struct xkb_state *xkb_state;
-static int repeat_fd = -1;
-static int repeat_rate = 25, repeat_delay = 600;
-static uint32_t repeat_key, last_serial;
 
 /* Takes back the last character, or with `word` the last word and the
  * spaces after it. */
@@ -864,20 +751,20 @@ static void query_erase(bool word) {
 	}
 }
 
-static void key_handle(uint32_t code) {
-	xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_state, code);
-	bool ctrl = xkb_state_mod_name_is_active(xkb_state, XKB_MOD_NAME_CTRL,
-		XKB_STATE_MODS_EFFECTIVE) > 0;
-	bool alt = xkb_state_mod_name_is_active(xkb_state, XKB_MOD_NAME_ALT,
-		XKB_STATE_MODS_EFFECTIVE) > 0;
-	dirty = true;
+static void leave(void) {
+	running = false;
+	box_quit();
+}
+
+static void key(xkb_keysym_t sym, const char *text, bool ctrl, bool alt) {
+	box_redraw();
 	switch (sym) {
 	case XKB_KEY_Escape:
-		running = false;
+		leave();
 		return;
 	case XKB_KEY_Return:
 	case XKB_KEY_KP_Enter:
-		pick(last_serial);
+		pick();
 		return;
 	case XKB_KEY_Up:
 	case XKB_KEY_ISO_Left_Tab:
@@ -902,7 +789,7 @@ static void key_handle(uint32_t code) {
 		case XKB_KEY_c:
 		case XKB_KEY_g:
 		case XKB_KEY_bracketleft:
-			running = false;
+			leave();
 			break;
 		case XKB_KEY_p:
 			select_by(-1);
@@ -921,239 +808,35 @@ static void key_handle(uint32_t code) {
 		}
 		return;
 	}
-	char text[16];
-	int length = xkb_state_key_get_utf8(xkb_state, code, text, sizeof(text));
-	if (alt || length <= 0 || (unsigned char)text[0] < 0x20 || text[0] == 0x7f ||
-			query_length + (size_t)length >= sizeof(query)) {
-		dirty = false;
+	size_t length = strlen(text);
+	if (alt || length == 0 || query_length + length >= sizeof(query)) {
 		return;
 	}
-	memcpy(query + query_length, text, (size_t)length + 1);
-	query_length += (size_t)length;
+	memcpy(query + query_length, text, length + 1);
+	query_length += length;
 	matches_update();
 }
 
-static void repeat_arm(uint32_t code) {
-	repeat_key = code;
-	struct itimerspec spec = {0};
-	if (code != 0 && repeat_rate > 0) {
-		spec.it_value.tv_sec = repeat_delay / 1000;
-		spec.it_value.tv_nsec = (long)(repeat_delay % 1000) * 1000000;
-		spec.it_interval.tv_nsec = 1000000000L / repeat_rate;
-		if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0) {
-			spec.it_value.tv_nsec = 1;
-		}
-	}
-	if (repeat_fd >= 0) {
-		timerfd_settime(repeat_fd, 0, &spec, NULL);
-	}
-}
-
-static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format,
-		int32_t fd, uint32_t size) {
-	char *text = format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 ?
-		mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
-	close(fd);
-	if (text == MAP_FAILED) {
-		return;
-	}
-	struct xkb_keymap *made = xkb_keymap_new_from_string(xkb, text,
-		XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
-	munmap(text, size);
-	if (made == NULL) {
-		return;
-	}
-	xkb_state_unref(xkb_state);
-	xkb_keymap_unref(keymap);
-	keymap = made;
-	xkb_state = xkb_state_new(keymap);
-}
-
-static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
-		struct wl_surface *entered, struct wl_array *keys) {
-	last_serial = serial;
-	say("keyboard");
-}
-
-static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
-		struct wl_surface *left) {
-	repeat_arm(0);
-}
-
-static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
-		uint32_t time, uint32_t key, uint32_t state) {
-	if (xkb_state == NULL) {
-		return;
-	}
-	uint32_t code = key + 8; /* evdev to XKB */
-	if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		last_serial = serial;
-		key_handle(code);
-		repeat_arm(xkb_keymap_key_repeats(keymap, code) ? code : 0);
-	} else if (code == repeat_key) {
-		repeat_arm(0);
-	}
-}
-
-static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
-		uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
-	if (xkb_state != NULL) {
-		xkb_state_update_mask(xkb_state, depressed, latched, locked, 0, 0, group);
-	}
-}
-
-static void keyboard_repeat_info(void *data, struct wl_keyboard *wl_keyboard,
-		int32_t rate, int32_t delay) {
-	repeat_rate = rate;
-	repeat_delay = delay;
-}
-
-static const struct wl_keyboard_listener keyboard_listener = {
-	.keymap = keyboard_keymap,
-	.enter = keyboard_enter,
-	.leave = keyboard_leave,
-	.key = keyboard_key,
-	.modifiers = keyboard_modifiers,
-	.repeat_info = keyboard_repeat_info,
-};
-
-/* --- The mouse --------------------------------------------------------------- */
-
-static wl_fixed_t pointer_y;
-static struct wp_cursor_shape_device_v1 *cursor;
-
-/* The match under the pointer, if there is one. */
-static bool match_at(size_t *found) {
-	int y = (int)(wl_fixed_to_double(pointer_y) * scale / 120);
-	int top = px(border) + px(padding) + px(row_height) + px(padding / 2);
+/* A click on a match starts it. */
+static void click(int x, int y) {
+	int top = border + padding + row_height + padding / 2;
 	if (y < top) {
-		return false;
+		return;
 	}
-	size_t i = first + (size_t)((y - top) / px(row_height));
-	if (i >= match_count || i >= first + rows) {
-		return false;
-	}
-	*found = i;
-	return true;
-}
-
-static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
-		struct wl_surface *entered, wl_fixed_t x, wl_fixed_t y) {
-	pointer_y = y;
-	if (cursor == NULL && cursor_shapes != NULL) {
-		cursor = wp_cursor_shape_manager_v1_get_pointer(cursor_shapes, wl_pointer);
-	}
-	if (cursor != NULL) {
-		wp_cursor_shape_device_v1_set_shape(cursor, serial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
-	}
-}
-
-static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
-		struct wl_surface *left) {
-}
-
-static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
-		wl_fixed_t x, wl_fixed_t y) {
-	pointer_y = y;
-}
-
-static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
-		uint32_t time, uint32_t button, uint32_t state) {
-	size_t i;
-	if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED && match_at(&i)) {
+	size_t i = first + (size_t)((y - top) / row_height);
+	if (i < match_count && i < first + rows) {
 		selected = i;
-		dirty = true;
-		pick(serial);
+		box_redraw();
+		pick();
 	}
 }
 
-static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
-		uint32_t axis, wl_fixed_t value) {
-	if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL && value != 0) {
-		select_by(value > 0 ? +1 : -1);
-		dirty = true;
-	}
+static void scroll(int x, int y, int steps) {
+	select_by(steps);
+	box_redraw();
 }
 
-static const struct wl_pointer_listener pointer_listener = {
-	.enter = pointer_enter,
-	.leave = pointer_leave,
-	.motion = pointer_motion,
-	.button = pointer_button,
-	.axis = pointer_axis,
-};
-
-/* --- Setup ------------------------------------------------------------------- */
-
-static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
-	if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0 && keyboard == NULL) {
-		keyboard = wl_seat_get_keyboard(wl_seat);
-		wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
-	}
-	if ((capabilities & WL_SEAT_CAPABILITY_POINTER) != 0 && pointer == NULL) {
-		pointer = wl_seat_get_pointer(wl_seat);
-		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
-	}
-}
-
-static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
-}
-
-static const struct wl_seat_listener seat_listener = {
-	.capabilities = seat_capabilities,
-	.name = seat_name,
-};
-
-static void registry_global(void *data, struct wl_registry *from, uint32_t name,
-		const char *interface, uint32_t version) {
-	if (strcmp(interface, wl_compositor_interface.name) == 0 && version >= 4) {
-		compositor = wl_registry_bind(from, name, &wl_compositor_interface, 4);
-	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
-		shm = wl_registry_bind(from, name, &wl_shm_interface, 1);
-	} else if (strcmp(interface, wl_seat_interface.name) == 0 && seat == NULL && version >= 4) {
-		/* 4: the keyboard says how keys repeat. */
-		seat = wl_registry_bind(from, name, &wl_seat_interface, 4);
-		wl_seat_add_listener(seat, &seat_listener, NULL);
-	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
-		layer_shell = wl_registry_bind(from, name, &zwlr_layer_shell_v1_interface, 1);
-	} else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
-		viewporter = wl_registry_bind(from, name, &wp_viewporter_interface, 1);
-	} else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
-		scale_manager = wl_registry_bind(from, name,
-			&wp_fractional_scale_manager_v1_interface, 1);
-	} else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
-		activation = wl_registry_bind(from, name, &xdg_activation_v1_interface, 1);
-	} else if (strcmp(interface, wp_cursor_shape_manager_v1_interface.name) == 0) {
-		cursor_shapes = wl_registry_bind(from, name,
-			&wp_cursor_shape_manager_v1_interface, 1);
-	}
-}
-
-static void registry_global_remove(void *data, struct wl_registry *from, uint32_t name) {
-}
-
-static const struct wl_registry_listener registry_listener = {
-	.global = registry_global,
-	.global_remove = registry_global_remove,
-};
-
-static void box_open(void) {
-	surface = wl_compositor_create_surface(compositor);
-	/* On the overlay layer, above a fullscreen window too, taking every key
-	 * while it is open. No anchor: the compositor centres it, and no
-	 * output named: on the screen in use. */
-	layer_surface = zwlr_layer_shell_v1_get_layer_surface(layer_shell, surface, NULL,
-		ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "launcher");
-	zwlr_layer_surface_v1_add_listener(layer_surface, &layer_listener, NULL);
-	zwlr_layer_surface_v1_set_size(layer_surface, box_width, (uint32_t)box_height());
-	zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surface, 1);
-	if (viewporter != NULL && scale_manager != NULL) {
-		viewport = wp_viewporter_get_viewport(viewporter, surface);
-		fractional = wp_fractional_scale_manager_v1_get_fractional_scale(scale_manager, surface);
-		wp_fractional_scale_v1_add_listener(fractional, &scale_listener, NULL);
-	}
-	wl_surface_commit(surface);
-}
+/* --- Main -------------------------------------------------------------------- */
 
 /*
  * One launcher at a time: the key that opened it closes it again. The first
@@ -1190,31 +873,7 @@ static bool only_one(void) {
 	return true; /* fd stays open, and the lock with it, until the exit */
 }
 
-/* Lets go of everything: the box and the connection, the keymap, the font,
- * the programs read. */
-static void quit(void) {
-	struct wl_proxy *proxies[] = {
-		(struct wl_proxy *)buffer, (struct wl_proxy *)fractional, (struct wl_proxy *)viewport,
-		(struct wl_proxy *)layer_surface, (struct wl_proxy *)surface, (struct wl_proxy *)cursor,
-		(struct wl_proxy *)pointer, (struct wl_proxy *)keyboard, (struct wl_proxy *)seat,
-		(struct wl_proxy *)compositor, (struct wl_proxy *)shm, (struct wl_proxy *)layer_shell,
-		(struct wl_proxy *)viewporter, (struct wl_proxy *)scale_manager,
-		(struct wl_proxy *)activation, (struct wl_proxy *)cursor_shapes,
-		(struct wl_proxy *)registry,
-	};
-	/* Only our side of each: the compositor drops its own with the
-	 * connection. What was asked of it last (a token) is answered by now. */
-	for (size_t i = 0; i < LENGTH(proxies); i++) {
-		if (proxies[i] != NULL) {
-			wl_proxy_destroy(proxies[i]);
-		}
-	}
-	wl_display_flush(display);
-	wl_display_disconnect(display);
-	xkb_state_unref(xkb_state);
-	xkb_keymap_unref(keymap);
-	xkb_context_unref(xkb);
-	font_close();
+static void entries_free(void) {
 	for (size_t i = 0; i < entry_count; i++) {
 		struct entry *entry = &entries[i];
 		char *fields[] = {entry->id, entry->file, entry->name, entry->generic,
@@ -1259,49 +918,22 @@ int main(int argc, char *argv[]) {
 	}
 	matches_update();
 
-	xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	repeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-	display = wl_display_connect(NULL);
-	if (xkb == NULL || display == NULL) {
-		die("no Wayland compositor to show the launcher on");
+	static const struct box_app app = {
+		.name = "launcher",
+		.width = box_width,
+		.height = box_height,
+		.font = font,
+		.draw = draw,
+		.key = key,
+		.click = click,
+		.scroll = scroll,
+	};
+	if (box_connect(&app, verbose)) {
+		box_open();
+		box_run();
 	}
-	registry = wl_display_get_registry(display);
-	wl_registry_add_listener(registry, &registry_listener, NULL);
-	if (wl_display_roundtrip(display) < 0 || compositor == NULL || shm == NULL ||
-			seat == NULL || layer_shell == NULL) {
-		die("this compositor has no layer shell");
-	}
-	font_open(font, verbose);
-	box_open();
-
-	while (running) {
-		if (dirty) {
-			box_redraw();
-		}
-		if (wl_display_flush(display) < 0 && errno != EAGAIN) {
-			break;
-		}
-		struct pollfd fds[2] = {
-			{wl_display_get_fd(display), POLLIN, 0},
-			{repeat_fd, POLLIN, 0},
-		};
-		if (poll(fds, 2, -1) < 0) {
-			if (errno == EINTR) {
-				continue;
-			}
-			break;
-		}
-		if (fds[0].revents != 0 && wl_display_dispatch(display) < 0) {
-			break;
-		}
-		uint64_t fired;
-		if ((fds[1].revents & POLLIN) != 0 &&
-				read(repeat_fd, &fired, sizeof(fired)) == sizeof(fired) && repeat_key != 0) {
-			while (fired-- > 0 && running) {
-				key_handle(repeat_key);
-			}
-		}
-	}
-	quit();
+	/* What was asked of the compositor last (a token) is answered by now. */
+	box_disconnect();
+	entries_free();
 	return status;
 }

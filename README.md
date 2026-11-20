@@ -73,6 +73,7 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | Keys, gaps, column widths, timeouts, the terminal and other programs | [src/config.h](src/config.h) |
 | Screens (scale, position) and whether the machine may sleep | [src/machines.h](src/machines.h), an entry per machine; tw picks the one named after the machine's board as it starts |
 | The launcher: size, font, colours, the terminal for terminal programs | [apps/launch/config.h](apps/launch/config.h) |
+| The monitors box: size, font, colours, the scales offered, how long a change waits to be kept | [apps/monitors/config.h](apps/monitors/config.h) |
 | Notifications: font, size, colours, how long they stay | [apps/notify/config.h](apps/notify/config.h) |
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |
@@ -109,7 +110,9 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
   with `TW_A11Y=1` set to keep it.
 - **Several monitors** each show one workspace. Unplugging one hides its
   workspace, or moves it to another monitor if it was the one in use; no
-  window is moved.
+  window is moved. "Monitors" in the launcher turns them on and off and
+  sets their resolution, refresh rate, scale and place; what you keep is
+  put back whenever the same monitors are plugged in again.
 
 Commands that come with it:
 

@@ -235,6 +235,14 @@ static const char *const autostart[] = {
 };
 
 /*
+ * Run as the session starts and whenever a monitor is plugged in or
+ * unplugged, to put back what was set for that set of monitors with the
+ * monitors tool. It is gone again a moment later. "" runs nothing, and so
+ * does a command that is not installed.
+ */
+static const char monitors_command[] = "tw-monitors --apply";
+
+/*
  * X11 applications run through this helper, which starts Xwayland. tw starts
  * it when the first X11 application connects and not before. "" turns X11
  * support off.

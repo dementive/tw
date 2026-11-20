@@ -100,8 +100,9 @@ static void idle_clock_restart(struct tw_server *server) {
 static void outputs_power(struct tw_server *server, bool on) {
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
-		/* The laptop's own screen behind a closed lid stays off. */
-		if (output->lid_off || (on && output->wlr_output->enabled)) {
+		/* The laptop's own screen behind a closed lid, or one turned off
+		 * with the monitors tool, stays off. */
+		if (!output_in_use(output) || (on && output->wlr_output->enabled)) {
 			continue;
 		}
 		if (!output_set_power(output, on)) {
