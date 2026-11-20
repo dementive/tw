@@ -146,16 +146,18 @@ static const char battery_warn_command[] =
 
 /* --- Programs ---------------------------------------------------------------- */
 
-/* The launcher is any layer-shell client. It starts each program through
- * `tw-gpu launch`, which switches the NVIDIA GPU on for the ones whose
- * desktop entry asks for the discrete GPU, and otherwise just runs them. */
+/* The launcher is tw's own (apps/launch): its settings are in
+ * apps/launch/config.h. It starts a program whose desktop entry asks for the
+ * discrete GPU through `tw-gpu run`, which switches the NVIDIA GPU on for it.
+ * Any layer-shell launcher does instead; fuzzel's is
+ * "fuzzel --launch-prefix='tw-gpu launch'". */
 /* The terminal is a window of foot's server (started below, in autostart):
  * one process draws every terminal, so each after the first costs about
  * 10 MB less and opens sooner. -E gives the shell tw's environment, as a
  * foot started by tw would have. If the server is gone (it crashed, taking
  * its windows with it), a foot of its own. */
 static const char terminal[] = "footclient -E -N || foot";
-static const char launcher[] = "fuzzel --launch-prefix='tw-gpu launch'";
+static const char launcher[] = "tw-launch";
 static const char locker[] = "swaylock";
 static const char screenshot[] = "grim";
 static const char screenshot_region[] = "grim -g \"$(slurp)\"";

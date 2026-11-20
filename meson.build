@@ -267,33 +267,66 @@ foreach name, file : udev_rules
 endforeach
 
 
-# --- The notification service ------------------------------------------------
+# --- tw's apps --------------------------------------------------------------
+
+# Programs in apps/ that run only while they are needed, and draw their text
+# with fontconfig and FreeType through apps/common/draw.c, loaded only while
+# they show something. Without those two, neither is built.
+fontconfig = dependency('fontconfig', required: get_option('notify').enabled())
+freetype = dependency('freetype2', required: get_option('notify').enabled())
+apps_draw = fontconfig.found() and freetype.found()
+build_notify = apps_draw and not get_option('notify').disabled()
+app_protocols = [
+	client_header['wlr-layer-shell-unstable-v1'],
+	protocol_code['wlr-layer-shell-unstable-v1'],
+	# The layer shell's code refers to xdg-shell's popups.
+	protocol_code['xdg-shell'],
+	client_header['viewporter'],
+	protocol_code['viewporter'],
+	client_header['fractional-scale-v1'],
+	protocol_code['fractional-scale-v1'],
+	client_header['xdg-activation-v1'],
+	protocol_code['xdg-activation-v1'],
+	client_header['cursor-shape-v1'],
+	protocol_code['cursor-shape-v1'],
+	# Cursor-shape's code refers to the tablet protocol's tools.
+	protocol_code['tablet-v2'],
+]
+
+# tw-launch starts programs (Mod+D), and with --dmenu picks a screen or a
+# window to share for xdg-desktop-portal-wlr.
+tw_launch = disabler()
+if apps_draw
+	tw_launch = executable(
+		'tw-launch',
+		'apps/launch/launch.c',
+		'apps/common/draw.c',
+		app_protocols,
+		include_directories: 'apps/common',
+		dependencies: [wayland_client, xkbcommon, fontconfig, freetype],
+		install: true,
+	)
+	# The screen-sharing portal picks a screen or a window through it. The
+	# portal reads its settings only from /etc/xdg and ~/.config, so this is
+	# the one file tw installs outside its prefix.
+	install_data(
+		'data/tw-portal-wlr.conf',
+		rename: 'tw',
+		install_dir: '/etc/xdg/xdg-desktop-portal-wlr',
+	)
+endif
 
 # tw-notify shows notifications and is gone again when none is left. It
-# speaks D-Bus by itself (notify/bus.c) and draws its text with fontconfig
-# and FreeType, which it loads only while a notification is on screen.
-fontconfig = dependency('fontconfig', required: get_option('notify'))
-freetype = dependency('freetype2', required: get_option('notify'))
+# speaks D-Bus by itself (apps/notify/bus.c).
 tw_notify = disabler()
-if fontconfig.found() and freetype.found()
+if build_notify
 	tw_notify = executable(
 		'tw-notify',
-		'notify/notify.c',
-		'notify/bus.c',
-		client_header['wlr-layer-shell-unstable-v1'],
-		protocol_code['wlr-layer-shell-unstable-v1'],
-		# The layer shell's code refers to xdg-shell's popups.
-		protocol_code['xdg-shell'],
-		client_header['viewporter'],
-		protocol_code['viewporter'],
-		client_header['fractional-scale-v1'],
-		protocol_code['fractional-scale-v1'],
-		client_header['xdg-activation-v1'],
-		protocol_code['xdg-activation-v1'],
-		client_header['cursor-shape-v1'],
-		protocol_code['cursor-shape-v1'],
-		# Cursor-shape's code refers to the tablet protocol's tools.
-		protocol_code['tablet-v2'],
+		'apps/notify/notify.c',
+		'apps/notify/bus.c',
+		'apps/common/draw.c',
+		app_protocols,
+		include_directories: 'apps/common',
 		dependencies: [wayland_client, fontconfig, freetype],
 		install: true,
 	)
@@ -332,7 +365,10 @@ endif
 if not get_option('thunderbolt')
 	left_over += udev_rules_dir / '72-tw-thunderbolt.rules'
 endif
-if not (fontconfig.found() and freetype.found())
+if not apps_draw
+	left_over += prefix / bindir / 'tw-launch'
+endif
+if not build_notify
 	left_over += [
 		prefix / bindir / 'tw-notify',
 		prefix / datadir / 'dbus-1/services/org.freedesktop.Notifications.service',
@@ -355,8 +391,8 @@ test('layout', executable(
 test('bus', executable(
 	'bus-test',
 	'tests/bus_test.c',
-	'notify/bus.c',
-	include_directories: 'notify',
+	'apps/notify/bus.c',
+	include_directories: 'apps/notify',
 ))
 
 # A minimal client that reports the state the compositor gives it, and a tool
@@ -444,6 +480,8 @@ headless_tests = {
 	'power': [tw, test_client, test_keys],
 	# tw-notify on a private session bus; skipped where it is not built
 	'notify': [tw, test_client, test_keys, tw_notify],
+	# tw-launch against made-up desktop entries
+	'launch': [tw, test_client, test_keys, tw_launch],
 }
 foreach name, args : headless_tests
 	test(

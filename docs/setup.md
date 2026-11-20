@@ -7,7 +7,8 @@ tw's business and is in [system.md](system.md).
 
 1. [Install](#1-install)
 2. [What comes with tw](#2-what-comes-with-tw): the NVIDIA GPU, Bluetooth,
-   Thunderbolt, power profiles, notifications, sharing a window
+   Thunderbolt, power profiles, notifications, the launcher, sharing a
+   window
 3. [Sleep](#3-sleep)
 4. [After a system update, and when something is wrong](#4-after-a-system-update-and-when-something-is-wrong)
 
@@ -26,14 +27,16 @@ sudo pacman -S meson ninja gcc git pkgconf wayland wayland-protocols libxkbcommo
     freetype2 fontconfig noto-fonts
 ```
 
-The last three are for the notifications (`tw-notify`). Without
-`freetype2` and `fontconfig` tw builds and `tw-notify` is left out.
+The last three are for tw's own launcher and notifications (`tw-launch`,
+`tw-notify`). Without `freetype2` and `fontconfig` tw builds and both are
+left out, and Mod+D then starts nothing until `launcher` in
+`src/config.h` names another launcher.
 
 Programs tw starts or works with. None is required to build, but each key
 or feature does nothing without its program:
 
 ```sh
-sudo pacman -S foot fuzzel swaylock xwayland-satellite \
+sudo pacman -S foot swaylock xwayland-satellite \
     grim slurp brightnessctl wl-clipboard wireplumber libnotify \
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
 ```
@@ -41,7 +44,6 @@ sudo pacman -S foot fuzzel swaylock xwayland-satellite \
 | Program | What it is for |
 | --- | --- |
 | foot | terminal (Mod+T); one server process, started with the session, draws every terminal window |
-| fuzzel | launcher (Mod+Space, Mod+D) |
 | swaylock | lock screen (Mod+Alt+L, lid close, idle). Without it tw does not lock at all |
 | xwayland-satellite | X11 programs; started when one runs, stopped when the last has gone |
 | grim, slurp | screenshots (Print, Shift+Print) |
@@ -317,24 +319,33 @@ installed. To check, after logging in again: `notify-send Hello there`
 shows a box in the top right corner that goes after six seconds, and a
 second later `pgrep -x tw-notify` prints nothing.
 
+### The launcher
+
+Mod+D (or Mod+Space) opens `tw-launch`: type part of a program's name,
+Return starts it, Escape or the same key again closes it. It lists the
+installed programs' desktop entries, the ones you start most first, and
+nothing of it runs while it is closed. A launcher installed earlier can go:
+
+```sh
+sudo pacman -Rns fuzzel
+```
+
+Its look is in `apps/launch/config.h`.
+
 ### Sharing a window (OBS, browsers)
 
 Programs that record or share the screen ask xdg-desktop-portal-wlr, which
-asks you what to share. Left to itself it asks through `slurp`, which can
-pick only a whole screen. To be offered the windows as well, in a fuzzel
-menu, create `~/.config/xdg-desktop-portal-wlr/tw`:
+asks you what to share. tw installs `/etc/xdg/xdg-desktop-portal-wlr/tw`,
+which has it ask through `tw-launch`: the screens and the windows, in the
+same box as the launcher. It counts from the next login (the portal reads
+it as it starts). A file of the same name in
+`~/.config/xdg-desktop-portal-wlr/` comes first; delete one made for an
+earlier tw.
 
-```ini
-[screencast]
-chooser_type=dmenu
-chooser_cmd=fuzzel -d -l 10 -p 'Share: '
-```
-
-It counts from the next login (the portal reads it as it starts). In OBS
-the source is "Screen Capture (PipeWire)". A shared window is recorded even
-while it is scrolled out of sight, at scale 1: on a screen at 1.25 it comes
-out with 80% of the pixels it shows there, which sharing the whole screen
-avoids.
+In OBS the source is "Screen Capture (PipeWire)". A shared window is
+recorded even while it is scrolled out of sight, at scale 1: on a screen
+at 1.25 it comes out with 80% of the pixels it shows there, which sharing
+the whole screen avoids.
 
 ### The screen back on when Claude Code is done
 

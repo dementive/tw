@@ -31,7 +31,8 @@ capture list list
 expect_line list "window - tw-test-client" "the window to be listed"
 start_client two
 two=$last_client_pid
-wait_until "the second window to be listed" [ "$(count list '^window ')" -eq 2 ]
+two_listed() { [ "$(count list '^window ')" -eq 2 ]; }
+wait_until "the second window to be listed" two_listed
 quit "$two"
 expect_line list "closed tw-test-client" "the closed window to leave the list"
 

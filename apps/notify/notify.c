@@ -15,9 +15,6 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
-#include <fontconfig/fontconfig.h>
-#include <ft2build.h>
-#include FT_FREETYPE_H
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <poll.h>
@@ -26,7 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -35,6 +31,7 @@
 
 #include "bus.h"
 #include "config.h"
+#include "draw.h"
 #include "cursor-shape-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -562,173 +559,15 @@ static bool bus_connect(void) {
 	return true;
 }
 
-/* --- The font -------------------------------------------------------------- */
-
-/*
- * The font comes from fontconfig, as in any other program: `font` in
- * config.h first, then whatever fontconfig ranks next for a character it
- * lacks. It is opened with the first picture, not at startup, so a program
- * that only asks what tw-notify can do costs no font; it goes when tw-notify
- * does, which is a second after the last notification.
- */
-static FT_Library library;
-static FcFontSet *fonts;   /* the font, then those to fall back on; NULL until opened */
-static FT_Face *faces;     /* by place in `fonts`, opened as a character needs them */
-static bool *unusable;     /* fonts that would not open, or that cannot be scaled */
-static int font_px;        /* the size the faces are set to, in pixels */
-static int ascent, line_height; /* of the first font, in pixels */
-
-/* Advances already measured, by character: measuring a line loads each
- * character once and not once per try. Emptied when the size changes. */
-static struct {
-	uint32_t code;
-	int advance;
-} advances[256];
-
-static void font_close(void) {
-	for (int i = 0; fonts != NULL && faces != NULL && i < fonts->nfont; i++) {
-		if (faces[i] != NULL) {
-			FT_Done_Face(faces[i]);
-		}
-	}
-	free(faces);
-	free(unusable);
-	faces = NULL;
-	unusable = NULL;
-	if (fonts != NULL) {
-		FcFontSetDestroy(fonts);
-		fonts = NULL;
-		FT_Done_FreeType(library);
-		FcFini();
-	}
-}
-
-static void font_open(void) {
-	static bool tried;
-	if (tried) {
-		return;
-	}
-	tried = true;
-	FcPattern *pattern = FcNameParse((const FcChar8 *)font);
-	FcResult result;
-	if (pattern != NULL && FcConfigSubstitute(NULL, pattern, FcMatchPattern)) {
-		FcDefaultSubstitute(pattern);
-		fonts = FcFontSort(NULL, pattern, FcTrue, NULL, &result);
-	}
-	if (pattern != NULL) {
-		FcPatternDestroy(pattern);
-	}
-	if (fonts == NULL || fonts->nfont == 0 || FT_Init_FreeType(&library) != 0) {
-		fprintf(stderr, "tw-notify: no font for '%s'\n", font);
-		if (fonts != NULL) {
-			FcFontSetDestroy(fonts);
-			fonts = NULL;
-		}
-		FcFini();
-		return;
-	}
-	faces = calloc((size_t)fonts->nfont, sizeof(*faces));
-	unusable = calloc((size_t)fonts->nfont, sizeof(*unusable));
-	if (faces == NULL || unusable == NULL) {
-		die("no memory for the fonts");
-	}
-}
-
-/* The face of fonts->fonts[i] at the size in use, or NULL. Colour fonts
- * (emoji) and bitmap fonts are passed over: their pictures come in sizes of
- * their own and would need scaling. */
-static FT_Face face_get(int i) {
-	if (unusable[i]) {
-		return NULL;
-	}
-	if (faces[i] == NULL) {
-		FcPattern *pattern = fonts->fonts[i];
-		FcChar8 *file;
-		int index = 0;
-		FcBool colour = FcFalse, scalable = FcTrue;
-		FcPatternGetInteger(pattern, FC_INDEX, 0, &index);
-		FcPatternGetBool(pattern, FC_COLOR, 0, &colour);
-		FcPatternGetBool(pattern, FC_SCALABLE, 0, &scalable);
-		if (colour || !scalable ||
-				FcPatternGetString(pattern, FC_FILE, 0, &file) != FcResultMatch ||
-				FT_New_Face(library, (const char *)file, index, &faces[i]) != 0) {
-			faces[i] = NULL;
-			unusable[i] = true;
-			return NULL;
-		}
-		say("font %s", file);
-		FT_Set_Pixel_Sizes(faces[i], 0, (FT_UInt)font_px);
-	}
-	return faces[i];
-}
-
-/* Sets the size in pixels the text is drawn at. */
-static void font_size_set(int size) {
-	if (size == font_px) {
-		return;
-	}
-	font_px = size;
-	memset(advances, 0, sizeof(advances));
-	for (int i = 0; fonts != NULL && i < fonts->nfont; i++) {
-		if (faces[i] != NULL) {
-			FT_Set_Pixel_Sizes(faces[i], 0, (FT_UInt)size);
-		}
-	}
-	/* Without a font only the frames are drawn, and their height still
-	 * goes by lines of text. */
-	ascent = size;
-	line_height = size * 4 / 3;
-	FT_Face first = fonts != NULL ? face_get(0) : NULL;
-	if (first != NULL) {
-		ascent = (int)((first->size->metrics.ascender + 63) >> 6);
-		line_height = (int)((first->size->metrics.height + 32) >> 6);
-	}
-}
-
-/*
- * Loads the picture of a character into its face's glyph slot, rendered if
- * `render`, and returns the slot; NULL without any font. A character no font
- * has comes out as the first font's box for a missing one.
- */
-static FT_GlyphSlot glyph_load(uint32_t code, bool render) {
-	if (fonts == NULL) {
-		return NULL;
-	}
-	FT_Face face = NULL;
-	FT_UInt index = 0;
-	for (int i = 0; i < fonts->nfont && index == 0; i++) {
-		FcCharSet *charset;
-		if (FcPatternGetCharSet(fonts->fonts[i], FC_CHARSET, 0, &charset) == FcResultMatch &&
-				FcCharSetHasChar(charset, code) && (face = face_get(i)) != NULL) {
-			index = FT_Get_Char_Index(face, code);
-		}
-	}
-	if (index == 0) {
-		face = face_get(0);
-	}
-	/* Outlines only: a scalable font may also carry pictures of its
-	 * characters at a few sizes, in one bit per pixel, which glyph_draw()
-	 * would leave out. */
-	FT_Int32 flags = FT_LOAD_TARGET_LIGHT | FT_LOAD_NO_BITMAP | (render ? FT_LOAD_RENDER : 0);
-	if (face == NULL || FT_Load_Glyph(face, index, flags) != 0) {
-		return NULL;
-	}
-	return face->glyph;
-}
-
-/* How far a character moves the pen, in 64ths of a pixel. */
-static int advance_of(uint32_t code) {
-	size_t slot = code % LENGTH(advances);
-	if (advances[slot].code != code || advances[slot].advance == 0) {
-		FT_GlyphSlot glyph = glyph_load(code, false);
-		advances[slot].code = code;
-		advances[slot].advance = glyph != NULL ? (int)glyph->advance.x : 0;
-	}
-	return advances[slot].advance;
-}
-
 /* --- Drawing ---------------------------------------------------------------- */
 
+/*
+ * The text is drawn with apps/common/draw.c: the font comes from fontconfig,
+ * as in any other program, `font` in config.h first. It is opened with the
+ * first picture, not at startup, so a program that only asks what tw-notify
+ * can do costs no font; it goes when tw-notify does, which is a second
+ * after the last notification.
+ */
 static uint32_t scale = 120; /* of the screen the list is on, in 120ths */
 static int buffer_width, buffer_height; /* of the picture, in its own pixels */
 
@@ -737,139 +576,47 @@ static int px(int logical) {
 	return (logical * (int)scale + 60) / 120;
 }
 
-/* The character at *text, which must not be at its end, and moves past it.
- * Control characters come out as spaces. */
-static uint32_t character(const char **text) {
-	const unsigned char *bytes = (const unsigned char *)*text;
-	uint32_t code = bytes[0];
-	int more = code >= 0xf0 ? 3 : code >= 0xe0 ? 2 : code >= 0xc0 ? 1 : 0, used = 1;
-	if (more > 0) {
-		code &= 0x3fu >> more;
-	} else if (code >= 0x80) {
-		code = 0xfffd;
-	}
-	for (; more > 0 && (bytes[used] & 0xc0) == 0x80; more--, used++) {
-		code = code << 6 | (bytes[used] & 0x3f);
-	}
-	*text += used;
-	return more > 0 ? 0xfffd : code < 0x20 ? ' ' : code;
-}
-
-/*
- * How many bytes of `text` fit on one line of `width` (in 64ths of a pixel).
- * A line ends at a line break, and with `words` between two words where it
- * can; at least one character is always taken.
- */
-static size_t line_fit(const char *text, int width, bool words) {
-	const char *at = text, *space = NULL;
-	int pen = 0;
-	while (*at != '\0' && *at != '\n') {
-		const char *start = at;
-		uint32_t code = character(&at);
-		if (code == ' ') {
-			space = start;
-		}
-		pen += advance_of(code);
-		if (pen > width && start > text) {
-			return (size_t)((words && space != NULL && space > text ? space : start) - text);
-		}
-	}
-	return (size_t)(at - text);
-}
-
-/* Draws one character with its pen at x, and returns its advance. */
-static int glyph_draw(uint32_t *pixels, uint32_t code, int x, int baseline, uint32_t colour) {
-	FT_GlyphSlot glyph = glyph_load(code, true);
-	if (glyph == NULL) {
-		return 0;
-	}
-	const FT_Bitmap *bitmap = &glyph->bitmap;
-	if (bitmap->pixel_mode != FT_PIXEL_MODE_GRAY) {
-		return (int)glyph->advance.x;
-	}
-	for (int row = 0; row < (int)bitmap->rows; row++) {
-		int at_y = baseline - glyph->bitmap_top + row;
-		if (at_y < 0 || at_y >= buffer_height) {
-			continue;
-		}
-		for (int column = 0; column < (int)bitmap->width; column++) {
-			int at_x = x + glyph->bitmap_left + column;
-			uint32_t cover = bitmap->buffer[row * bitmap->pitch + column];
-			if (cover == 0 || at_x < 0 || at_x >= buffer_width) {
-				continue;
-			}
-			uint32_t *pixel = &pixels[at_y * buffer_width + at_x], mixed = 0;
-			for (int shift = 0; shift < 24; shift += 8) {
-				uint32_t under = *pixel >> shift & 0xff, over = colour >> shift & 0xff;
-				mixed |= (under * (255 - cover) + over * cover + 127) / 255 << shift;
-			}
-			*pixel = mixed;
-		}
-	}
-	return (int)glyph->advance.x;
-}
-
-/* `length` bytes of text from x on, followed by "…" if `cut`. */
-static void text_draw(uint32_t *pixels, int x, int baseline, const char *text, size_t length,
-		bool cut, uint32_t colour) {
-	int pen = x * 64;
-	for (const char *at = text; at < text + length;) {
-		pen += glyph_draw(pixels, character(&at), (pen + 32) >> 6, baseline, colour);
-	}
-	if (cut) {
-		glyph_draw(pixels, 0x2026, (pen + 32) >> 6, baseline, colour);
-	}
-}
-
-static void fill(uint32_t *pixels, int x, int y, int width, int height, uint32_t colour) {
-	for (int row = y < 0 ? 0 : y; row < y + height && row < buffer_height; row++) {
-		for (int column = x < 0 ? 0 : x; column < x + width && column < buffer_width; column++) {
-			pixels[row * buffer_width + column] = colour;
-		}
-	}
-}
-
 /*
  * One line of a notification's text, at `top`: as much of `text` as fits, cut
- * with "…" if `last` and there is more. Draws nothing without pixels.
+ * with "…" if `last` and there is more. Draws nothing without a picture.
  * Returns what is left for the next line.
  */
-static const char *line_draw(uint32_t *pixels, int top, const char *text, bool words,
+static const char *line_draw(struct picture *picture, int top, const char *text, bool words,
 		bool last, uint32_t colour) {
 	int edge = px(note_border) + px(note_padding);
 	int width = (buffer_width - 2 * edge) * 64;
-	size_t length = line_fit(text, width, words);
+	size_t length = text_fit(text, width, words);
 	const char *rest = text + length;
 	rest += strspn(rest, " \t\r\n");
 	bool cut = last && *rest != '\0';
 	if (cut) {
-		length = line_fit(text, width - advance_of(0x2026), false);
+		length = text_fit(text, width - text_advance(0x2026), false);
 	}
-	if (pixels != NULL) {
-		text_draw(pixels, edge, top + ascent, text, length, cut, colour);
+	if (picture != NULL) {
+		text_draw(picture, edge, top + font_ascent(), text, length, cut, colour);
 	}
 	return rest;
 }
 
-/* Draws a notification with its top edge at note->y, or without pixels only
- * measures it. Returns its height. */
-static int note_draw(const struct note *note, uint32_t *pixels) {
+/* Draws a notification with its top edge at note->y, or without a picture
+ * only measures it. Returns its height. */
+static int note_draw(const struct note *note, struct picture *picture) {
 	int border = px(note_border), edge = border + px(note_padding);
 	int top = note->y + edge;
-	if (pixels != NULL) {
-		fill(pixels, 0, note->y, buffer_width, note->height,
+	if (picture != NULL) {
+		picture_fill(picture, 0, note->y, buffer_width, note->height,
 			note->critical ? colour_critical : colour_border);
-		fill(pixels, border, note->y + border, buffer_width - 2 * border,
+		picture_fill(picture, border, note->y + border, buffer_width - 2 * border,
 			note->height - 2 * border, colour_background);
 	}
 	if (note->summary[0] != '\0') {
-		line_draw(pixels, top, note->summary, false, true, colour_title);
-		top += line_height;
+		line_draw(picture, top, note->summary, false, true, colour_title);
+		top += font_line_height();
 	}
 	const char *text = note->body + strspn(note->body, " \t\r\n");
 	for (int line = 0; line < body_lines && *text != '\0'; line++) {
-		text = line_draw(pixels, top, text, true, line == body_lines - 1, colour_text);
-		top += line_height;
+		text = line_draw(picture, top, text, true, line == body_lines - 1, colour_text);
+		top += font_line_height();
 	}
 	return top + edge - note->y;
 }
@@ -1014,14 +761,8 @@ static void window_open(void) {
 
 /* Paints the list into a new picture and shows it. */
 static void window_draw(void) {
-	int stride = buffer_width * 4;
-	size_t size = (size_t)stride * (size_t)buffer_height;
-	int fd = memfd_create("tw-notify", MFD_CLOEXEC);
-	uint32_t *pixels = MAP_FAILED;
-	if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
-		pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	}
-	if (pixels == MAP_FAILED) {
+	struct picture picture;
+	if (!picture_open(&picture, buffer_width, buffer_height)) {
 		die("no memory for the picture");
 	}
 	/* Urgent ones last: neighbours share a border, and theirs is the one
@@ -1029,19 +770,13 @@ static void window_draw(void) {
 	for (int urgent = 0; urgent <= 1; urgent++) {
 		for (int i = 0; i < note_count; i++) {
 			if (notes[i].critical == (urgent == 1)) {
-				note_draw(&notes[i], pixels);
+				note_draw(&notes[i], &picture);
 			}
 		}
 	}
-
-	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
-	struct wl_buffer *drawn = wl_shm_pool_create_buffer(pool, 0, buffer_width, buffer_height,
-		stride, WL_SHM_FORMAT_XRGB8888);
-	wl_shm_pool_destroy(pool);
-	/* The compositor has the picture now. Our view of it can go, and so
-	 * this program holds no pixels between two changes. */
-	munmap(pixels, size);
-	close(fd);
+	/* The compositor has the picture now, and this program holds no pixels
+	 * between two changes. */
+	struct wl_buffer *drawn = picture_close(&picture, shm);
 
 	wl_surface_attach(surface, drawn, 0, 0);
 	if (viewport != NULL) {
@@ -1257,7 +992,7 @@ static void window_update(void) {
 		notes_close_all();
 		return;
 	}
-	font_open(); /* once; without a font, only the frames are drawn */
+	font_open(font, verbose); /* once; without a font, only the frames are drawn */
 	layout();
 	int width = buffer_width * 120 / (int)scale, height = buffer_height * 120 / (int)scale;
 	bool resized = width != asked_width || height != asked_height;

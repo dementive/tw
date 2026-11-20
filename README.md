@@ -72,7 +72,8 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 | --- | --- |
 | Keys, gaps, column widths, timeouts, the terminal and other programs | [src/config.h](src/config.h) |
 | Screens (scale, position) and whether the machine may sleep | [src/machines.h](src/machines.h), an entry per machine; tw picks the one named after the machine's board as it starts |
-| Notifications: font, size, colours, how long they stay | [notify/config.h](notify/config.h) |
+| The launcher: size, font, colours, the terminal for terminal programs | [apps/launch/config.h](apps/launch/config.h) |
+| Notifications: font, size, colours, how long they stay | [apps/notify/config.h](apps/notify/config.h) |
 | Whether Bluetooth is kept off, and the Thunderbolt rule | build options `-Dbluetooth`, `-Dthunderbolt` |
 | Programs to start with the session, without a rebuild | `~/.config/tw/autostart`, an executable script |
 

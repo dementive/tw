@@ -10,6 +10,7 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [The clipboard](#the-clipboard)
 - [Recording a window](#recording-a-window)
 - [On battery](#on-battery)
+- [The launcher: tw-launch](#the-launcher-tw-launch)
 - [Notifications: tw-notify](#notifications-tw-notify)
 - [The terminal](#the-terminal)
 - [The session script](#the-session-script)
@@ -18,8 +19,9 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [Power profiles: tw-power](#power-profiles-tw-power)
 - [Thunderbolt](#thunderbolt)
 
-What tw's C code does is in `src/`. `tw-notify` is a second program in
-`notify/` that shares no code with it. Everything else is shell scripts and
+What tw's C code does is in `src/`. `tw-launch` and `tw-notify` are
+programs of their own in `apps/`, sharing their drawing (`apps/common/`) but
+no code with tw. Everything else is shell scripts and
 unit files in `data/`, installed with tw but not part of the compositor:
 they would work under another one.
 
@@ -693,11 +695,64 @@ charge as it starts, because a notification sent before `tw-session` has
 told D-Bus where the session is would start the notification service
 without a display; the battery's next announcement comes soon enough.
 
+## The launcher: tw-launch
+
+`tw-launch` (`apps/launch/`) starts programs. tw runs it for Mod+D and
+Mod+Space; it reads the desktop entries, shows a box in the middle of the
+screen on the overlay layer, taking the keyboard, and is gone once it has
+started something or Escape is pressed. Nothing of it runs in between. A
+second one started while one is open ends that one and leaves, so the key
+that opened it closes it: the first holds a lock on
+`$XDG_RUNTIME_DIR/tw-launch.pid`, which has its pid in it.
+
+**What it offers.** The entries of `$XDG_DATA_HOME/applications` and then
+of each `$XDG_DATA_DIRS`, subdirectories included (`kde/foo.desktop` is
+`kde-foo.desktop`); the first of an ID wins, so a user's own entry with
+`Hidden=true` hides the system's. Only applications with a name and a
+command, and not those with `NoDisplay` or `Hidden`, those an `OnlyShowIn`
+or `NotShowIn` keeps from `XDG_CURRENT_DESKTOP` (tw), or those whose
+`TryExec` is not installed. Names are shown untranslated, without icons;
+an entry's kind (`GenericName`) is shown dimmed after its name.
+
+**Order.** What is typed matches a name, without regard to case: from its
+start first, then from the start of a word in it, then anywhere in it; then
+the kind and the keywords ("browser" finds Firefox); then the name's
+characters in that order. Among equal matches the one started most often
+comes first, then by name: `$XDG_CACHE_HOME/tw-launch` keeps a count per
+entry ID, written anew (to a new file renamed over the old) at each start,
+and an entry no longer installed drops out of it.
+
+**Starting.** The `Exec` line is split as the specification says (double
+quotes, their four escapes), the field codes for files, URLs and the icon
+go, `%c` and `%k` become the name and the entry's file. A terminal program
+(`Terminal=true`) is started through `terminal` in its `config.h`, foot as
+Mod+T has it. One whose entry asks for the discrete GPU
+(`PrefersNonDefaultGPU`, `X-KDE-RunOnDiscreteGpu`) is started through
+`tw-gpu run`, or as it is where that is not installed: the launcher knows
+the entry, so it needs none of `tw-gpu launch`'s looking up. The program
+starts in a session of its own with an activation token made from the key
+or click that picked it (`XDG_ACTIVATION_TOKEN`), so a program that
+hands the start to one already running can bring its window forward.
+
+**`--dmenu`** reads lines from stdin instead, keeps their order, and
+prints the one picked (or, with nothing matching, what was typed); Escape
+prints nothing and exits 1. `data/tw-portal-wlr.conf`, installed as
+`/etc/xdg/xdg-desktop-portal-wlr/tw`, makes it the screen-sharing portal's
+chooser, which lists the screens and the windows that way (**Recording a
+window**). It is the one file tw installs outside its prefix: the portal
+reads nothing else.
+
+**Drawing** is `tw-notify`'s (`apps/common/draw.c`): a picture in shared
+memory at the screen's own scale, text through fontconfig and FreeType. The
+box is the same size whatever matches, so it is configured once and never
+resized; each key draws one new picture. Keys repeat by a timer the
+compositor's repeat settings set, armed only while a key is held.
+
 ## Notifications: tw-notify
 
-`tw-notify` shows notifications. It is a program of its own in `notify/`
-that shares no code with tw and talks to it as any layer-shell client
-would. It is kept small by running only while there is something to show
+`tw-notify` shows notifications. It is a program of its own in
+`apps/notify/` that shares no code with tw and talks to it as any
+layer-shell client would. It is kept small by running only while there is something to show
 and by speaking D-Bus itself.
 
 **It runs only while there is something to show.** Its D-Bus service file
@@ -747,8 +802,9 @@ programs are told. A protocol error from the compositor is written to
 stderr.
 Signals go to the program that sent the notification and to nobody else.
 
-**Text.** The font is `font` in `notify/config.h`, found through
-fontconfig and drawn with FreeType, so any character some installed font
+**Text.** The font is `font` in `apps/notify/config.h`, found through
+fontconfig and drawn with FreeType (`apps/common/draw.c`, which
+`tw-launch` draws with too), so any character some installed font
 has is shown: fontconfig's fallback list is walked for each character a
 font lacks. Colour (emoji) and bitmap fonts are passed over, since their
 pictures come in fixed sizes, and so are the pictures some outline fonts
@@ -952,12 +1008,13 @@ boot, with `tw-gpu run true` before tw starts: `on` would leave it kept on
 for the sessions after.
 
 **`tw-gpu run <program>`** switches the GPU on, starts the program with
-NVIDIA's offload variables, and switches it off afterwards. The launcher
-starts everything through `tw-gpu launch`, which does the same for desktop
-entries with `PrefersNonDefaultGPU=true` or KDE's
-`X-KDE-RunOnDiscreteGpu=true`, and otherwise just runs the program. It
-reads the entry the launcher names in `DESKTOP_ENTRY_PATH` (fuzzel sets
-it), and without that looks the desktop ID up as the specification says,
+NVIDIA's offload variables, and switches it off afterwards. `tw-launch`
+starts the desktop entries with `PrefersNonDefaultGPU=true` or KDE's
+`X-KDE-RunOnDiscreteGpu=true` through it. For another launcher there is
+`tw-gpu launch`, through which that launcher starts everything: it does
+the same for such entries and otherwise just runs the program. It reads
+the entry the launcher names in `DESKTOP_ENTRY_PATH` (fuzzel sets it), and
+without that looks the desktop ID up as the specification says,
 each dash standing for a dash or a directory (`kde-foo.desktop` may be
 `kde/foo.desktop`).
 

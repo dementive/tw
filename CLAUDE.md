@@ -70,7 +70,7 @@ what it would do and starts nothing.
 | `src/power.c` | On battery: learns from udev when the power cable moves, slows the outputs, runs the power-profile command, warns and suspends on a low battery |
 | `src/x11.c` | X11 display sockets; starts xwayland-satellite on the first X11 client, stops it when none is left |
 | `src/layout.c` | Strip maths: column widths, stacking, scrolling, the spring; which refresh rate on battery; what the power supplies and the lid call for, and which screen is the laptop's own. Pure functions, no wlroots, unit tested |
-| `notify/` | `tw-notify`, a second program: `notify.c` (the list, its window, the bus conversation, text through fontconfig and FreeType), `bus.c` (D-Bus messages with no library; pure, unit tested), `config.h` |
+| `apps/` | tw's own programs, each running only while needed. `common/draw.c`: a picture in shared memory, text through fontconfig and FreeType. `launch/`: `tw-launch`, the launcher (Mod+D) and the screen-sharing chooser (`--dmenu`). `notify/`: `tw-notify`, `notify.c` (the list, its window, the bus conversation) and `bus.c` (D-Bus messages with no library; pure, unit tested). Each has its `config.h` |
 | `data/tw-session` | Session start script: picks the GPUs, points programs at the keyring, keeps the accessibility bus off, says what to do when tw cannot start |
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |
 | `data/` (rest) | udev rules, the Bluetooth blacklist, timer and service drop-in, the accessibility drop-in, the logind drop-in for the power key, the Thunderbolt rule, the login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify`, and `post-install.sh`, which `meson install` runs to have the system read all of it |
@@ -192,7 +192,9 @@ machines. What they have decided, so that it is not put to them again:
 
 - No bar, no window borders or other focus markers, no night light, no
   tray, no floating-window controls. Configuration stays compile-time.
-- No notification daemon but `tw-notify`; no clipboard helper; no
+- No notification daemon but `tw-notify`, no launcher but `tw-launch`
+  (they want tw's own small programs in `apps/` over outside ones); no
+  clipboard helper; no
   autostart of the session from the shell (they type `tw-session`).
 - The screen goes off after 2 minutes without input and locks nothing; a
   notification turns it back on (Claude Code sends one when it is done);

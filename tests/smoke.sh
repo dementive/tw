@@ -50,8 +50,8 @@ fake_program fnott "echo fnott >>'$run_dir/autostart.log'"
 fake_program wl-clip-persist "echo \"wl-clip-persist \$*\" >>'$run_dir/autostart.log'"
 
 # Stand-ins for the launcher and the terminal, to see their keys start them.
-fake_program fuzzel "echo launched >>'$run_dir/fuzzel.log'"
-launched() { [ -e "$run_dir/fuzzel.log" ] && [ "$(grep -c . "$run_dir/fuzzel.log")" = "$1" ]; }
+fake_program tw-launch "echo launched >>'$run_dir/launched.log'"
+launched() { [ -e "$run_dir/launched.log" ] && [ "$(grep -c . "$run_dir/launched.log")" = "$1" ]; }
 fake_program foot "[ ! -e /proc/\$\$/fd/9 ] || echo 'fd 9' >>'$run_dir/leaked.log'
 case \$1 in
 --server) echo 'foot --server' >>'$run_dir/autostart.log' ;;
