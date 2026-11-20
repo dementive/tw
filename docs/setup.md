@@ -313,7 +313,7 @@ second later `pgrep -x tw-notify` prints nothing.
 
 ### The screen back on when Claude Code is done
 
-The screen goes off 30 seconds after the last input, and a notification
+The screen goes off 2 minutes after the last input, and a notification
 turns it back on. Claude Code can send one when it finishes and when it
 needs an answer, through two hooks in `~/.claude/settings.json` (merged
 into what is there; `/hooks` in Claude Code shows them):

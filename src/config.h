@@ -60,9 +60,9 @@ static const int swipe_workspace_distance = 60;
  * turns it back on. Windows are told to stop drawing while it is off. A
  * visible window that inhibits idling (a playing video) holds it off.
  * `tw -b` overrides this. The screen is 2.4 W of an idle laptop's 6.4
- * (docs/g533zw.md), so it goes off soon.
+ * (docs/g533zw.md); two minutes leaves time to read what is on it.
  */
-static const int blank_after_seconds = 30;
+static const int blank_after_seconds = 120;
 
 /*
  * Lock the session after this many seconds without input, and before the

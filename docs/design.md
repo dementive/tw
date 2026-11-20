@@ -327,9 +327,9 @@ its first frame on.
 ## Screen off and lock
 
 **Idle** (`idle.c`). Three steps, each after its own time without input:
-the outputs go off (`blank_after_seconds`, 30), the session locks
+the outputs go off (`blank_after_seconds`, 120), the session locks
 (`lock_after_seconds`, 900) and the machine is suspended (the machine's
-`suspend_after_seconds`, 0 on both of the owner's laptops). Blanking is only
+`suspend_after_seconds`: 1800 on the G533ZW, 0 on the G615LM). Blanking is only
 that: nothing is locked, programs go on working, and any input brings the
 screen back. The screen is 2.4 W of an idle laptop's 6.4
 ([g533zw.md](g533zw.md#the-screen-and-what-a-frame-costs)), so it goes off

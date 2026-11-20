@@ -81,7 +81,7 @@ Everything is compile-time: edit, `meson compile -C build-release`, install.
 
 ## What tw does by itself
 
-- **Screen and lock.** The screen goes off after 30 seconds without input
+- **Screen and lock.** The screen goes off after 2 minutes without input
   and locks nothing; any input, or a notification, turns it back on. The
   session locks after 15 minutes without input. Closing the lid with no
   monitor plugged in locks too. A window that inhibits idling (a playing

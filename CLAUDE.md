@@ -194,7 +194,7 @@ machines. What they have decided, so that it is not put to them again:
   tray, no floating-window controls. Configuration stays compile-time.
 - No notification daemon but `tw-notify`; no clipboard helper; no
   autostart of the session from the shell (they type `tw-session`).
-- The screen goes off after 30 s without input and locks nothing; a
+- The screen goes off after 2 minutes without input and locks nothing; a
   notification turns it back on (Claude Code sends one when it is done);
   the session locks after 15 minutes. On battery, frames are capped at 2 a
   second after 5 s without input, and never for videos, games or anything
