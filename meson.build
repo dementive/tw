@@ -396,8 +396,14 @@ test_keys = executable(
 )
 
 # End-to-end on the headless backend, one compositor per test. In a sanitizer
-# build these are also the lifetime-bug and leak check.
+# build these are also the lifetime-bug and leak check. Each has a runtime
+# directory of its own, so they run side by side, but for x11: the X11
+# sockets are the machine's, and its takeover of the display a killed tw
+# left behind would race another test's tw for that display.
 headless_tests = {
+	# X11 sockets, starting and stopping the helper, with a stand-in helper.
+	# First, as it runs alone: Meson waits for every test before it to end.
+	'x11': [tw, test_client],
 	# everything a client can observe: sizes, focus, bindings, workspaces, lock
 	'smoke': [tw, test_client, test_keys],
 	# windows sharing a column, floating dialogs
@@ -408,8 +414,6 @@ headless_tests = {
 	'outputs': [tw, test_client, test_keys],
 	# screen blanking, inhibitors, locking on idle, with a two-second timeout
 	'idle': [tw, test_client, test_keys],
-	# X11 sockets, starting and stopping the helper, with a stand-in helper
-	'x11': [tw, test_client],
 	# a copy outlives the program it was made in
 	'clipboard': [tw, test_client, test_clip],
 	# what tw does on battery and on mains, against made-up power supplies,
@@ -423,7 +427,7 @@ foreach name, args : headless_tests
 		name,
 		find_program('tests' / name + '.sh'),
 		args: args,
-		is_parallel: false,
+		is_parallel: name != 'x11',
 		timeout: 120,
 	)
 endforeach

@@ -16,7 +16,9 @@ meson test -C build-release --suite tw   # optimized build: adds the budget test
 
 Always pass `--suite tw`; without it Meson also runs the vendored
 subprojects' own tests. In the dev build a sanitizer report or a leak fails
-the test that caused it.
+the test that caused it. The compositor tests run side by side, but for
+`x11`, which runs alone and first (the reasons are in `meson.build`); the
+suite takes a little over a minute, most of it `idle`.
 
 The compositor tests start tw on the headless backend with the software
 renderer, in a private runtime directory, with a PATH that holds nothing but
