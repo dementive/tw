@@ -20,6 +20,15 @@ the test that caused it. The compositor tests run side by side, but for
 `x11`, which runs alone and first (the reasons are in `meson.build`); the
 suite takes a little over a minute, most of it `idle`.
 
+GitHub runs the same suite on every push to `master` and every Monday
+(`.github/workflows/test.yml`), on Arch Linux with the packages
+[setup.md](setup.md) names, as a user and not root: the weekly run is
+there to show a system update that breaks tw before a laptop is rebuilt.
+`tests/notify.sh` measures its notifications in Noto Sans, so it passes
+only where that is the font for `sans-serif`. GitHub stops a scheduled run
+after 60 days with no push to the repository; a push or the Actions tab
+starts it again.
+
 The compositor tests start tw on the headless backend with the software
 renderer, in a private runtime directory, with a PATH that holds nothing but
 the test's own stand-ins (`fake_program` in `tests/lib.sh`) and with no
