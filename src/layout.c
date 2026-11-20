@@ -116,6 +116,29 @@ bool tw_connector_builtin(const char *name) {
 	return false;
 }
 
+/* Whether `name` starts with `word` and a space, or is `word`; *rest is what follows. */
+static bool starts_with_word(const char *name, const char *word, const char **rest) {
+	size_t length = strlen(word);
+	if (strncmp(name, word, length) != 0 || (name[length] != ' ' && name[length] != '\0')) {
+		return false;
+	}
+	*rest = name[length] == ' ' ? name + length + 1 : name + length;
+	return true;
+}
+
+bool tw_output_named(const char *rule, const char *connector,
+		const char *make, const char *model, const char *serial) {
+	if (strcmp(rule, connector) == 0) {
+		return true;
+	}
+	const char *rest;
+	if (make == NULL || model == NULL || make[0] == '\0' || model[0] == '\0' ||
+			!starts_with_word(rule, make, &rest) || !starts_with_word(rest, model, &rest)) {
+		return false;
+	}
+	return *rest == '\0' || (serial != NULL && strcmp(rest, serial) == 0);
+}
+
 int tw_lid_look(struct tw_lid *lid, bool closed, int panels, int others) {
 	/* The laptop's own screen is the only one, behind a closed lid. */
 	bool alone = closed && others == 0 && panels > 0;

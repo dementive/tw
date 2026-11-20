@@ -7,7 +7,7 @@ tw's business and is in [system.md](system.md).
 
 1. [Install](#1-install)
 2. [What comes with tw](#2-what-comes-with-tw): the NVIDIA GPU, Bluetooth,
-   Thunderbolt, power profiles, notifications
+   Thunderbolt, power profiles, notifications, sharing a window
 3. [Sleep](#3-sleep)
 4. [After a system update, and when something is wrong](#4-after-a-system-update-and-when-something-is-wrong)
 
@@ -70,6 +70,12 @@ cat /sys/class/dmi/id/board_name    # the entry's .board
 `tw -d` logs which entry it took (`machine G615LM`, or `machine other`) and
 each screen's connector name (`output eDP-1`) for the entry's outputs.
 Commit the entry: the next machine then builds from the same tree.
+
+A monitor you carry between machines (or plug in through a dock) goes in
+`monitors`, below the machines, by the name it gives itself: plug it in
+under `tw -d` and copy the name from the line `output HDMI-A-1 is <make>
+<model> <serial>`, leaving out the serial unless two of the same model are
+on one desk. It then has its scale on every machine, at every port.
 
 A build directory set up before machines were picked at startup may
 remember the old `machine` option, and Meson then refuses to build in it
@@ -310,6 +316,25 @@ it is the one used from the next login even while another service is still
 installed. To check, after logging in again: `notify-send Hello there`
 shows a box in the top right corner that goes after six seconds, and a
 second later `pgrep -x tw-notify` prints nothing.
+
+### Sharing a window (OBS, browsers)
+
+Programs that record or share the screen ask xdg-desktop-portal-wlr, which
+asks you what to share. Left to itself it asks through `slurp`, which can
+pick only a whole screen. To be offered the windows as well, in a fuzzel
+menu, create `~/.config/xdg-desktop-portal-wlr/tw`:
+
+```ini
+[screencast]
+chooser_type=dmenu
+chooser_cmd=fuzzel -d -l 10 -p 'Share: '
+```
+
+It counts from the next login (the portal reads it as it starts). In OBS
+the source is "Screen Capture (PipeWire)". A shared window is recorded even
+while it is scrolled out of sight, at scale 1: on a screen at 1.25 it comes
+out with 80% of the pixels it shows there, which sharing the whole screen
+avoids.
 
 ### The screen back on when Claude Code is done
 

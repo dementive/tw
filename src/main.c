@@ -29,6 +29,7 @@
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
@@ -376,6 +377,20 @@ int main(int argc, char *argv[]) {
 		server.linux_dmabuf =
 			wlr_linux_dmabuf_v1_create_with_renderer(server.display, 4, server.renderer);
 	}
+	/*
+	 * Explicit sync: a client hands over, with each buffer, the point at
+	 * which its GPU will have finished drawing it, rather than the kernel
+	 * guessing (implicit sync). NVIDIA's driver depends on it; without it
+	 * programs drawing there flicker or stutter. Only where the GPU that
+	 * draws and every GPU that shows can wait on such points.
+	 */
+	int drm_fd = wlr_renderer_get_drm_fd(server.renderer);
+	if (drm_fd >= 0 && server.renderer->features.timeline && server.backend->features.timeline &&
+			wlr_linux_drm_syncobj_manager_v1_create(server.display, 1, drm_fd) != NULL) {
+		wlr_log(WLR_DEBUG, "explicit sync: offered");
+	} else {
+		wlr_log(WLR_DEBUG, "explicit sync: not offered, a GPU cannot do it");
+	}
 	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
 	if (server.allocator == NULL) {
 		wlr_log(WLR_ERROR, "failed to create the allocator");
@@ -393,9 +408,10 @@ int main(int argc, char *argv[]) {
 	wlr_fractional_scale_manager_v1_create(server.display, 1);
 	wlr_single_pixel_buffer_manager_v1_create(server.display);
 	wlr_presentation_create(server.display, server.backend, 2);
-	/* Screenshots and screen recording (grim, wf-recorder, portals). */
+	/* Screenshots and screen recording (grim, wf-recorder, portals); window
+	 * capture is window.c's. */
 	wlr_screencopy_manager_v1_create(server.display);
-	wlr_ext_image_copy_capture_manager_v1_create(server.display, 1);
+	server.image_copy_capture = wlr_ext_image_copy_capture_manager_v1_create(server.display, 1);
 	wlr_ext_output_image_capture_source_manager_v1_create(server.display, 1);
 	/* Clipboard tools and managers (wl-copy, cliphist). */
 	wlr_data_control_manager_v1_create(server.display);

@@ -269,6 +269,24 @@ int main(void) {
 	CHECK(!tw_connector_builtin("eDP"));
 	CHECK(!tw_connector_builtin("HEADLESS-1"));
 
+	/* An output rule names a connector, or a monitor wherever it is plugged
+	 * in: by make and model, or with its serial number too. */
+	CHECK(tw_output_named("HDMI-A-1", "HDMI-A-1", "LG Electronics", "LG ULTRAGEAR", "123"));
+	CHECK(tw_output_named("LG Electronics LG ULTRAGEAR", "HDMI-A-1",
+		"LG Electronics", "LG ULTRAGEAR", "123"));
+	CHECK(tw_output_named("LG Electronics LG ULTRAGEAR 123", "DP-2",
+		"LG Electronics", "LG ULTRAGEAR", "123"));
+	CHECK(!tw_output_named("LG Electronics LG ULTRAGEAR 456", "DP-2",
+		"LG Electronics", "LG ULTRAGEAR", "123"));
+	CHECK(!tw_output_named("LG Electronics LG ULTRAGEAR", "DP-2",
+		"LG Electronics", "LG ULTRAGEAR 27", NULL));
+	CHECK(!tw_output_named("LG Electronics LG", "DP-2", "LG Electronics", "LG ULTRAGEAR", NULL));
+	CHECK(!tw_output_named("LG Electronics", "DP-2", "LG Electronics", "LG ULTRAGEAR", NULL));
+	CHECK(!tw_output_named("LG Electronics LG ULTRAGEAR 123", "DP-2",
+		"LG Electronics", "LG ULTRAGEAR", NULL));
+	CHECK(!tw_output_named("HDMI-A-1", "HEADLESS-1", NULL, NULL, NULL));
+	CHECK(!tw_output_named(" ", "HEADLESS-1", "", "", NULL));
+
 	/* The lid on a laptop with nothing plugged in: closing it locks and
 	 * leaves the screen on, so that there is one; opening it does nothing
 	 * more. */

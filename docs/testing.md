@@ -39,16 +39,17 @@ tests run each script against a made-up machine: a directory standing in for
 
 | Test | What it covers |
 | --- | --- |
-| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, what the power supplies call for (the cable moving, a low battery, a wake-up), the lid decisions, which connector is the laptop's own |
+| `layout` | `src/layout.c`: column widths, stacking, scrolling, the spring, the refresh-rate choice, what the power supplies call for (the cable moving, a low battery, a wake-up), the lid decisions, which connector is the laptop's own, an output rule naming a connector or a monitor by make, model and serial |
 | `bus` | `notify/bus.c`: messages written and read back, cut short, damaged; nothing may be read past its end; big-endian ones passed over by their length; what a broken header still says; `Notify` bodies read to the byte by the same `bus_notify_read()` tw-notify uses |
 | `smoke` | everything a client can observe: no file tw was handed open reaching a program it starts; sizes, focus, every key binding (the level keys with stand-ins for `wpctl`, `brightnessctl` and `notify-send`), workspaces, layer surfaces (and no configure to one that nothing changed for), fullscreen, the lock, command-line options, a clean exit; no window told a binding's key is held; windows offered fullscreen and nothing else; focus requests with a made-up token or one naming no surface refused |
 | `columns` | windows sharing a column, floating dialogs; a dialog that maps again drawn in front; a game that goes fullscreen without the focus leaving it where it was, and getting it when the dialog in front closes; a game of a fixed size going fullscreen in the strip and floating again after, and one that asks to start fullscreen and changes its mind before its first frame; a tiled window's menu drawn above a dialog; a hidden window that unmaps and maps again as a dialog told it is neither suspended nor tiled from its first configure; a dialog's client-drawn shadow not cropped (the pointer reaches it) |
 | `pointer` | pointer focus, click to focus, pointer lock, confinement, which waits until the pointer is inside its region; a window opening under a resting pointer gets it, and so does one the strip glides under it, its motion closed by a frame; the window under the pointer loses it while the screens are off and gets it back; a lock screen appearing under a resting pointer gets it, and a click without moving reaches it and no window; the window under the pointer gets it back as the session unlocks, with nothing in between; and an open menu gives the keyboard up to the lock screen; a menu its client moves off the screen is kept on it; drag and drop between two windows, and a drag carried to an empty workspace landing nowhere, the keyboard following the focus once it is over; a button held as the session locks keeps nothing on the window behind the curtain; a held button keeps the pointer on its window past the edge, and the release reaches it; the menu of a bar on the bottom layer drawn over the window below the bar, and getting the pointer there |
 | `outputs` | two monitors: a workspace on each, focus and columns between them, also by Mod and Mod+Ctrl past the end of the strip and back, and across an empty strip; Mod and the left button carrying a window to an empty part of the other monitor and beside a column there, nothing moving when let go on itself, the window never hearing that button, a plain drag still reaching it, and nothing moving while locked; a window on one monitor told nothing while workspaces, a bar and fullscreen change on the other; a bar keeping its room on its own monitor only, from the frame it maps, and giving it back as it goes |
 | `idle` | screen blanking and inhibitors with a two-second timeout; a notification turning the screen back on and a launcher not, and a notification not putting the lock off; blanking that locks nothing, input between blanking and locking starting the lock clock over, locking on idle after a longer timeout; suspend (a stand-in command); a layer surface's inhibitor holding nothing off behind the lock; an inhibitor letting go putting the next suspend attempt a period away, however many failed before; an abandoned lock with no locker installed: stays locked, the missing locker is not run, and another lock client takes over and unlocks |
+| `capture` | the window list as windows map and close; recording a window at its size and colour, a window being recorded not suspended when scrolled off screen and suspended once nobody records it, a recording ending as its window goes (`tests/capture.c` is the recorder) |
 | `x11` | the X11 sockets, starting the helper on demand and stopping it when unused, a helper that dies, fails or is uninstalled, taking over the display a killed tw left behind, with a stand-in helper |
 | `clipboard` | a copy outlives its program; an emptied clipboard stays empty; a copy marked secret is not kept; long copies, slow and vanishing readers, the size limit, programs that die or do not answer while being read; a window copying with an input serial older than tw's offer |
-| `power` | what tw makes of the power supplies it finds as it starts, and the command it runs; the frame cap on battery: an animating window held to 2 frames a second after 5 s without input, the full rate back at a key press, and no cap on mains, under a window keeping the screen on, or for a fullscreen window; which entry of `src/machines.h` it takes, by the board name, and for an unknown board or none |
+| `power` | what tw makes of the power supplies it finds as it starts, and the command it runs; the frame cap on battery: an animating window held to 2 frames a second after 5 s without input, the full rate back at a key press, and no cap on mains, under a window keeping the screen on or saying it shows a video, or for a fullscreen window, also one asking for tearing; which entry of `src/machines.h` it takes, by the board name, and for an unknown board or none |
 | `notify` | `tw-notify` on a private session bus and a headless tw: started on demand, expiry, clicks, the cursor set over the list, leaving; another program replacing and closing a notification by its id, as `notify-send -r` does, or by its tag, as the level keys do; an urgent one kept when the list overflows; ids that fit libnotify's signed int; tags too long to keep whole kept apart; notifications closed when tw goes |
 | `gpu` | `tw-gpu`, its root helper, and `tw-session`: the GPU choice (by the built-in panel, also when the NVIDIA GPU is the boot VGA device beside an integrated GPU that is not VGA-class; a second GPU that is a 3D controller; no GPU with `boot_vga`, by vendor), `TW_ALL_GPUS=1` bringing back a GPU switched off earlier, what it passes on to services and takes back from them, at the start and once tw has exited (also when a signal ends the session), a tw that cannot start; one switch-off waiting however many programs run beside one that stays; a GPU left on when nouveau drives it, when tw has every GPU open (and `off` saying so; outside a tw session no GPUs named does not count), and after a kernel update; a GPU that does not come back stays known; the wait for a GPU kept open giving up; a failed unit told apart from a GPU in use, and no driver installed from a kernel update; NVIDIA's two daemons not counted as use; the GPU's sound function let sleep; a module the helper has no name for that holds the driver; `on` and `off` in the root helper one at a time (`flock`); desktop entries in subdirectories and by `DESKTOP_ENTRY_PATH` |
 | `profile` | `tw-power` and its root helper: the three profiles, machines that lack a setting, the performance governor, and kept where a CPU has no preference to set, nothing written twice, refusals, two at once waiting for each other (`flock`) |
@@ -62,7 +63,8 @@ The clipboard, `tw-notify`, `tw-power`, `tw-bluetooth`, the
 accessibility part of `tw-session` and the Thunderbolt rule were each
 checked by breaking the code one way at a time and seeing a test fail
 every time; so were the newer focus, lock, inhibitor, menu and fullscreen
-tests.
+tests, the recorded window kept awake off screen, and the video window
+uncapped.
 
 A check that a test repeats must be a function or a command that reads
 anew each time: `wait_until "..." test "$(count ...)" -gt 1` reads once,
@@ -113,6 +115,20 @@ They are not tw's. The tests use the software renderer, where the report
 must be empty.
 
 ## What no test reaches
+
+- **Explicit sync, the variable refresh rate and tearing.** The headless
+  backend and the software renderer have no timelines and no adaptive sync,
+  so tw offers no linux-drm-syncobj there and `output_draw()` never asks
+  for VRR; and headless takes every tearing flip, so the tests show only
+  that a fullscreen game asking for tearing goes on getting frames, not
+  that a refused flip falls back. All three wait to be seen on the laptops:
+  `tw -d` logs whether explicit sync is offered and each VRR change.
+- **Window recording through the portal and OBS.** `tests/capture.c`
+  speaks the protocols xdg-desktop-portal-wlr does, with shared-memory
+  buffers; the portal, PipeWire, GPU buffers and a window on the NVIDIA GPU
+  are untested.
+- **Monitors by name.** Headless outputs give no make or model, so only the
+  matching (`tw_output_named()`) is tested, in `layout`.
 
 - **Freeing Mesa's shader compiler.** The tests draw with the software
   renderer, for which `renderer_release_compiler()` does nothing. It was

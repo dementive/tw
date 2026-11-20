@@ -8,6 +8,7 @@ change has to keep are in [CLAUDE.md](../CLAUDE.md).
 - [Screen off and lock](#screen-off-and-lock)
 - [X11 programs](#x11-programs)
 - [The clipboard](#the-clipboard)
+- [Recording a window](#recording-a-window)
 - [On battery](#on-battery)
 - [Notifications: tw-notify](#notifications-tw-notify)
 - [The terminal](#the-terminal)
@@ -80,7 +81,41 @@ machine tw runs on, picked once as tw starts by the board name in
 `/sys/class/dmi/id/board_name` (`machine_pick()` in `main.c`), as are the
 machine's sleep settings. Picked at startup rather than when the build is
 set up, so that one installed tw is right on each machine its disk boots.
-An output the entry does not name is at scale 1, right of the others.
+The entry names an output by its connector (`eDP-1`). A monitor that goes
+from machine to machine is in `monitors`, after the machines, by the name it
+gives itself in its EDID, `<make> <model>` (with its serial number to tell
+two alike apart; `tw_output_named()` in `layout.c`): the same scale wherever
+it is plugged in, through a dock or not, without an entry per machine and
+connector. The machine's entry comes first. `tw -d` logs both names as an
+output appears. An output named nowhere is at scale 1, right of the others.
+
+**What a fullscreen window gets from the display.** With nothing else to
+draw, wlroots hands a fullscreen window's buffer to the display as it is
+(direct scanout). `output_draw()` in `output.c` adds two things to the
+commit of each frame, from the window on screen that is fullscreen
+(`output_fullscreen()`):
+
+- A variable refresh rate (`fullscreen_vrr`), on screens that offer it
+  (`adaptive_sync_supported`): the screen waits for the game's next frame
+  instead of repeating the last, so a game short of the refresh rate does
+  not stutter. Asked for in a frame's commit whenever the display's state
+  differs from what the window calls for, tested first, and given up
+  quietly if the display refuses (`output->vrr_refused`), until what is
+  called for changes. The desktop never runs with it: some OLED and VA screens flicker
+  in brightness as the rate swings, which is also why it can be turned off.
+- Tearing, when the window asks for it (tearing-control-v1, the async hint
+  a game with vsync off sends): its frame is shown at once, not at the next
+  refresh. The display may refuse an early flip for one frame and not the
+  next (a pointer moving over the game), so every frame that asks is tested
+  and falls back to an ordinary one.
+
+**Explicit sync** (linux-drm-syncobj-v1, in `main.c`): a client hands over,
+with each buffer, the point on a timeline at which its GPU will have
+finished drawing it, rather than leaving the kernel to work that out
+(implicit sync). NVIDIA's driver needs it; without it programs drawing there
+flicker or stutter. wlroots' scene does the waiting; tw only offers the
+global, and only where the renderer and every GPU showing an output can wait
+on timelines (`features.timeline`), which `tw -d` logs.
 
 **Moving between monitors.** Mod with left or right moves the focus along
 the strip and, past its end (or on an empty strip), on to the monitor on
@@ -454,6 +489,38 @@ The helper has no chance to tidy up when stopped and leaves its own socket
 and lock file (`xwls-1`) in the runtime directory; the next helper takes the
 same name, so they do not pile up.
 
+## Recording a window
+
+A screen recorder (OBS's PipeWire source, a browser sharing a window) asks
+xdg-desktop-portal-wlr, which offers the outputs and the windows to choose
+from and records the one chosen. The windows it learns from the window list
+(ext-foreign-toplevel-list): each mapped window has an entry
+(`window->handle`, made in `handle_map()`, renamed with the window's title
+and app_id, gone as it unmaps). That is the one part that exists whether
+anyone records or not: a small allocation per window.
+
+To record a window the portal asks for a capture source for its entry
+(`handle_capture_request()` in `window.c`). The first request makes the
+window a scene of its own (`window->capture_scene`) holding nothing but its
+surfaces, and wlroots' scene-node source draws that scene for each frame of
+the recording, so neither what covers the window nor its being scrolled off
+screen shows in it. The window's client draws for that scene as for an
+output and gets frame callbacks from it. The scene and source go when the
+window unmaps, which ends the recordings of it, and when the GPU is reset,
+since the source draws with the renderer it was made with
+(`windows_capture_stop()`).
+
+A window off screen is suspended, and a client that honours that stops
+drawing, which would freeze the recording. So tw counts the recordings of
+each window (`window->captures`, from the copy-capture sessions whose source
+is the window's: `handle_capture_session()`), and while there are any the
+window is not suspended (`window_show()`). It is not drawn on screen either
+way.
+
+The recording is at scale 1: wlroots' source renders the window at its size
+in logical pixels, so on a screen at scale 1.25 a window comes out with 80%
+of the pixels it shows. Recording the whole output has no such loss.
+
 ## The clipboard
 
 On Wayland a copy stays inside its program, which hands it over when
@@ -589,8 +656,10 @@ often, and a one-shot timer per output (`frame_timer`) shows it when its
 turn comes. Input releases held frames at once (`outputs_release_frames()`
 from `idle_activity()`), so typing and scrolling never see the cap. It is
 off while a visible window inhibits idling (players do while playing, and
-SDL and Godot games by default), while any window on the output's workspace
-is fullscreen, while a program holds the pointer (`active_constraint`), while
+SDL and Godot games by default), while a surface on the output says it shows
+a video or a game (content-type-v1, which browsers and players set;
+`output_plays()` looks only when the cap would otherwise hold a frame), while
+any window on the output's workspace is fullscreen, while a program holds the pointer (`active_constraint`), while
 the session is locked (the curtain must show at once), and during a scroll
 animation. Nothing is held when nothing changes, so an idle desktop still
 wakes no one.

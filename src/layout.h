@@ -124,6 +124,15 @@ int tw_power_look(bool *on_battery, struct tw_battery *battery,
  * (eDP, LVDS or DSI): the one its lid covers. */
 bool tw_connector_builtin(const char *name);
 
+/*
+ * Whether an output rule's name is for this output: its connector ("eDP-1",
+ * "HDMI-A-1"), or the monitor's own name as it gives it, "<make> <model>",
+ * or "<make> <model> <serial>" to tell two alike apart. make, model and
+ * serial may be NULL: a monitor that gives none has only its connector.
+ */
+bool tw_output_named(const char *rule, const char *connector,
+	const char *make, const char *model, const char *serial);
+
 /* What tw remembers about a laptop's lid. */
 struct tw_lid {
 	bool closed;

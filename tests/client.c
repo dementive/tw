@@ -45,6 +45,11 @@
  *                 the keyboard ("ask fullscreen"), as one does that goes
  *                 fullscreen when its loading is done
  *   --inhibit     a window that asks to keep the screen on, like a video player
+ *   --video       a window that says it shows a video (content-type-v1), as
+ *                 a browser playing one does
+ *   --tearing     a window that asks to start fullscreen and to be shown
+ *                 torn rather than late (tearing-control-v1), as a game with
+ *                 vsync off does
  *   --layer       a 400x200 layer surface on the overlay layer wanting
  *                 exclusive keyboard focus, like a launcher
  *   --layer-inhibit  the same, asking to keep the screen on
@@ -127,11 +132,13 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "content-type-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
+#include "tearing-control-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -153,6 +160,8 @@ static struct xdg_activation_v1 *activation;
 static struct zwp_pointer_constraints_v1 *constraints;
 static struct zwp_relative_pointer_manager_v1 *relative_manager;
 static struct wp_fractional_scale_manager_v1 *scale_manager;
+static struct wp_content_type_manager_v1 *content_type_manager;
+static struct wp_tearing_control_manager_v1 *tearing_manager;
 static struct wl_pointer *pointer;
 static struct zwp_locked_pointer_v1 *locked_pointer;
 static struct ext_session_lock_v1 *session_lock;
@@ -1054,6 +1063,12 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
 		scale_manager = wl_registry_bind(registry, name,
 			&wp_fractional_scale_manager_v1_interface, 1);
+	} else if (strcmp(interface, wp_content_type_manager_v1_interface.name) == 0) {
+		content_type_manager = wl_registry_bind(registry, name,
+			&wp_content_type_manager_v1_interface, 1);
+	} else if (strcmp(interface, wp_tearing_control_manager_v1_interface.name) == 0) {
+		tearing_manager = wl_registry_bind(registry, name,
+			&wp_tearing_control_manager_v1_interface, 1);
 	} else if (strcmp(interface, wl_data_device_manager_interface.name) == 0 && version >= 3) {
 		/* Version 3 is the first with drag-and-drop actions. */
 		data_manager = wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
@@ -1297,6 +1312,15 @@ int main(int argc, char *argv[]) {
 			xdg_toplevel_set_max_size(toplevel, fixed_width, fixed_height);
 		} else if (strcmp(mode, "--fullscreen") == 0) {
 			xdg_toplevel_set_fullscreen(toplevel, NULL);
+		} else if (strcmp(mode, "--tearing") == 0 && tearing_manager != NULL) {
+			xdg_toplevel_set_fullscreen(toplevel, NULL);
+			wp_tearing_control_v1_set_presentation_hint(
+				wp_tearing_control_manager_v1_get_tearing_control(tearing_manager, surface),
+				WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
+		} else if (strcmp(mode, "--video") == 0 && content_type_manager != NULL) {
+			wp_content_type_v1_set_content_type(
+				wp_content_type_manager_v1_get_surface_content_type(content_type_manager, surface),
+				WP_CONTENT_TYPE_V1_TYPE_VIDEO);
 		} else if (strcmp(mode, "--inhibit") == 0) {
 			zwp_idle_inhibit_manager_v1_create_inhibitor(inhibit_manager, surface);
 		}

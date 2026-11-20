@@ -6,6 +6,9 @@
  */
 #include <stdlib.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
+#include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
@@ -182,6 +185,8 @@ void window_centre(struct tw_window *window, const struct wlr_box *area) {
 
 void window_show(struct tw_window *window, bool on_screen, bool wanted) {
 	window_draw(window, on_screen);
+	/* Being recorded, it is seen even off screen. */
+	wanted = wanted || window->captures > 0;
 	if (window->suspended == wanted) {
 		window->suspended = !wanted;
 		wlr_xdg_toplevel_set_suspended(window->xdg_toplevel, !wanted);
@@ -213,6 +218,131 @@ static bool wants_float(struct wlr_xdg_toplevel *toplevel) {
 		state->min_width == state->max_width && state->min_height == state->max_height);
 }
 
+/* --- The window list and window capture ------------------------------------- */
+
+/*
+ * A screen recorder (OBS through xdg-desktop-portal-wlr) offers the windows
+ * of ext-foreign-toplevel-list to choose from, and records the one chosen
+ * through a capture source made for it. The source draws a scene of its own
+ * that holds this window alone, so that what covers the window, or its being
+ * scrolled off screen, does not show in the recording; the client draws for
+ * that scene as for an output. Nothing of it exists until a recorder asks.
+ */
+struct tw_capture {
+	struct tw_window *window;
+	struct wl_listener destroy;
+};
+
+static void window_capture_stop(struct tw_window *window) {
+	if (window->capture_scene == NULL) {
+		return;
+	}
+	/* Takes the source along, which ends its recordings: their destroy
+	 * handlers below run before this returns. */
+	wl_list_remove(&window->capture_link);
+	wlr_scene_node_destroy(&window->capture_scene->tree.node);
+	window->capture_scene = NULL;
+	window->capture_source = NULL;
+}
+
+void windows_capture_stop(struct tw_server *server) {
+	struct tw_window *window, *tmp;
+	wl_list_for_each_safe(window, tmp, &server->captured, capture_link) {
+		window_capture_stop(window);
+	}
+}
+
+static bool window_capture_start(struct tw_window *window) {
+	struct tw_server *server = window->server;
+	struct wlr_scene *scene = wlr_scene_create();
+	if (scene == NULL) {
+		return false;
+	}
+	struct wlr_ext_image_capture_source_v1 *source = NULL;
+	if (wlr_scene_xdg_surface_create(&scene->tree, window->xdg_toplevel->base) != NULL) {
+		source = wlr_ext_image_capture_source_v1_create_with_scene_node(&scene->tree.node,
+			server->loop, server->allocator, server->renderer);
+	}
+	if (source == NULL) {
+		wlr_scene_node_destroy(&scene->tree.node);
+		return false;
+	}
+	window->capture_scene = scene;
+	window->capture_source = source;
+	wl_list_insert(&server->captured, &window->capture_link);
+	return true;
+}
+
+static void handle_capture_request(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, new_capture_request);
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request = data;
+	/* A handle exists only while its window is mapped. */
+	struct tw_window *window = request->toplevel_handle->data;
+	if (window->capture_scene == NULL && !window_capture_start(window)) {
+		wlr_log(WLR_ERROR, "out of memory, a window cannot be recorded");
+	}
+	/* Without a source the recorder gets one that records nothing. */
+	wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(request,
+		window->capture_source);
+}
+
+static void handle_capture_destroy(struct wl_listener *listener, void *data) {
+	struct tw_capture *capture = wl_container_of(listener, capture, destroy);
+	struct tw_window *window = capture->window;
+	wl_list_remove(&capture->destroy.link);
+	free(capture);
+	/* Off screen, it may be suspended again; not while it is unmapping. */
+	if (--window->captures == 0 && window->mapped) {
+		strip_arrange(window->server);
+	}
+}
+
+/* A recording begins, of an output or of a window. */
+static void handle_capture_session(struct wl_listener *listener, void *data) {
+	struct tw_server *server = wl_container_of(listener, server, new_capture_session);
+	struct wlr_ext_image_copy_capture_session_v1 *session = data;
+	struct tw_window *window;
+	wl_list_for_each(window, &server->captured, capture_link) {
+		if (window->capture_source != session->source) {
+			continue;
+		}
+		struct tw_capture *capture = calloc(1, sizeof(*capture));
+		if (capture == NULL) {
+			return; /* recorded all the same, only maybe suspended */
+		}
+		capture->window = window;
+		capture->destroy.notify = handle_capture_destroy;
+		wl_signal_add(&session->events.destroy, &capture->destroy);
+		if (window->captures++ == 0) {
+			strip_arrange(server);
+		}
+		return;
+	}
+}
+
+static struct wlr_ext_foreign_toplevel_handle_v1_state window_names(struct tw_window *window) {
+	return (struct wlr_ext_foreign_toplevel_handle_v1_state){
+		.title = window->xdg_toplevel->title,
+		.app_id = window->xdg_toplevel->app_id,
+	};
+}
+
+static void handle_set_title(struct wl_listener *listener, void *data) {
+	struct tw_window *window = wl_container_of(listener, window, set_title);
+	if (window->handle != NULL) {
+		struct wlr_ext_foreign_toplevel_handle_v1_state names = window_names(window);
+		wlr_ext_foreign_toplevel_handle_v1_update_state(window->handle, &names);
+	}
+}
+
+static void handle_set_app_id(struct wl_listener *listener, void *data) {
+	struct tw_window *window = wl_container_of(listener, window, set_app_id);
+	if (window->handle != NULL) {
+		struct wlr_ext_foreign_toplevel_handle_v1_state names = window_names(window);
+		wlr_ext_foreign_toplevel_handle_v1_update_state(window->handle, &names);
+	}
+}
+
 /* --- Toplevel lifecycle ----------------------------------------------------- */
 
 static void decoration_apply(struct tw_window *window) {
@@ -237,6 +367,11 @@ static void window_unmap(struct tw_window *window) {
 	window_draw(window, false);
 	strip_remove(window);
 	x11_window_closed(server);
+	window_capture_stop(window);
+	if (window->handle != NULL) {
+		wlr_ext_foreign_toplevel_handle_v1_destroy(window->handle);
+		window->handle = NULL;
+	}
 
 	/* Nothing may be sent to the client until it commits again, and
 	 * initial_commit() then tells it its whole state afresh. What the scene
@@ -257,6 +392,13 @@ static void handle_map(struct wl_listener *listener, void *data) {
 		wlr_log(WLR_ERROR, "out of memory, closing a new window");
 		wlr_xdg_toplevel_send_close(window->xdg_toplevel);
 		return;
+	}
+
+	/* Out of memory, it is missing from the list. */
+	struct wlr_ext_foreign_toplevel_handle_v1_state names = window_names(window);
+	window->handle = wlr_ext_foreign_toplevel_handle_v1_create(server->toplevel_list, &names);
+	if (window->handle != NULL) {
+		window->handle->data = window;
 	}
 
 	const char *app_id = window->xdg_toplevel->app_id;
@@ -356,6 +498,8 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&window->destroy.link);
 	wl_list_remove(&window->request_maximize.link);
 	wl_list_remove(&window->request_fullscreen.link);
+	wl_list_remove(&window->set_title.link);
+	wl_list_remove(&window->set_app_id.link);
 
 	window->xdg_toplevel->base->data = NULL;
 	wlr_scene_node_destroy(&window->popup_tree->node);
@@ -429,6 +573,10 @@ static void handle_new_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&toplevel->events.request_maximize, &window->request_maximize);
 	window->request_fullscreen.notify = handle_request_fullscreen;
 	wl_signal_add(&toplevel->events.request_fullscreen, &window->request_fullscreen);
+	window->set_title.notify = handle_set_title;
+	wl_signal_add(&toplevel->events.set_title, &window->set_title);
+	window->set_app_id.notify = handle_set_app_id;
+	wl_signal_add(&toplevel->events.set_app_id, &window->set_app_id);
 }
 
 /*
@@ -633,6 +781,15 @@ void window_init(struct tw_server *server) {
 	server->activation = wlr_xdg_activation_v1_create(server->display);
 	server->request_activate.notify = handle_request_activate;
 	wl_signal_add(&server->activation->events.request_activate, &server->request_activate);
+
+	wl_list_init(&server->captured);
+	server->toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(server->display, 1);
+	server->toplevel_capture =
+		wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(server->display, 1);
+	server->new_capture_request.notify = handle_capture_request;
+	wl_signal_add(&server->toplevel_capture->events.new_request, &server->new_capture_request);
+	server->new_capture_session.notify = handle_capture_session;
+	wl_signal_add(&server->image_copy_capture->events.new_session, &server->new_capture_session);
 }
 
 void window_finish(struct tw_server *server) {
@@ -640,4 +797,6 @@ void window_finish(struct tw_server *server) {
 	wl_list_remove(&server->new_popup.link);
 	wl_list_remove(&server->new_decoration.link);
 	wl_list_remove(&server->request_activate.link);
+	wl_list_remove(&server->new_capture_request.link);
+	wl_list_remove(&server->new_capture_session.link);
 }

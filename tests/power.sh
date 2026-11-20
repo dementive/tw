@@ -145,7 +145,8 @@ stop_tw
 # Once nobody has touched anything for battery_idle_after_seconds (5), an
 # animating window is shown at most battery_idle_fps (2) frames a second, and
 # input brings the full rate back at once. Not on mains, nor while a visible
-# window keeps the screen on, nor for a fullscreen window. The headless
+# window keeps the screen on or says it shows a video, nor for a fullscreen
+# window, also one that asks to be shown torn rather than late. The headless
 # output runs at 60 Hz; the software renderer under the sanitizers manages
 # fewer, so "full rate" is anything well above the cap.
 frames() { grep -c '^frame$' "$run_dir/$1.log" || true; }
@@ -179,9 +180,20 @@ uncapped film "on battery, a window keeping the screen on"
 stop_tw
 
 start_tw
+start_client video --video --animate
+uncapped video "on battery, a window that says it shows a video"
+stop_tw
+
+start_tw
 start_client game --fullscreen --animate
 expect_state game "fullscreen=1" "the window to be fullscreen"
 uncapped game "on battery, a fullscreen window"
+stop_tw
+
+start_tw
+start_client tear --tearing --animate
+expect_state tear "fullscreen=1" "the window to be fullscreen"
+uncapped tear "on battery, a fullscreen game that asks for tearing"
 stop_tw
 
 supply ADP0 type=Mains online=1
@@ -210,4 +222,4 @@ machine G615LM G615LM
 machine "G615LM-X" other
 machine "" other
 
-echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command, the frame cap, the machine by its board"
+echo "ok: no battery, mains, battery, USB-C charger, a device's supply, odd supplies, low at startup, not the session, failing, running and missing command, the frame cap (videos, games, tearing), the machine by its board"

@@ -56,12 +56,12 @@ what it would do and starts nothing.
 | File | Role |
 | --- | --- |
 | `src/config.h` | All configuration, compile-time: layout, input, timeouts, programs, key bindings |
-| `src/machines.h` | What depends on the machine: its outputs, and whether tw may suspend it. An entry per machine; tw takes the one named after the board as it starts (`machine_pick()`), else the last |
+| `src/machines.h` | What depends on the machine: its outputs, and whether tw may suspend it. An entry per machine; tw takes the one named after the board as it starts (`machine_pick()`), else the last. Then `monitors`: screens carried between machines, by make and model |
 | `src/tw.h` | The server struct and every function shared between files, grouped by file in the order `main()` starts them, as below |
 | `src/main.c` | Startup, options, teardown, `spawn()`, `program_find()` |
-| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler and its cap on battery, a new renderer after a GPU reset |
+| `src/output.c` | Outputs, which workspace each shows, which mode each runs in, scene layers, the frame handler and its cap on battery, VRR and tearing for a fullscreen window, a new renderer after a GPU reset |
 | `src/layer.c` | Layer shell: launchers, notifications, wallpapers, bars, and their menus |
-| `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation) |
+| `src/window.c` | One window: its xdg-shell client, scene nodes, size and state sent, menus (popups), title-bar mode, focus requests (xdg-activation), the window list and recording a window |
 | `src/strip.c` | Where windows go: workspaces, columns, floating dialogs, fullscreen, focus, `strip_arrange()`, scroll animation and swipes, and the actions bound to keys |
 | `src/input.c` | Keyboards and pointers (real and virtual), bindings, pointer lock and confinement, drag and drop, moving windows with Mod and the mouse, touchpad settings and gestures, lid switch, seat |
 | `src/clipboard.c` | Keeps what was copied for when its program exits |
@@ -75,7 +75,7 @@ what it would do and starts nothing.
 | `data/tw-gpu`, `tw-power`, `tw-bluetooth` | The three commands that need root. Each comes with a root helper (`*-root`), a system unit (`*@.service.in`) and a polkit rule (`*.rules`) |
 | `data/` (rest) | udev rules, the Bluetooth blacklist, timer and service drop-in, the accessibility drop-in, the logind drop-in for the power key, the Thunderbolt rule, the login-screen entry, the portal configuration, the D-Bus entry that starts `tw-notify`, and `post-install.sh`, which `meson install` runs to have the system read all of it |
 | `protocols/` | Protocol XML that wayland-protocols does not ship, copied from the pinned wlroots |
-| `tests/` | `lib.sh` starts tw headless with a private runtime directory and PATH; `client.c`, `keys.c` and `clip.c` are the test programs; one `.sh` per area. [docs/testing.md](docs/testing.md) lists them |
+| `tests/` | `lib.sh` starts tw headless with a private runtime directory and PATH; `client.c`, `keys.c`, `clip.c` and `capture.c` are the test programs; one `.sh` per area. [docs/testing.md](docs/testing.md) lists them |
 
 How it hangs together, in one paragraph; [docs/design.md](docs/design.md)
 has the rest. Each workspace is a strip of columns, each output shows one

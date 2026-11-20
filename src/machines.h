@@ -8,11 +8,12 @@
  *
  * Included by config.h, in the place where these settings belong.
  *
- * outputs: up to TW_MACHINE_OUTPUTS, by connector name (`tw -d` logs the
- * name as each one appears). Scales may be fractional. x and y are where the
- * output's top left corner goes in the combined screen area, in logical
- * pixels; AUTO puts the output to the right of the others, in the order they
- * were plugged in. An output not listed is at scale 1, at AUTO.
+ * outputs: up to TW_MACHINE_OUTPUTS, by connector name, or by the monitor's
+ * own name as in `monitors` below (`tw -d` logs both as each one appears).
+ * Scales may be fractional. x and y are where the output's top left corner
+ * goes in the combined screen area, in logical pixels; AUTO puts the output
+ * to the right of the others, in the order they were plugged in. An output
+ * neither here nor in `monitors` is at scale 1, at AUTO.
  *
  * suspend_after_seconds: suspend the machine after this many seconds without
  * input; 0 never does. The session is locked first, unless
@@ -70,4 +71,17 @@ static const struct tw_machine machines[] = {
 		.suspend_after_seconds = 0,
 		.battery_suspend_percent = 0,
 	},
+};
+
+/*
+ * Monitors that go from machine to machine, by the name each gives itself:
+ * "<make> <model>", or "<make> <model> <serial>" to tell two alike apart.
+ * `tw -d` logs it as the monitor appears ("output HDMI-A-1 is <name>"). A
+ * monitor here has the same scale on every machine and at every connector,
+ * through a dock or not. What a machine's own entry says of an output comes
+ * first. The list ends with a NULL name.
+ */
+static const struct tw_output_rule monitors[] = {
+	/* name                                  scale   x     y */
+	{NULL, 0, 0, 0},
 };

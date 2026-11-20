@@ -83,6 +83,10 @@ struct tw_output {
 	int64_t last_frame_ms;
 	struct wl_event_source *frame_timer; /* NULL: never capped */
 	bool frame_held;
+	/* The display refused to turn the variable refresh rate on or off for
+	 * the fullscreen window coming or going; not asked again until that
+	 * changes (output_draw()). */
+	bool vrr_refused;
 	struct wl_listener frame;
 	struct wl_listener present;
 	struct wl_listener request_state;
@@ -141,12 +145,27 @@ struct tw_window {
 	 * sticks out of its output toward a neighbouring one. */
 	int cut_left, cut_right;
 
+	/* Its entry in the list of windows other programs see, which a screen
+	 * recorder offers to choose from (ext-foreign-toplevel-list); NULL
+	 * unless mapped. */
+	struct wlr_ext_foreign_toplevel_handle_v1 *handle;
+	/* Window capture (window.c): a scene of its own holding only this
+	 * window, made at the first request to record it and gone when it
+	 * unmaps; NULL until then. `captures` counts the recordings under way:
+	 * while there are any, the window is not suspended, even off screen. */
+	struct wlr_scene *capture_scene;
+	struct wlr_ext_image_capture_source_v1 *capture_source;
+	struct wl_list capture_link; /* server->captured, while capture_scene != NULL */
+	int captures;
+
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener commit;
 	struct wl_listener destroy;
 	struct wl_listener request_maximize;
 	struct wl_listener request_fullscreen;
+	struct wl_listener set_title;
+	struct wl_listener set_app_id;
 	/* Linked only while decoration != NULL. */
 	struct wl_listener decoration_request_mode;
 	struct wl_listener decoration_destroy;
@@ -172,6 +191,8 @@ struct tw_server {
 	struct wlr_allocator *allocator; /* likewise */
 	struct wlr_compositor *compositor;
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf; /* NULL with the software renderer */
+	/* Screen and window capture (grim, xdg-desktop-portal-wlr). */
+	struct wlr_ext_image_copy_capture_manager_v1 *image_copy_capture;
 
 	/* output.c */
 	struct wlr_output_layout *output_layout;
@@ -194,6 +215,10 @@ struct tw_server {
 	struct wl_listener new_output;
 	struct wl_listener layout_change;
 	struct wl_listener renderer_lost;
+	/* What a fullscreen window asks of the display, and what a window says
+	 * it shows (frame_capped()). */
+	struct wlr_tearing_control_manager_v1 *tearing_control;
+	struct wlr_content_type_manager_v1 *content_type;
 	/* Idle: a new renderer takes over after a GPU reset. */
 	struct wl_event_source *renderer_restart;
 
@@ -207,6 +232,11 @@ struct tw_server {
 	struct wlr_xdg_shell *xdg_shell;
 	struct wlr_xdg_decoration_manager_v1 *decoration_manager;
 	struct wlr_xdg_activation_v1 *activation;
+	struct wlr_ext_foreign_toplevel_list_v1 *toplevel_list;
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *toplevel_capture;
+	struct wl_list captured; /* tw_window.capture_link */
+	struct wl_listener new_capture_request;
+	struct wl_listener new_capture_session;
 	struct wl_listener new_toplevel;
 	struct wl_listener new_popup;
 	struct wl_listener new_decoration;
@@ -478,6 +508,9 @@ void window_apply_fullscreen(struct tw_window *window);
 /* Sets window->floating and tells the client: a dialog picks its own size
  * and is not tiled. */
 void window_set_floating(struct tw_window *window, bool floating);
+/* Ends every window capture: what records them was made with a renderer that
+ * is about to go. */
+void windows_capture_stop(struct tw_server *server);
 
 /* strip.c */
 void strip_init(struct tw_server *server);
@@ -517,8 +550,8 @@ void strip_arrange(struct tw_server *server);
 /* Advances the scroll animation of the workspace on this output by one
  * frame; true if it needs another. */
 bool strip_animate(struct tw_output *output);
-/* True if a window of this workspace is fullscreen. */
-bool workspace_fullscreen(const struct tw_workspace *workspace);
+/* A fullscreen window of this workspace, or NULL. */
+struct tw_window *workspace_fullscreen(const struct tw_workspace *workspace);
 /* Moves the focus to the workspace this output shows. */
 void strip_focus_output(struct tw_server *server, struct tw_output *output);
 /* Puts a window moved with the mouse where it was let go, at lx,ly: beside

@@ -10,12 +10,14 @@
 #include <wlr/render/gles2.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_session_lock_v1.h>
+#include <wlr/types/wlr_tearing_control_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
@@ -85,13 +87,24 @@ bool output_boxes(struct tw_output *output, struct wlr_box *area, struct wlr_box
 	return !wlr_box_empty(full);
 }
 
-/* What machines.h says about this output: its own entry, or scale 1 at AUTO. */
+static bool rule_for(const struct tw_output_rule *rule, const struct wlr_output *output) {
+	return tw_output_named(rule->name, output->name, output->make, output->model,
+		output->serial);
+}
+
+/* What machines.h says about this output: the machine's entry for it, else
+ * the monitor's, else scale 1 at AUTO. */
 static const struct tw_output_rule *output_rule(struct tw_output *output) {
 	static const struct tw_output_rule other = {NULL, 1.0f, TW_AUTO, TW_AUTO};
 	const struct tw_output_rule *rules = output->server->machine->outputs;
 	for (size_t i = 0; i < TW_MACHINE_OUTPUTS && rules[i].name != NULL; i++) {
-		if (strcmp(rules[i].name, output->wlr_output->name) == 0) {
+		if (rule_for(&rules[i], output->wlr_output)) {
 			return &rules[i];
+		}
+	}
+	for (size_t i = 0; monitors[i].name != NULL; i++) {
+		if (rule_for(&monitors[i], output->wlr_output)) {
+			return &monitors[i];
 		}
 	}
 	return &other;
@@ -203,23 +216,64 @@ bool output_set_power(struct tw_output *output, bool on) {
 	return done;
 }
 
+/* The fullscreen window this output shows, or NULL: one that is on screen,
+ * not scrolled away or hidden behind the lock. */
+static struct tw_window *output_fullscreen(const struct tw_output *output) {
+	if (output->workspace >= TW_WORKSPACES) {
+		return NULL;
+	}
+	struct tw_window *window = workspace_fullscreen(&output->server->workspaces[output->workspace]);
+	return window != NULL && window->scene_tree->node.enabled ? window : NULL;
+}
+
+struct content_look {
+	struct wlr_content_type_manager_v1 *manager;
+	bool moving;
+};
+
+static void buffer_content(struct wlr_scene_buffer *buffer, int sx, int sy, void *data) {
+	struct content_look *look = data;
+	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+	if (look->moving || scene_surface == NULL) {
+		return;
+	}
+	/* A subsurface (a browser's video) may say it itself, else its window's word counts. */
+	struct wlr_surface *surface = scene_surface->surface;
+	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+	enum wp_content_type_v1_type type = wlr_surface_get_content_type_v1(look->manager, surface);
+	if (type == WP_CONTENT_TYPE_V1_TYPE_NONE) {
+		type = wlr_surface_get_content_type_v1(look->manager, root);
+	}
+	look->moving = type == WP_CONTENT_TYPE_V1_TYPE_VIDEO || type == WP_CONTENT_TYPE_V1_TYPE_GAME;
+}
+
+/* Something on this output says it shows a video or a game (content-type-v1:
+ * mpv, browsers playing a video, games through SDL). */
+static bool output_plays(struct wlr_scene_output *scene_output, struct tw_server *server) {
+	struct content_look look = {server->content_type, false};
+	wlr_scene_output_for_each_buffer(scene_output, buffer_content, &look);
+	return look.moving;
+}
+
 /*
  * The frame cap on battery (battery_idle_fps): whether this output shows at
  * most that many frames a second now. Not while anything is going on that
  * wants every frame: input lately, an animation, a visible window keeping the
- * screen on (a video, a game), a fullscreen window, a program holding the
- * pointer, the lock screen.
+ * screen on or saying it shows a video or a game, a fullscreen window, a
+ * program holding the pointer, the lock screen.
  */
-static bool frame_capped(const struct tw_output *output, int64_t now) {
-	const struct tw_server *server = output->server;
+static bool frame_capped(const struct tw_output *output, struct wlr_scene_output *scene_output,
+		int64_t now) {
+	struct tw_server *server = output->server;
 	if (battery_idle_fps <= 0 || output->frame_timer == NULL || !server->on_battery ||
 			server->locked || server->idle_inhibited || server->active_constraint != NULL ||
 			output->animating ||
 			now - server->last_activity_ms < (int64_t)battery_idle_after_seconds * 1000) {
 		return false;
 	}
-	return output->workspace >= TW_WORKSPACES ||
-		!workspace_fullscreen(&server->workspaces[output->workspace]);
+	return (output->workspace >= TW_WORKSPACES ||
+		workspace_fullscreen(&server->workspaces[output->workspace]) == NULL) &&
+		!output_plays(scene_output, server);
 }
 
 static bool frame_unhold(struct tw_output *output) {
@@ -247,6 +301,54 @@ static int handle_frame_timer(void *data) {
 	return 0;
 }
 
+/*
+ * Draws a frame, and with it asks the display for what the fullscreen
+ * window on it calls for:
+ *
+ * A variable refresh rate (fullscreen_vrr), while the window is on screen:
+ * the screen then waits for the game's next frame. Asked for in the commit
+ * of a frame whenever the display's state differs from what is wanted; one
+ * the display refused is not asked again until what is wanted changes.
+ *
+ * Tearing, when the window asks for it (tearing-control-v1, as a game with
+ * vsync off does): its frame is shown at once rather than at the next
+ * refresh. The display may refuse it for a frame (a moving pointer, a
+ * screen it cannot flip early), so each frame is tested first.
+ */
+static void output_draw(struct tw_output *output, struct wlr_scene_output *scene_output) {
+	struct wlr_output *wlr_output = output->wlr_output;
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	if (!wlr_scene_output_build_state(scene_output, &state, NULL)) {
+		wlr_output_state_finish(&state);
+		return;
+	}
+	struct tw_window *fullscreen = output_fullscreen(output);
+	bool vrr = fullscreen_vrr && fullscreen != NULL;
+	if (vrr == (wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED)) {
+		output->vrr_refused = false;
+	} else if (!output->vrr_refused && wlr_output->adaptive_sync_supported) {
+		wlr_output_state_set_adaptive_sync_enabled(&state, vrr);
+		if (wlr_output_test_state(wlr_output, &state)) {
+			wlr_log(WLR_DEBUG, "output %s: variable refresh rate %s",
+				wlr_output->name, vrr ? "on" : "off");
+		} else {
+			state.committed &= ~WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED;
+			output->vrr_refused = true;
+			wlr_log(WLR_INFO, "output %s: the variable refresh rate could not be turned %s",
+				wlr_output->name, vrr ? "on" : "off");
+		}
+	}
+	if (fullscreen != NULL && wlr_tearing_control_manager_v1_surface_hint_from_surface(
+			output->server->tearing_control, fullscreen->xdg_toplevel->base->surface) ==
+			WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC) {
+		state.tearing_page_flip = true;
+		state.tearing_page_flip = wlr_output_test_state(wlr_output, &state);
+	}
+	wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+}
+
 static void handle_frame(struct wl_listener *listener, void *data) {
 	/*
 	 * Fires only after something scheduled a frame (damage, or a previous
@@ -266,7 +368,7 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 	 * and so is the frame-done event, so that a client waiting for it (most
 	 * do) draws nothing meanwhile. Input lets it through at once. */
 	int64_t now_msec = now_ms();
-	if (frame_capped(output, now_msec)) {
+	if (frame_capped(output, scene_output, now_msec)) {
 		int64_t wait = 1000 / battery_idle_fps - (now_msec - output->last_frame_ms);
 		if (wait > 0) {
 			if (!output->frame_held) {
@@ -286,8 +388,8 @@ static void handle_frame(struct wl_listener *listener, void *data) {
 
 	if (wlr_scene_output_needs_frame(scene_output)) {
 		output->last_frame_ms = now_msec;
+		output_draw(output, scene_output);
 	}
-	wlr_scene_output_commit(scene_output, NULL);
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -402,6 +504,11 @@ static void output_enter(struct tw_output *output) {
 	/* Coming in while locked: its first frame has the curtain on it. */
 	output->curtain_shown = false;
 	output->lock_seq = wlr_output->commit_seq;
+	if (wlr_output->make != NULL && wlr_output->model != NULL) {
+		wlr_log(WLR_DEBUG, "output %s is %s %s%s%s", wlr_output->name, wlr_output->make,
+			wlr_output->model, wlr_output->serial != NULL ? " " : "",
+			wlr_output->serial != NULL ? wlr_output->serial : "");
+	}
 	wlr_log(WLR_DEBUG, "output %s: scale %.2f, shows workspace %zu",
 		wlr_output->name, rule->scale, output->workspace + 1);
 
@@ -634,6 +741,8 @@ static void renderer_replace(void *data) {
 	server->allocator = allocator;
 	wl_signal_add(&renderer->events.lost, &server->renderer_lost);
 	wlr_compositor_set_renderer(server->compositor, renderer);
+	/* Window capture draws with the renderer it was made with. */
+	windows_capture_stop(server);
 	bool all = true;
 	struct tw_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
@@ -719,6 +828,9 @@ void output_init(struct tw_server *server) {
 	wl_signal_add(&server->output_layout->events.change, &server->layout_change);
 	server->renderer_lost.notify = handle_renderer_lost;
 	wl_signal_add(&server->renderer->events.lost, &server->renderer_lost);
+
+	server->tearing_control = wlr_tearing_control_manager_v1_create(server->display, 1);
+	server->content_type = wlr_content_type_manager_v1_create(server->display, 1);
 }
 
 void output_finish(struct tw_server *server) {

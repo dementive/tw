@@ -113,6 +113,11 @@ protocols = {
 	'relative-pointer-unstable-v1': wl_protocol_dir / 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
 	'cursor-shape-v1': wl_protocol_dir / 'staging/cursor-shape/cursor-shape-v1.xml',
 	'tablet-v2': wl_protocol_dir / 'stable/tablet/tablet-v2.xml',
+	'content-type-v1': wl_protocol_dir / 'staging/content-type/content-type-v1.xml',
+	'tearing-control-v1': wl_protocol_dir / 'staging/tearing-control/tearing-control-v1.xml',
+	'ext-foreign-toplevel-list-v1': wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+	'ext-image-capture-source-v1': wl_protocol_dir / 'staging/ext-image-capture-source/ext-image-capture-source-v1.xml',
+	'ext-image-copy-capture-v1': wl_protocol_dir / 'staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml',
 	'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 	'virtual-keyboard-unstable-v1': 'protocols/virtual-keyboard-unstable-v1.xml',
 	'wlr-data-control-unstable-v1': 'protocols/wlr-data-control-unstable-v1.xml',
@@ -375,6 +380,22 @@ test_client = executable(
 	protocol_code['relative-pointer-unstable-v1'],
 	client_header['fractional-scale-v1'],
 	protocol_code['fractional-scale-v1'],
+	client_header['content-type-v1'],
+	protocol_code['content-type-v1'],
+	client_header['tearing-control-v1'],
+	protocol_code['tearing-control-v1'],
+	dependencies: wayland_client,
+)
+# Lists the windows and records one, the way a screen recorder does.
+test_capture = executable(
+	'tw-test-capture',
+	'tests/capture.c',
+	client_header['ext-foreign-toplevel-list-v1'],
+	protocol_code['ext-foreign-toplevel-list-v1'],
+	client_header['ext-image-capture-source-v1'],
+	protocol_code['ext-image-capture-source-v1'],
+	client_header['ext-image-copy-capture-v1'],
+	protocol_code['ext-image-copy-capture-v1'],
 	dependencies: wayland_client,
 )
 # Copies and pastes the way a clipboard tool does.
@@ -416,6 +437,8 @@ headless_tests = {
 	'idle': [tw, test_client, test_keys],
 	# a copy outlives the program it was made in
 	'clipboard': [tw, test_client, test_clip],
+	# the window list and recording a window, as a screen recorder does
+	'capture': [tw, test_client, test_capture],
 	# what tw does on battery and on mains, against made-up power supplies,
 	# and the frame cap on battery
 	'power': [tw, test_client, test_keys],

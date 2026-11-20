@@ -34,6 +34,19 @@ static const size_t default_column_width = 1; /* index into column_widths */
  */
 static const int scroll_stiffness = 800;
 
+/*
+ * Variable refresh rate (VRR: FreeSync, "G-Sync compatible") while a window is
+ * fullscreen on a screen that can do it: the screen waits for the game's next
+ * frame instead of showing the last one again, so a game that falls short of
+ * the refresh rate does not stutter. It goes off again when the window leaves
+ * fullscreen; the desktop never runs with it. Some OLED and VA screens flicker
+ * in brightness while the frame rate swings; false never asks for it.
+ *
+ * Tearing needs no setting: a fullscreen game that asks for it (vsync off in
+ * its settings) gets it.
+ */
+static const bool fullscreen_vrr = true;
+
 /* --- Keyboard and touchpad --------------------------------------------------- */
 
 /* Keyboard layout comes from the XKB_DEFAULT_* environment variables. */
@@ -106,7 +119,8 @@ static const int battery_refresh_hz = 60;
  * about 100 ms, so a program that changes it a few times a second keeps the
  * display awake throughout: ten updates a second cost 1.7 W on the G533ZW, two
  * cost 0.2 W (docs/g533zw.md). The cap is off while a visible window inhibits
- * idling (a video, a game), while a window is fullscreen on that output,
+ * idling (a video, a game) or says it shows a video or a game, while a
+ * window is fullscreen on that output,
  * while a program holds the pointer (a game, a 3D view) and while the
  * session is locked. 0 never caps.
  */
